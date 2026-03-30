@@ -254,11 +254,12 @@ object AdbBridge {
      * Start screen recording on device.
      * adb screenrecord has 3-min limit per file, so we chain segments.
      * Uses 720p and 4Mbps to keep it lightweight (hardware encoder on SoC, no game GPU impact).
+     * sessionId is used to create unique filenames per session.
      */
-    fun startScreenRecord(deviceId: String, segment: Int = 0): Process? {
+    fun startScreenRecord(deviceId: String, sessionId: String, segment: Int = 0): Process? {
         return try {
-            val remotePath = "/sdcard/gameperf_rec_$segment.mp4"
-            val pb = ProcessBuilder("adb", "-s", deviceId, "shell", "screenrecord", "--size", "720x1280", "--bit-rate", "4000000", "--time-limit", "180", remotePath)
+            val remotePath = "/sdcard/gp_${sessionId}_$segment.mp4"
+            val pb = ProcessBuilder(adbPath, "-s", deviceId, "shell", "screenrecord", "--size", "720x1280", "--bit-rate", "4000000", "--time-limit", "180", remotePath)
             pb.redirectErrorStream(true)
             pb.start()
         } catch (_: Exception) { null }
@@ -269,16 +270,16 @@ object AdbBridge {
     }
 
     /**
-     * Pull all recorded segments from device to local dir, then delete from device.
+     * Pull all recorded segments for a session from device to local dir, then delete from device.
      */
-    fun pullRecordings(deviceId: String, localDir: java.io.File, maxSegments: Int = 20): List<java.io.File> {
+    fun pullRecordings(deviceId: String, sessionId: String, localDir: java.io.File, maxSegments: Int = 20): List<java.io.File> {
         val files = mutableListOf<java.io.File>()
         for (i in 0..maxSegments) {
-            val remotePath = "/sdcard/gameperf_rec_$i.mp4"
+            val remotePath = "/sdcard/gp_${sessionId}_$i.mp4"
             val check = shell(deviceId, "ls $remotePath 2>/dev/null")
             if (check.isBlank() || check.contains("No such file")) break
-            val localFile = java.io.File(localDir, "recording_$i.mp4")
-            exec("adb", "-s", deviceId, "pull", remotePath, localFile.absolutePath, timeoutMs = 30000)
+            val localFile = java.io.File(localDir, "video_${sessionId}_$i.mp4")
+            exec(adbPath, "-s", deviceId, "pull", remotePath, localFile.absolutePath, timeoutMs = 60000)
             if (localFile.exists() && localFile.length() > 0) files.add(localFile)
             shell(deviceId, "rm $remotePath")
         }
@@ -286,6 +287,6 @@ object AdbBridge {
     }
 
     fun cleanRecordings(deviceId: String) {
-        shell(deviceId, "rm -f /sdcard/gameperf_rec_*.mp4")
+        shell(deviceId, "rm -f /sdcard/gp_*.mp4")
     }
 }

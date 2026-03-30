@@ -153,6 +153,7 @@ Permite medir el **consumo real de bateria** sin que el cable USB cargue el disp
 - El video se guarda junto al informe para contrastar en que momentos se producen caidas
 - Usa el encoder de hardware del SoC (no consume GPU del juego)
 - Soporta sesiones largas encadenando segmentos de 3 minutos
+- Archivos unicos por sesion: `video_yyyyMMdd_HHmmss_0.mp4`, `video_yyyyMMdd_HHmmss_1.mp4`, etc.
 
 ### Doble nota de rendimiento
 - **Nota General**: puntuacion objetiva (A-F) basada en metricas absolutas
@@ -165,6 +166,22 @@ Permite medir el **consumo real de bateria** sin que el cable USB cargue el disp
 - Problemas detectados con explicacion y solucion
 - Desglose de la nota
 - Soporte para impresion/PDF
+
+### Correlacion video-metricas
+- Cada muestra de FPS se registra con su segundo exacto
+- Tabla "FPS por segundo" en el informe HTML con:
+  - Timestamp (segundo de la sesion)
+  - Valor FPS
+  - Estado visual (Critico/Bajo/Medio/Bueno/Excelente)
+  - Barra visual de color
+- Archivos de video con nombre unico por sesion (`video_yyyyMMdd_HHmmss_N.mp4`)
+
+### Historial de sesiones
+- Las ultimas 5 pruebas se guardan en `~/GamePerf Reports/history.json`
+- Desde la pantalla principal podes:
+  - Ver nombre, dispositivo, nota y duracion de pruebas anteriores
+  - Renombrar sesiones
+  - Abrir informe o video de sesiones previas
 
 ---
 

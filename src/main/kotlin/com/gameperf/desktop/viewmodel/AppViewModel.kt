@@ -252,9 +252,10 @@ class AppViewModel {
             // Start video recording and metrics at the same moment
             val videoDir = File(System.getProperty("user.home"), "GamePerf Reports")
             videoDir.mkdirs()
+            val sessionId = java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(java.util.Date())
             AdbBridge.cleanRecordings(device.id)
             recordSegment = 0
-            recordProcess = AdbBridge.startScreenRecord(device.id, recordSegment)
+            recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment)
             // screenrecord needs ~1s to actually start capturing frames
             delay(1500)
 
@@ -269,7 +270,7 @@ class AppViewModel {
                     AdbBridge.stopScreenRecord(recordProcess)
                     delay(1000)
                     recordSegment++
-                    recordProcess = AdbBridge.startScreenRecord(device.id, recordSegment)
+                    recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment)
                 }
             }
             val fpsHistory = mutableListOf<Int>()
@@ -359,7 +360,7 @@ class AppViewModel {
             AdbBridge.stopScreenRecord(recordProcess)
             recordProcess = null
             delay(2000) // let last segment finalize on device
-            val recordings = AdbBridge.pullRecordings(device.id, videoDir)
+            val recordings = AdbBridge.pullRecordings(device.id, sessionId, videoDir)
             val videoPath = recordings.firstOrNull()?.absolutePath ?: ""
 
             // === FINALIZE ===
