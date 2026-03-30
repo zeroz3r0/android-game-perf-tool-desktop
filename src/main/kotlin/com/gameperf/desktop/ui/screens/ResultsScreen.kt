@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.components.MetricCard
 import com.gameperf.desktop.ui.components.MiniGraph
 import com.gameperf.desktop.ui.components.StatRow
+import com.gameperf.desktop.ui.components.VideoPlayer
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.viewmodel.AppViewModel
 
@@ -35,36 +36,60 @@ fun ResultsScreen(vm: AppViewModel) {
     ) {
         // Dual grade display
         Text("Resultado", color = TextSecondary, fontSize = 14.sp)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(16.dp))
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.Bottom
+            verticalAlignment = Alignment.CenterVertically
         ) {
             // General grade
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("General", color = TextSecondary, fontSize = 11.sp)
-                Text(
-                    "${result.grade}",
-                    color = gradeColor(result.grade),
-                    fontSize = 96.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            if (result.deviceGrade != ' ') {
-                Spacer(Modifier.width(48.dp))
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Para este dispositivo", color = TextSecondary, fontSize = 11.sp)
+            Card(
+                modifier = Modifier.width(200.dp),
+                colors = CardDefaults.cardColors(containerColor = DarkCard),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    Modifier.padding(20.dp).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("General", color = TextSecondary, fontSize = 12.sp)
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        "${result.deviceGrade}",
-                        color = gradeColor(result.deviceGrade),
-                        fontSize = 96.sp,
+                        "${result.grade}",
+                        color = gradeColor(result.grade),
+                        fontSize = 72.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(result.deviceTier, color = TextDim, fontSize = 10.sp)
+                }
+            }
+
+            if (result.deviceGrade != ' ') {
+                Spacer(Modifier.width(24.dp))
+                Card(
+                    modifier = Modifier.width(200.dp),
+                    colors = CardDefaults.cardColors(containerColor = Purple.copy(alpha = 0.1f)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        Modifier.padding(20.dp).fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Dispositivo", color = TextSecondary, fontSize = 12.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "${result.deviceGrade}",
+                            color = gradeColor(result.deviceGrade),
+                            fontSize = 72.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(result.deviceTier, color = TextDim, fontSize = 10.sp)
+                    }
                 }
             }
         }
+
+        Spacer(Modifier.height(12.dp))
         Text(
             "${result.gamePackage}  |  ${result.deviceModel}  |  ${formatDuration(result.duration)}",
             color = TextDim, fontSize = 12.sp
@@ -213,27 +238,49 @@ fun ResultsScreen(vm: AppViewModel) {
 
         // Video recording
         if (result.videoPath.isNotEmpty()) {
+            var showVideo by remember { mutableStateOf(false) }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Purple.copy(alpha = 0.1f)),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Row(
-                    Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Videocam, null, tint = Purple, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Video de la sesion", color = Purple, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Text(result.videoPath, color = TextDim, fontSize = 10.sp)
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Videocam, null, tint = Purple, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Video de la sesion", color = Purple, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text(result.videoPath, color = TextDim, fontSize = 10.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { vm.openVideo() },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                        ) {
+                            Text("Externo", fontSize = 11.sp)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { showVideo = !showVideo },
+                            colors = ButtonDefaults.buttonColors(containerColor = Purple),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(
+                                if (showVideo) Icons.Default.ExpandLess else Icons.Default.PlayArrow,
+                                null, modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (showVideo) "Ocultar" else "Reproducir", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
-                    Button(
-                        onClick = { vm.openVideo() },
-                        colors = ButtonDefaults.buttonColors(containerColor = Purple),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Abrir video", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+
+                    if (showVideo) {
+                        Spacer(Modifier.height(12.dp))
+                        VideoPlayer(
+                            videoPath = result.videoPath,
+                            modifier = Modifier.fillMaxWidth().height(400.dp)
+                        )
                     }
                 }
             }

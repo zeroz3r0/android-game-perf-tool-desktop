@@ -1,6 +1,7 @@
 package com.gameperf.desktop.viewmodel
 
 import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.report.ReportGenerator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -113,6 +114,9 @@ class AppViewModel {
     private val _result = MutableStateFlow(SessionResult())
     val result: StateFlow<SessionResult> = _result
 
+    private val _history = MutableStateFlow<List<SessionHistory.HistoryEntry>>(emptyList())
+    val history: StateFlow<List<SessionHistory.HistoryEntry>> = _history
+
     @Volatile private var shouldStop = false
     private var captureJob: Job? = null
     private var pollingJob: Job? = null
@@ -122,6 +126,7 @@ class AppViewModel {
 
     fun init() {
         scope.launch {
+            _history.value = SessionHistory.load()
             _adbAvailable.value = AdbBridge.isAvailable()
             if (!_adbAvailable.value) {
                 _statusMessage.value = "ADB no encontrado. Instala Android SDK."
@@ -240,12 +245,17 @@ class AppViewModel {
             val isWifiMode = _isWifi.value
             if (!isWifiMode) AdbBridge.disableCharging(device.id)
 
-            // Start video recording
+            // Start video recording and metrics at the same moment
             val videoDir = File(System.getProperty("user.home"), "GamePerf Reports")
             videoDir.mkdirs()
             AdbBridge.cleanRecordings(device.id)
             recordSegment = 0
             recordProcess = AdbBridge.startScreenRecord(device.id, recordSegment)
+            // screenrecord needs ~1s to actually start capturing frames
+            delay(1500)
+
+            // NOW start the clock - video and metrics are synced from this point
+            val startTime = System.currentTimeMillis()
 
             // Chain recordings every ~175s (before 180s limit)
             recordJob = scope.launch {
@@ -258,8 +268,6 @@ class AppViewModel {
                     recordProcess = AdbBridge.startScreenRecord(device.id, recordSegment)
                 }
             }
-
-            var elapsed = 0
             val fpsHistory = mutableListOf<Int>()
             val memHistory = mutableListOf<Long>()
             val nativeHistory = mutableListOf<Long>()
@@ -273,15 +281,21 @@ class AppViewModel {
             var totalJank = 0
             var totalStutter = 0
 
-            while (!shouldStop && (durationSeconds <= 0 || elapsed < durationSeconds)) {
+            while (!shouldStop) {
+                val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+                if (durationSeconds > 0 && elapsed >= durationSeconds) break
                 delay(1000)
                 if (shouldStop) break
-                elapsed++
 
+                // Run ADB commands with early-exit checks between each
                 val frame = AdbBridge.captureFrames(device.id, pkg)
+                if (shouldStop) break
                 val mem = AdbBridge.captureMemory(device.id, pkg)
+                if (shouldStop) break
                 val cpu = AdbBridge.captureCpuPercent(device.id)
+                if (shouldStop) break
                 val thermal = AdbBridge.captureTemperature(device.id)
+                if (shouldStop) break
                 val battery = AdbBridge.getBatteryLevel(device.id)
 
                 val fps = frame?.fps ?: 0
@@ -293,14 +307,14 @@ class AppViewModel {
                 if (thermal.skin > 0) tempSkinHistory.add(thermal.skin)
                 if (frame != null && frame.avgFrameTime > 0) {
                     frameTimeAvgHistory.add(frame.avgFrameTime)
-                    // Simulate individual frame times from avg (for histogram)
                     allFrameTimes.add(frame.avgFrameTime)
                 }
                 totalJank += frame?.jankCount ?: 0
                 totalStutter += frame?.stutterCount ?: 0
 
+                val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 _liveMetrics.value = LiveMetrics(
-                    elapsed = elapsed, fps = fps,
+                    elapsed = currentElapsed, fps = fps,
                     avgFps = if (fpsHistory.isNotEmpty()) fpsHistory.average() else 0.0,
                     frameTime = frame?.avgFrameTime ?: 0.0,
                     cpu = cpu,
@@ -321,6 +335,13 @@ class AppViewModel {
                     frameTimeHistory = frameTimeAvgHistory.toList(),
                     allFrameTimes = allFrameTimes.toList()
                 )
+            }
+
+            // Capture actual session duration BEFORE cleanup
+            val finalElapsed = if (durationSeconds > 0) {
+                durationSeconds // Use the requested duration, not wall clock
+            } else {
+                ((System.currentTimeMillis() - startTime) / 1000).toInt()
             }
 
             // Stop recording and pull videos
@@ -377,7 +398,7 @@ class AppViewModel {
 
             // Generate HTML report
             val reportPath = ReportGenerator.generate(
-                pkg = pkg, info = _deviceInfo.value, grade = grade, score = score, duration = elapsed,
+                pkg = pkg, info = _deviceInfo.value, grade = grade, score = score, duration = finalElapsed,
                 fpsHistory = fpsHistory, memHistory = memHistory, nativeHistory = nativeHistory,
                 javaHistory = javaHistory, cpuHistory = cpuHistory,
                 tempCpuHistory = tempCpuHistory, tempGpuHistory = tempGpuHistory, tempSkinHistory = tempSkinHistory,
@@ -396,7 +417,7 @@ class AppViewModel {
 
             _result.value = SessionResult(
                 gamePackage = pkg, deviceModel = _deviceInfo.value?.model ?: device.model,
-                duration = elapsed, grade = grade,
+                duration = finalElapsed, grade = grade,
                 avgFps = avgFps, minFps = minFps, maxFps = maxFps,
                 p1Fps = p1, p5Fps = p5, p50Fps = p50, p90Fps = p90, p99Fps = p99,
                 avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
@@ -411,49 +432,64 @@ class AppViewModel {
                 deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label
             )
 
+            // Save to history
+            SessionHistory.addEntry(
+                gamePackage = pkg, deviceModel = _deviceInfo.value?.model ?: device.model,
+                grade = grade, deviceGrade = deviceGrade,
+                avgFps = avgFps, duration = finalElapsed,
+                reportPath = reportPath, videoPath = videoPath
+            )
+            _history.value = SessionHistory.load()
+
             _isCapturing.value = false
             _screen.value = AppScreen.RESULTS
         }
     }
 
-    fun stopCapture() { shouldStop = true }
+    fun stopCapture() {
+        shouldStop = true
+        _statusMessage.value = "Deteniendo captura..."
+    }
 
-    fun openReport() {
-        val path = _result.value.reportPath
-        if (path.isNotEmpty()) {
+    private fun openFile(path: String) {
+        if (path.isEmpty()) return
+        val file = File(path)
+        if (!file.exists()) return
+        scope.launch(Dispatchers.IO) {
+            // Try Desktop.open first (works for most file types)
             try {
-                val file = File(path)
-                if (file.exists()) Desktop.getDesktop().browse(file.toURI())
-            } catch (_: Exception) {
-                try {
-                    val os = System.getProperty("os.name").lowercase()
-                    when {
-                        os.contains("mac") -> Runtime.getRuntime().exec(arrayOf("open", path))
-                        os.contains("win") -> Runtime.getRuntime().exec(arrayOf("cmd", "/c", "start", "", path))
-                        else -> Runtime.getRuntime().exec(arrayOf("xdg-open", path))
-                    }
-                } catch (_: Exception) {}
-            }
+                if (Desktop.isDesktopSupported()) {
+                    Desktop.getDesktop().open(file)
+                    return@launch
+                }
+            } catch (_: Exception) {}
+            // Fallback to OS-specific command
+            try {
+                val os = System.getProperty("os.name").lowercase()
+                when {
+                    os.contains("mac") -> ProcessBuilder("open", file.absolutePath).start()
+                    os.contains("win") -> ProcessBuilder("cmd", "/c", "start", "", file.absolutePath).start()
+                    else -> ProcessBuilder("xdg-open", file.absolutePath).start()
+                }
+            } catch (_: Exception) {}
         }
     }
 
-    fun openVideo() {
-        val path = _result.value.videoPath
-        if (path.isNotEmpty()) {
-            try {
-                val file = File(path)
-                if (file.exists()) Desktop.getDesktop().open(file)
-            } catch (_: Exception) {
-                try {
-                    val os = System.getProperty("os.name").lowercase()
-                    when {
-                        os.contains("mac") -> Runtime.getRuntime().exec(arrayOf("open", path))
-                        os.contains("win") -> Runtime.getRuntime().exec(arrayOf("cmd", "/c", "start", "", path))
-                        else -> Runtime.getRuntime().exec(arrayOf("xdg-open", path))
-                    }
-                } catch (_: Exception) {}
-            }
-        }
+    fun openReport() { openFile(_result.value.reportPath) }
+
+    fun openVideo() { openFile(_result.value.videoPath) }
+
+    fun renameHistoryEntry(id: String, newName: String) {
+        SessionHistory.updateName(id, newName)
+        _history.value = SessionHistory.load()
+    }
+
+    fun openHistoryReport(entry: SessionHistory.HistoryEntry) {
+        openFile(entry.reportPath)
+    }
+
+    fun openHistoryVideo(entry: SessionHistory.HistoryEntry) {
+        openFile(entry.videoPath)
     }
 
     fun goHome() {
@@ -462,6 +498,7 @@ class AppViewModel {
         recordJob?.cancel()
         AdbBridge.stopScreenRecord(recordProcess)
         recordProcess = null
+        _history.value = SessionHistory.load()
         refreshDevices()
     }
 }

@@ -10,9 +10,37 @@ import java.util.concurrent.TimeUnit
  */
 object AdbBridge {
 
+    /**
+     * Resolve ADB path. macOS packaged apps don't inherit terminal PATH,
+     * so we check common locations.
+     */
+    private val adbPath: String by lazy {
+        // 1. Try PATH first (works from terminal / ./gradlew run)
+        try {
+            val p = ProcessBuilder("which", "adb").start()
+            val result = p.inputStream.bufferedReader().readText().trim()
+            p.waitFor()
+            if (result.isNotEmpty() && java.io.File(result).exists()) return@lazy result
+        } catch (_: Exception) {}
+
+        // 2. Check common install locations
+        val candidates = listOf(
+            "/usr/local/bin/adb",
+            "/opt/homebrew/bin/adb",
+            "${System.getProperty("user.home")}/Library/Android/sdk/platform-tools/adb",
+            "/usr/bin/adb",
+            "C:\\platform-tools\\adb.exe",
+            "${System.getenv("LOCALAPPDATA") ?: ""}\\Android\\Sdk\\platform-tools\\adb.exe"
+        )
+        candidates.firstOrNull { java.io.File(it).exists() } ?: "adb"
+    }
+
     fun exec(vararg args: String, timeoutMs: Long = 5000): String {
         return try {
-            val pb = ProcessBuilder(*args)
+            // Replace "adb" with resolved path
+            val resolvedArgs = args.toMutableList()
+            if (resolvedArgs.firstOrNull() == "adb") resolvedArgs[0] = adbPath
+            val pb = ProcessBuilder(*resolvedArgs.toTypedArray())
             pb.redirectErrorStream(true)
             val process = pb.start()
             val outputFuture = CompletableFuture.supplyAsync {

@@ -259,5 +259,118 @@ fun HomeScreen(vm: AppViewModel) {
                 }
             }
         }
+
+        // Recent tests history
+        val historyEntries by vm.history.collectAsState()
+        if (historyEntries.isNotEmpty()) {
+            Spacer(Modifier.height(24.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = DarkCard),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(Modifier.padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.History, null, tint = Cyan, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Pruebas recientes", color = Cyan, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    historyEntries.forEach { entry ->
+                        var isEditing by remember { mutableStateOf(false) }
+                        var editName by remember { mutableStateOf(entry.name) }
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(
+                                Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Grade badge
+                                Text(
+                                    "${entry.grade}",
+                                    color = gradeColor(entry.grade),
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.width(32.dp)
+                                )
+                                Spacer(Modifier.width(12.dp))
+
+                                // Name + info
+                                Column(Modifier.weight(1f)) {
+                                    if (isEditing) {
+                                        TextField(
+                                            value = editName,
+                                            onValueChange = { editName = it },
+                                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White, fontSize = 13.sp
+                                            ),
+                                            singleLine = true,
+                                            colors = TextFieldDefaults.colors(
+                                                focusedContainerColor = Color.Transparent,
+                                                unfocusedContainerColor = Color.Transparent,
+                                                focusedIndicatorColor = Cyan,
+                                                cursorColor = Cyan
+                                            )
+                                        )
+                                    } else {
+                                        Text(entry.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    Text(
+                                        "${entry.date}  |  ${entry.avgFps} FPS  |  ${entry.duration / 60}m ${entry.duration % 60}s",
+                                        color = TextDim, fontSize = 10.sp
+                                    )
+                                }
+
+                                // Edit/Save name
+                                IconButton(
+                                    onClick = {
+                                        if (isEditing) {
+                                            vm.renameHistoryEntry(entry.id, editName)
+                                            isEditing = false
+                                        } else {
+                                            editName = entry.name
+                                            isEditing = true
+                                        }
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        if (isEditing) Icons.Default.Check else Icons.Default.Edit,
+                                        null, tint = if (isEditing) Green else TextDim,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+
+                                // Open report
+                                if (entry.reportPath.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = { vm.openHistoryReport(entry) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Description, "Informe", tint = Green, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+
+                                // Open video
+                                if (entry.videoPath.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = { vm.openHistoryVideo(entry) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Videocam, "Video", tint = Purple, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
