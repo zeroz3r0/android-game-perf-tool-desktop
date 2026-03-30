@@ -17,7 +17,8 @@ object ReportGenerator {
         peakMem: Long, avgCpu: Int, maxCpu: Int, maxTempCpu: Double, maxTempGpu: Double,
         batteryStart: Int, batteryEnd: Int, frameDrops: Int, jank: Int, stutter: Int,
         problems: List<String>, isWifi: Boolean,
-        deviceGrade: Char = ' ', deviceScore: Int = 0, deviceTier: String = ""
+        deviceGrade: Char = ' ', deviceScore: Int = 0, deviceTier: String = "",
+        fpsTimestamps: List<Pair<Int, Int>> = emptyList()
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -35,9 +36,11 @@ object ReportGenerator {
             ((1 - range / avgFps / 2).coerceIn(0.0, 1.0) * 100).toInt()
         } else 100
 
-        // Chart data
-        val fpsD = fpsHistory.joinToString(",")
-        val fpsL = fpsHistory.indices.joinToString(",") { "\"${it+1}s\"" }
+        // Chart data - use real timestamps when available
+        val fpsD = if (fpsTimestamps.isNotEmpty()) fpsTimestamps.joinToString(",") { "${it.second}" }
+                   else fpsHistory.joinToString(",")
+        val fpsL = if (fpsTimestamps.isNotEmpty()) fpsTimestamps.joinToString(",") { "\"${it.first}s\"" }
+                   else fpsHistory.indices.joinToString(",") { "\"${it+1}s\"" }
         val memD = memHistory.joinToString(",")
         val natD = nativeHistory.joinToString(",")
         val javD = javaHistory.joinToString(",")
@@ -139,6 +142,21 @@ ${CSS}
     </table>
     <p class="hint">P1 = el peor 1% de lecturas. Si P1 es bajo, hay tirones puntuales aunque el promedio sea bueno.</p>
     <div class="chart-box"><canvas id="fpsChart"></canvas></div>
+    ${if(fpsTimestamps.isNotEmpty()) """
+    <h3 style="color:#00d4ff;margin-top:20px;margin-bottom:10px;font-size:0.95rem">FPS por segundo (correlacion con video)</h3>
+    <p class="card-desc">Cada fila corresponde al segundo exacto de la captura. Usa estos timestamps para localizar caidas en el video.</p>
+    <div style="max-height:400px;overflow-y:auto;border-radius:8px">
+    <table class="ptable" style="font-size:0.85em">
+        <tr><th>Segundo</th><th>FPS</th><th>Estado</th><th style="width:40%">Visual</th></tr>
+        ${fpsTimestamps.joinToString("\n        ") { (sec, fps) ->
+            val cls = when { fps < 25 -> "bad"; fps < 40 -> "warn"; else -> "good" }
+            val pct = (fps.coerceIn(0, 65) * 100 / 65)
+            val barColor = when { fps < 25 -> "#ff0044"; fps < 40 -> "#ffaa00"; else -> "#00ff88" }
+            val label = when { fps < 20 -> "Critico"; fps < 30 -> "Bajo"; fps < 45 -> "Medio"; fps < 55 -> "Bueno"; else -> "Excelente" }
+            """<tr><td style="font-family:monospace;font-weight:700">${sec}s</td><td class="$cls" style="font-size:1.1em">${fps}</td><td class="$cls" style="font-size:0.8em">$label</td><td><div style="background:rgba(255,255,255,0.06);border-radius:4px;height:16px;overflow:hidden"><div style="width:${pct}%;height:100%;background:$barColor;border-radius:4px"></div></div></td></tr>"""
+        }}
+    </table>
+    </div>""" else ""}
 </div>
 
 <!-- Frame Times -->

@@ -11,6 +11,9 @@ import java.io.File
 
 enum class AppScreen { HOME, CAPTURING, RESULTS }
 
+/** A metric sample with the exact second it was captured (for video correlation). */
+data class TimedSample(val second: Int, val value: Double)
+
 data class LiveMetrics(
     val elapsed: Int = 0,
     val fps: Int = 0,
@@ -29,6 +32,7 @@ data class LiveMetrics(
     val battery: Int = 0,
     val frameDrops: Int = 0,
     val fpsHistory: List<Int> = emptyList(),
+    val fpsTimed: List<TimedSample> = emptyList(),
     val memHistory: List<Long> = emptyList(),
     val nativeHistory: List<Long> = emptyList(),
     val javaHistory: List<Long> = emptyList(),
@@ -269,6 +273,7 @@ class AppViewModel {
                 }
             }
             val fpsHistory = mutableListOf<Int>()
+            val fpsTimed = mutableListOf<TimedSample>()
             val memHistory = mutableListOf<Long>()
             val nativeHistory = mutableListOf<Long>()
             val javaHistory = mutableListOf<Long>()
@@ -298,8 +303,12 @@ class AppViewModel {
                 if (shouldStop) break
                 val battery = AdbBridge.getBatteryLevel(device.id)
 
+                val sampleSecond = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 val fps = frame?.fps ?: 0
-                if (fps > 0) fpsHistory.add(fps)
+                if (fps > 0) {
+                    fpsHistory.add(fps)
+                    fpsTimed.add(TimedSample(sampleSecond, fps.toDouble()))
+                }
                 if (mem != null) { memHistory.add(mem.totalMb); nativeHistory.add(mem.nativeMb); javaHistory.add(mem.javaMb) }
                 if (cpu > 0) cpuHistory.add(cpu)
                 if (thermal.cpu > 0) tempCpuHistory.add(thermal.cpu)
@@ -325,6 +334,7 @@ class AppViewModel {
                     battery = battery,
                     frameDrops = AdbBridge.getMissedFrames(device.id) - missedStart,
                     fpsHistory = fpsHistory.toList(),
+                    fpsTimed = fpsTimed.toList(),
                     memHistory = memHistory.toList(),
                     nativeHistory = nativeHistory.toList(),
                     javaHistory = javaHistory.toList(),
@@ -412,7 +422,8 @@ class AppViewModel {
                 batteryStart = batteryStart, batteryEnd = batteryEnd,
                 frameDrops = totalDrops, jank = totalJank, stutter = totalStutter,
                 problems = problems, isWifi = isWifiMode,
-                deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label
+                deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
+                fpsTimestamps = fpsTimed.map { it.second to it.value.toInt() }
             )
 
             _result.value = SessionResult(
