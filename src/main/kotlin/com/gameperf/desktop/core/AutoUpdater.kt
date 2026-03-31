@@ -120,41 +120,73 @@ object AutoUpdater {
     }
 
     /**
-     * Replace current JAR and restart the app.
-     * Strategy:
-     *   1. Detect current JAR path via class loader
-     *   2. Copy downloaded JAR to same directory as .new
-     *   3. Create a small shell/batch script that:
-     *      a. Waits for current process to exit
-     *      b. Renames current.jar to current.jar.bak
-     *      c. Renames current.jar.new to current.jar
-     *      d. Starts the new JAR
-     *      e. Deletes itself
-     *   4. Execute the script
-     *   5. System.exit(0)
+     * Result of applying an update.
+     * [success] = true if the update was applied (or staged for manual replacement).
+     * [needsManualRestart] = true if the app couldn't auto-restart (e.g., running from Gradle).
+     * [updatedJarPath] = path to the new JAR file (for showing to user).
+     * [message] = human-readable status message.
      */
-    fun applyUpdate(downloadedFile: File): Boolean {
+    data class UpdateResult(
+        val success: Boolean,
+        val needsManualRestart: Boolean = false,
+        val updatedJarPath: String = "",
+        val message: String = ""
+    )
+
+    /**
+     * Apply the downloaded update.
+     *
+     * If running from a JAR (production): replaces the JAR via a shell script and restarts.
+     * If running from Gradle/IDE (development): saves the JAR to ~/GamePerf Reports/updates/
+     * and tells the user where to find it.
+     */
+    fun applyUpdate(downloadedFile: File): UpdateResult {
         return try {
-            // Detect current JAR path
-            val currentJar = detectCurrentJar() ?: return false
-            val jarDir = currentJar.parentFile ?: return false
-            val newJar = File(jarDir, currentJar.name + ".new")
-            val bakJar = File(jarDir, currentJar.name + ".bak")
+            val currentJar = detectCurrentJar()
 
-            // Copy downloaded file to .new location
-            downloadedFile.copyTo(newJar, overwrite = true)
+            if (currentJar != null) {
+                // === PRODUCTION MODE: running from JAR — auto-replace and restart ===
+                val jarDir = currentJar.parentFile ?: return UpdateResult(false, message = "No se pudo determinar el directorio del JAR")
+                val newJar = File(jarDir, currentJar.name + ".new")
+                val bakJar = File(jarDir, currentJar.name + ".bak")
 
-            val os = System.getProperty("os.name").lowercase()
-            if (os.contains("win")) {
-                createWindowsUpdateScript(currentJar, newJar, bakJar)
+                downloadedFile.copyTo(newJar, overwrite = true)
+
+                val os = System.getProperty("os.name").lowercase()
+                if (os.contains("win")) {
+                    createWindowsUpdateScript(currentJar, newJar, bakJar)
+                } else {
+                    createUnixUpdateScript(currentJar, newJar, bakJar)
+                }
+
+                System.exit(0)
+                UpdateResult(true) // unreachable
             } else {
-                createUnixUpdateScript(currentJar, newJar, bakJar)
-            }
+                // === DEVELOPMENT MODE: running from Gradle/IDE — save JAR for manual use ===
+                val updatesDir = File(System.getProperty("user.home"), "GamePerf Reports/updates")
+                updatesDir.mkdirs()
+                val targetFile = File(updatesDir, "GamePerf-latest.jar")
+                downloadedFile.copyTo(targetFile, overwrite = true)
 
-            System.exit(0)
-            true // unreachable but needed for return type
-        } catch (_: Exception) {
-            false
+                // Try to open the folder for the user
+                try {
+                    val os = System.getProperty("os.name").lowercase()
+                    when {
+                        os.contains("mac") -> ProcessBuilder("open", updatesDir.absolutePath).start()
+                        os.contains("win") -> ProcessBuilder("explorer", updatesDir.absolutePath).start()
+                        else -> ProcessBuilder("xdg-open", updatesDir.absolutePath).start()
+                    }
+                } catch (_: Exception) { /* ignore */ }
+
+                UpdateResult(
+                    success = true,
+                    needsManualRestart = true,
+                    updatedJarPath = targetFile.absolutePath,
+                    message = "JAR descargado en: ${targetFile.absolutePath}\nCierra la app y ejecútalo con: java -jar \"${targetFile.absolutePath}\""
+                )
+            }
+        } catch (e: Exception) {
+            UpdateResult(false, message = "Error al aplicar actualización: ${e.message}")
         }
     }
 
@@ -173,13 +205,17 @@ object AutoUpdater {
     }
 
     private fun createUnixUpdateScript(currentJar: File, newJar: File, bakJar: File) {
+        // Use the exact Java binary that's running this process (not just "java" from PATH)
+        val javaHome = System.getProperty("java.home")
+        val javaBin = File(javaHome, "bin/java").absolutePath
+
         val script = File(currentJar.parentFile, ".gameperf-update.sh")
         script.writeText("""#!/bin/bash
 sleep 2
 if [ -f "${bakJar.absolutePath}" ]; then rm -f "${bakJar.absolutePath}"; fi
 mv "${currentJar.absolutePath}" "${bakJar.absolutePath}"
 mv "${newJar.absolutePath}" "${currentJar.absolutePath}"
-nohup java -jar "${currentJar.absolutePath}" &
+nohup "$javaBin" -jar "${currentJar.absolutePath}" > /dev/null 2>&1 &
 sleep 1
 rm -f "${script.absolutePath}"
 """)
@@ -191,13 +227,16 @@ rm -f "${script.absolutePath}"
     }
 
     private fun createWindowsUpdateScript(currentJar: File, newJar: File, bakJar: File) {
+        val javaHome = System.getProperty("java.home")
+        val javaBin = File(javaHome, "bin/java.exe").absolutePath
+
         val script = File(currentJar.parentFile, "gameperf-update.bat")
         script.writeText("""@echo off
 timeout /t 2 /nobreak >nul
 if exist "${bakJar.absolutePath}" del /f "${bakJar.absolutePath}"
 move /y "${currentJar.absolutePath}" "${bakJar.absolutePath}"
 move /y "${newJar.absolutePath}" "${currentJar.absolutePath}"
-start "" java -jar "${currentJar.absolutePath}"
+start "" "$javaBin" -jar "${currentJar.absolutePath}"
 timeout /t 1 /nobreak >nul
 del /f "${script.absolutePath}"
 """)

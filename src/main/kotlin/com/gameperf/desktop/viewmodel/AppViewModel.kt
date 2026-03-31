@@ -253,9 +253,18 @@ class AppViewModel {
                 }
                 if (file != null) {
                     _updateProgress.value = 1f
-                    // Small delay to show 100%
                     delay(500)
-                    AutoUpdater.applyUpdate(file)
+                    val result = AutoUpdater.applyUpdate(file)
+                    if (result.success && result.needsManualRestart) {
+                        // Development mode: JAR saved, show message to user
+                        _updateError.value = null
+                        _updateProgress.value = null
+                        _statusMessage.value = result.message
+                    } else if (!result.success) {
+                        _updateError.value = result.message.ifEmpty { "Error al aplicar la actualización" }
+                        _updateProgress.value = null
+                    }
+                    // If auto-restart succeeded, we'll never reach here (System.exit called)
                 } else {
                     _updateError.value = "Error al descargar la actualizacion."
                     _updateProgress.value = null
