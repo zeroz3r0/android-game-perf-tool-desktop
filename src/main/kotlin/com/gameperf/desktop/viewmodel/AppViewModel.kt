@@ -26,12 +26,24 @@ enum class MarkerType(val label: String, val colorHex: String) {
     CUSTOM("Nota", "#00FF88")
 }
 
-/** A marker placed by the user during a capture session. */
+/** A marker placed by the user during a capture session.
+ *
+ * timestampMs: marker position in milliseconds for video correlation.
+ * timestampSeconds: convenience accessor for backward compatibility.
+ * colorHex: user-chosen color as hex string (defaults to the MarkerType color).
+ * title: short label for the marker.
+ */
 data class SessionMarker(
-    val timestampSeconds: Int,
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val timestampMs: Long,
     val type: MarkerType,
-    val note: String = ""
-)
+    val title: String = "",
+    val note: String = "",
+    val colorHex: String = "#FF0000"
+) {
+    /** Backward-compatible second accessor used by graphs and reports. */
+    val timestampSeconds: Int get() = (timestampMs / 1000).toInt()
+}
 
 data class LiveMetrics(
     val elapsed: Int = 0,
@@ -140,6 +152,19 @@ class AppViewModel {
 
     private val _markers = MutableStateFlow<List<SessionMarker>>(emptyList())
     val markers: StateFlow<List<SessionMarker>> = _markers
+
+    // ===== Video Playback State =====
+    private val _videoPosition = MutableStateFlow(0L)
+    val videoPosition: StateFlow<Long> = _videoPosition
+
+    private val _isVideoPlaying = MutableStateFlow(false)
+    val isVideoPlaying: StateFlow<Boolean> = _isVideoPlaying
+
+    private val _videoDuration = MutableStateFlow(0L)
+    val videoDuration: StateFlow<Long> = _videoDuration
+
+    private val _playbackSpeed = MutableStateFlow(1.0)
+    val playbackSpeed: StateFlow<Double> = _playbackSpeed
 
     private val _history = MutableStateFlow<List<SessionHistory.HistoryEntry>>(emptyList())
     val history: StateFlow<List<SessionHistory.HistoryEntry>> = _history
@@ -580,12 +605,52 @@ class AppViewModel {
         _statusMessage.value = "Deteniendo captura..."
     }
 
-    /** Place a marker at the current capture second. */
+    /** Place a marker at the current capture second (used during live capture). */
     fun addMarker(type: MarkerType, note: String = "") {
         if (!_isCapturing.value || captureStartTime == 0L) return
-        val elapsed = ((System.currentTimeMillis() - captureStartTime) / 1000).toInt()
-        _markers.value = _markers.value + SessionMarker(elapsed, type, note)
+        val elapsedMs = System.currentTimeMillis() - captureStartTime
+        _markers.value = _markers.value + SessionMarker(
+            timestampMs = elapsedMs,
+            type = type,
+            title = type.label,
+            note = note,
+            colorHex = type.colorHex
+        )
     }
+
+    /** Add a marker at a specific timestamp (used from the results timeline). */
+    fun addTimelineMarker(timestampMs: Long, title: String, note: String, colorHex: String, type: MarkerType) {
+        _markers.value = _markers.value + SessionMarker(
+            timestampMs = timestampMs,
+            type = type,
+            title = title,
+            note = note,
+            colorHex = colorHex
+        )
+        // Update the result to reflect new markers
+        _result.value = _result.value.copy(markers = _markers.value)
+    }
+
+    /** Edit an existing marker by its id. */
+    fun editMarker(id: String, title: String, note: String, colorHex: String, type: MarkerType) {
+        _markers.value = _markers.value.map { m ->
+            if (m.id == id) m.copy(title = title, note = note, colorHex = colorHex, type = type) else m
+        }
+        _result.value = _result.value.copy(markers = _markers.value)
+    }
+
+    /** Delete a marker by its id. */
+    fun deleteMarker(id: String) {
+        _markers.value = _markers.value.filter { it.id != id }
+        _result.value = _result.value.copy(markers = _markers.value)
+    }
+
+    // ===== Video Playback =====
+
+    fun setVideoPosition(positionMs: Long) { _videoPosition.value = positionMs }
+    fun setVideoPlaying(playing: Boolean) { _isVideoPlaying.value = playing }
+    fun setVideoDuration(durationMs: Long) { _videoDuration.value = durationMs }
+    fun setPlaybackSpeed(speed: Double) { _playbackSpeed.value = speed }
 
     private fun openFile(path: String) {
         if (path.isEmpty()) return
@@ -633,6 +698,10 @@ class AppViewModel {
         _liveMetrics.value = LiveMetrics()
         _markers.value = emptyList()
         _selectedForComparison.value = emptySet()
+        _videoPosition.value = 0L
+        _isVideoPlaying.value = false
+        _videoDuration.value = 0L
+        _playbackSpeed.value = 1.0
         recordJob?.cancel()
         AdbBridge.stopScreenRecord(recordProcess)
         recordProcess = null

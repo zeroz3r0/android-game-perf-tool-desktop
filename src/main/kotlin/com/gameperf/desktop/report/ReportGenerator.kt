@@ -86,11 +86,11 @@ object ReportGenerator {
             allFrameTimes.count { it >= 100.0 }
         ).joinToString(",")
 
-        // Marker annotations for FPS chart
+        // Marker annotations for FPS chart — use custom color if available
         val markerAnnotationsJs = if (markers.isNotEmpty()) {
             markers.mapIndexed { i, m ->
-                val labelText = m.note.ifEmpty { m.type.label }
-                val color = markerColorHex(m.type)
+                val labelText = m.title.ifEmpty { m.note.ifEmpty { m.type.label } }
+                val color = m.colorHex.ifEmpty { markerColorHex(m.type) }
                 """m$i:{type:'line',xMin:'${m.timestampSeconds}s',xMax:'${m.timestampSeconds}s',borderColor:'$color',borderWidth:2,borderDash:[4,4],label:{content:'${escJs(labelText)}',display:true,position:'start',backgroundColor:'$color',color:'#fff',font:{size:10,weight:'bold'},padding:4,borderRadius:4}}"""
             }.joinToString(",")
         } else ""
@@ -109,11 +109,12 @@ object ReportGenerator {
     </div>
     <div class="table-wrap">
     <table class="data-table">
-        <thead><tr><th>Segundo</th><th>Tipo</th><th>Nota</th></tr></thead>
+        <thead><tr><th>Segundo</th><th>Tipo</th><th>Título</th><th>Nota</th></tr></thead>
         <tbody>
         ${markers.sortedBy { it.timestampSeconds }.joinToString("\n        ") { m ->
-                val color = markerColorHex(m.type)
-                """<tr><td class="mono">${m.timestampSeconds}s</td><td><span class="marker-badge" style="background:${color}20;color:$color;border:1px solid ${color}40">${m.type.label}</span></td><td>${esc(m.note.ifEmpty { "\u2014" })}</td></tr>"""
+                val color = m.colorHex.ifEmpty { markerColorHex(m.type) }
+                val titleText = m.title.ifEmpty { m.type.label }
+                """<tr><td class="mono">${m.timestampSeconds}s</td><td><span class="marker-badge" style="background:${color}20;color:$color;border:1px solid ${color}40">${esc(titleText)}</span></td><td>${esc(titleText)}</td><td>${esc(m.note.ifEmpty { "\u2014" })}</td></tr>"""
             }}
         </tbody>
     </table>

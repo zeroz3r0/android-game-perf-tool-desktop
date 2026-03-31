@@ -108,7 +108,7 @@ object SessionHistory {
     private fun markersToJson(markers: List<SessionMarker>): String {
         if (markers.isEmpty()) return "[]"
         return markers.joinToString(",", "[", "]") { m ->
-            """{"ts":${m.timestampSeconds},"type":"${m.type.name}","note":"${esc(m.note)}"}"""
+            """{"id":"${esc(m.id)}","tsMs":${m.timestampMs},"ts":${m.timestampSeconds},"type":"${m.type.name}","title":"${esc(m.title)}","note":"${esc(m.note)}","color":"${esc(m.colorHex)}"}"""
         }
     }
 
@@ -155,12 +155,27 @@ object SessionHistory {
         for (m in Regex("\\{[^}]*\\}").findAll(inner)) {
             try {
                 val mObj = m.value
-                val ts = Regex("\"ts\"\\s*:\\s*(\\d+)").find(mObj)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+                // Read tsMs first (new format), fallback to ts * 1000 (legacy)
+                val tsMs = Regex("\"tsMs\"\\s*:\\s*(\\d+)").find(mObj)?.groupValues?.get(1)?.toLongOrNull()
+                val tsLegacy = Regex("\"ts\"\\s*:\\s*(\\d+)").find(mObj)?.groupValues?.get(1)?.toIntOrNull()
+                val timestampMs = tsMs ?: ((tsLegacy ?: continue).toLong() * 1000)
                 val typeName = Regex("\"type\"\\s*:\\s*\"([^\"]+)\"").find(mObj)?.groupValues?.get(1) ?: continue
+                val type = try { MarkerType.valueOf(typeName) } catch (_: Exception) { MarkerType.CUSTOM }
+                val id = Regex("\"id\"\\s*:\\s*\"([^\"]+)\"").find(mObj)?.groupValues?.get(1)
+                    ?: java.util.UUID.randomUUID().toString()
+                val title = Regex("\"title\"\\s*:\\s*\"([^\"]*)\"").find(mObj)?.groupValues?.get(1)
+                    ?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: type.label
                 val note = Regex("\"note\"\\s*:\\s*\"([^\"]*)\"").find(mObj)?.groupValues?.get(1)
                     ?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
-                val type = try { MarkerType.valueOf(typeName) } catch (_: Exception) { MarkerType.CUSTOM }
-                result.add(SessionMarker(ts, type, note))
+                val colorHex = Regex("\"color\"\\s*:\\s*\"([^\"]+)\"").find(mObj)?.groupValues?.get(1) ?: type.colorHex
+                result.add(SessionMarker(
+                    id = id,
+                    timestampMs = timestampMs,
+                    type = type,
+                    title = title,
+                    note = note,
+                    colorHex = colorHex
+                ))
             } catch (_: Exception) {}
         }
         return result

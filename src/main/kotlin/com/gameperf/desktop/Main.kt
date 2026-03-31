@@ -21,8 +21,19 @@ import com.gameperf.desktop.ui.theme.AppColors
 import com.gameperf.desktop.ui.theme.DarkBg
 import com.gameperf.desktop.viewmodel.AppScreen
 import com.gameperf.desktop.viewmodel.AppViewModel
+import javafx.application.Platform
 
-fun main() = application {
+fun main() {
+    // Initialize JavaFX toolkit ONCE before any JFXPanel usage.
+    // Platform.startup is idempotent — safe if already started.
+    try {
+        Platform.startup {}
+        Platform.setImplicitExit(false)
+    } catch (_: IllegalStateException) {
+        // Already initialized — ignore
+    }
+
+    application {
     val vm = remember { AppViewModel() }
 
     LaunchedEffect(Unit) {
@@ -51,4 +62,5 @@ fun main() = application {
             }
         }
     }
+}
 }
