@@ -258,16 +258,39 @@ del /f "${script.absolutePath}"
     }
 
     /**
-     * Extract the first .jar asset's browser_download_url from the GitHub release JSON.
-     * The assets array contains objects with "browser_download_url" fields.
+     * Detect the current platform identifier matching the CI artifact naming convention.
+     * CI produces: GamePerf-macos-arm64-X.Y.Z.jar, GamePerf-linux-x64-X.Y.Z.jar, GamePerf-windows-x64-X.Y.Z.jar
+     */
+    private fun detectPlatformTag(): String {
+        val os = System.getProperty("os.name").lowercase()
+        val arch = System.getProperty("os.arch").lowercase()
+        return when {
+            os.contains("mac") && arch.contains("aarch64") -> "macos-arm64"
+            os.contains("mac") -> "macos-x64"
+            os.contains("win") -> "windows-x64"
+            os.contains("linux") && arch.contains("aarch64") -> "linux-aarch64"
+            else -> "linux-x64"
+        }
+    }
+
+    /**
+     * Extract the platform-matching .jar asset URL from the GitHub release JSON.
+     * Matches by platform tag (e.g., "macos-x64") in the filename.
+     * Falls back to first .jar if no platform match is found.
      */
     private fun extractJarAssetUrl(json: String): String? {
-        // Find all browser_download_url values
+        val platform = detectPlatformTag()
         val pattern = """"browser_download_url"\s*:\s*"((?:[^"\\]|\\.)*)"""".toRegex()
+        val allJarUrls = mutableListOf<String>()
         for (match in pattern.findAll(json)) {
             val url = match.groupValues[1]
-            if (url.endsWith(".jar")) return url
+            if (url.endsWith(".jar")) {
+                // Prefer exact platform match
+                if (url.contains(platform)) return url
+                allJarUrls.add(url)
+            }
         }
-        return null
+        // Fallback: return first JAR if no platform match
+        return allJarUrls.firstOrNull()
     }
 }
