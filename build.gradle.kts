@@ -45,9 +45,9 @@ compose.desktop {
         mainClass = "com.gameperf.desktop.MainKt"
 
         jvmArgs += listOf(
-            "--add-modules=javafx.controls,javafx.swing,javafx.media",
-            "--add-exports=javafx.graphics/com.sun.javafx.tk=ALL-UNNAMED",
-            "--add-opens=javafx.graphics/com.sun.javafx.tk=ALL-UNNAMED"
+            "--add-opens=java.base/java.lang=ALL-UNNAMED",
+            "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
+            "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED"
         )
 
         nativeDistributions {
