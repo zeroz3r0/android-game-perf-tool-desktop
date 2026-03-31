@@ -241,7 +241,7 @@ class AppViewModel {
         val release = _updateAvailable.value ?: return
         val downloadUrl = release.jarUrl
         if (downloadUrl == null) {
-            _updateError.value = "No se encontro archivo JAR en el release."
+            _updateError.value = "No hay JAR disponible para tu plataforma. Descarga manualmente desde: ${release.htmlUrl}"
             return
         }
         scope.launch(Dispatchers.IO) {
