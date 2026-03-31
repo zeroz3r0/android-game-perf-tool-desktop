@@ -9,10 +9,26 @@ import kotlinx.coroutines.flow.StateFlow
 import java.awt.Desktop
 import java.io.File
 
-enum class AppScreen { HOME, CAPTURING, RESULTS }
+enum class AppScreen { HOME, CAPTURING, RESULTS, COMPARISON }
 
 /** A metric sample with the exact second it was captured (for video correlation). */
 data class TimedSample(val second: Int, val value: Double)
+
+/** Types of session markers that can be placed during capture. */
+enum class MarkerType(val label: String, val colorHex: String) {
+    INTERSTITIAL("Intersticial", "#FF6600"),
+    VIDEO_REWARD("Video Reward", "#7B2CBF"),
+    LOADING("Carga", "#FFAA00"),
+    SCENE_CHANGE("Cambio escena", "#00D4FF"),
+    CUSTOM("Nota", "#00FF88")
+}
+
+/** A marker placed by the user during a capture session. */
+data class SessionMarker(
+    val timestampSeconds: Int,
+    val type: MarkerType,
+    val note: String = ""
+)
 
 data class LiveMetrics(
     val elapsed: Int = 0,
@@ -76,7 +92,8 @@ data class SessionResult(
     val videoPath: String = "",
     val deviceGrade: Char = ' ',
     val deviceScore: Int = 0,
-    val deviceTier: String = ""
+    val deviceTier: String = "",
+    val markers: List<SessionMarker> = emptyList()
 )
 
 class AppViewModel {
@@ -118,10 +135,25 @@ class AppViewModel {
     private val _result = MutableStateFlow(SessionResult())
     val result: StateFlow<SessionResult> = _result
 
+    private val _markers = MutableStateFlow<List<SessionMarker>>(emptyList())
+    val markers: StateFlow<List<SessionMarker>> = _markers
+
     private val _history = MutableStateFlow<List<SessionHistory.HistoryEntry>>(emptyList())
     val history: StateFlow<List<SessionHistory.HistoryEntry>> = _history
 
+    // ===== Session Tagging =====
+    private val _sessionTag = MutableStateFlow(SessionHistory.SessionTag.OUR_GAME)
+    val sessionTag: StateFlow<SessionHistory.SessionTag> = _sessionTag
+
+    private val _competitorName = MutableStateFlow("")
+    val competitorName: StateFlow<String> = _competitorName
+
+    // ===== Comparison =====
+    private val _selectedForComparison = MutableStateFlow<Set<String>>(emptySet())
+    val selectedForComparison: StateFlow<Set<String>> = _selectedForComparison
+
     @Volatile private var shouldStop = false
+    @Volatile private var captureStartTime: Long = 0L
     private var captureJob: Job? = null
     private var pollingJob: Job? = null
     private var recordProcess: Process? = null
@@ -241,6 +273,7 @@ class AppViewModel {
         _screen.value = AppScreen.CAPTURING
         _isCapturing.value = true
         _liveMetrics.value = LiveMetrics()
+        _markers.value = emptyList()
         shouldStop = false
 
         captureJob = scope.launch {
@@ -261,6 +294,7 @@ class AppViewModel {
 
             // NOW start the clock - video and metrics are synced from this point
             val startTime = System.currentTimeMillis()
+            captureStartTime = startTime
 
             // Chain recordings every ~175s (before 180s limit)
             recordJob = scope.launch {
@@ -407,6 +441,9 @@ class AppViewModel {
             val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(_deviceInfo.value?.gpu ?: "")
             val (deviceGrade, deviceScore) = com.gameperf.desktop.core.HardwareScoring.calculateDeviceGrade(avgFps, p1, tier, problems)
 
+            // Snapshot markers before generating report
+            val sessionMarkers = _markers.value
+
             // Generate HTML report
             val reportPath = ReportGenerator.generate(
                 pkg = pkg, info = _deviceInfo.value, grade = grade, score = score, duration = finalElapsed,
@@ -424,7 +461,8 @@ class AppViewModel {
                 frameDrops = totalDrops, jank = totalJank, stutter = totalStutter,
                 problems = problems, isWifi = isWifiMode,
                 deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
-                fpsTimestamps = fpsTimed.map { it.second to it.value.toInt() }
+                fpsTimestamps = fpsTimed.map { it.second to it.value.toInt() },
+                markers = sessionMarkers
             )
 
             _result.value = SessionResult(
@@ -441,18 +479,32 @@ class AppViewModel {
                 frameDrops = totalDrops, totalJank = totalJank, totalStutter = totalStutter,
                 problems = problems, reportPath = reportPath, isWifi = isWifiMode,
                 videoPath = videoPath,
-                deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label
+                deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
+                markers = sessionMarkers
             )
 
+            // P95 frame time
+            val p95ft = if (ftSorted.isNotEmpty()) ftSorted[(ftSorted.size * 0.95).toInt().coerceIn(0, ftSorted.size - 1)] else 0.0
+
             // Save to history
+            val captureTag = _sessionTag.value
+            val captureCompetitor = _competitorName.value
             SessionHistory.addEntry(
                 gamePackage = pkg, deviceModel = _deviceInfo.value?.model ?: device.model,
                 grade = grade, deviceGrade = deviceGrade,
                 avgFps = avgFps, duration = finalElapsed,
-                reportPath = reportPath, videoPath = videoPath
+                reportPath = reportPath, videoPath = videoPath,
+                tag = captureTag, competitorName = captureCompetitor,
+                p1Fps = p1, p5Fps = p5,
+                avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
+                p95FrameTime = p95ft, p99FrameTime = p99ft,
+                peakMemMb = peakMem, avgCpu = avgCpu,
+                maxTemp = maxTempCpu, score = score,
+                markers = sessionMarkers
             )
             _history.value = SessionHistory.load()
 
+            captureStartTime = 0L
             _isCapturing.value = false
             _screen.value = AppScreen.RESULTS
         }
@@ -461,6 +513,13 @@ class AppViewModel {
     fun stopCapture() {
         shouldStop = true
         _statusMessage.value = "Deteniendo captura..."
+    }
+
+    /** Place a marker at the current capture second. */
+    fun addMarker(type: MarkerType, note: String = "") {
+        if (!_isCapturing.value || captureStartTime == 0L) return
+        val elapsed = ((System.currentTimeMillis() - captureStartTime) / 1000).toInt()
+        _markers.value = _markers.value + SessionMarker(elapsed, type, note)
     }
 
     private fun openFile(path: String) {
@@ -507,10 +566,61 @@ class AppViewModel {
     fun goHome() {
         _screen.value = AppScreen.HOME
         _liveMetrics.value = LiveMetrics()
+        _markers.value = emptyList()
+        _selectedForComparison.value = emptySet()
         recordJob?.cancel()
         AdbBridge.stopScreenRecord(recordProcess)
         recordProcess = null
         _history.value = SessionHistory.load()
         refreshDevices()
+    }
+
+    // ===== Session Tagging =====
+
+    fun setSessionTag(tag: SessionHistory.SessionTag) {
+        _sessionTag.value = tag
+    }
+
+    fun setCompetitorName(name: String) {
+        _competitorName.value = name
+    }
+
+    fun updateHistoryTag(id: String, tag: SessionHistory.SessionTag, competitorName: String = "") {
+        SessionHistory.updateTag(id, tag, competitorName)
+        _history.value = SessionHistory.load()
+    }
+
+    // ===== Comparison =====
+
+    fun toggleComparisonSelection(entryId: String) {
+        val current = _selectedForComparison.value.toMutableSet()
+        if (current.contains(entryId)) current.remove(entryId) else current.add(entryId)
+        _selectedForComparison.value = current
+    }
+
+    fun clearComparisonSelection() {
+        _selectedForComparison.value = emptySet()
+    }
+
+    fun canCompare(): Boolean {
+        val selected = _selectedForComparison.value
+        if (selected.size < 2) return false
+        val entries = _history.value.filter { it.id in selected }
+        val hasOurs = entries.any { it.tag == SessionHistory.SessionTag.OUR_GAME }
+        val hasCompetition = entries.any { it.tag == SessionHistory.SessionTag.COMPETITION }
+        return hasOurs && hasCompetition
+    }
+
+    fun getSelectedEntries(): List<SessionHistory.HistoryEntry> {
+        val selected = _selectedForComparison.value
+        return _history.value.filter { it.id in selected }
+    }
+
+    fun goToComparison() {
+        _screen.value = AppScreen.COMPARISON
+    }
+
+    fun generateComparisonReport(entries: List<SessionHistory.HistoryEntry>): String {
+        return ReportGenerator.generateComparison(entries)
     }
 }

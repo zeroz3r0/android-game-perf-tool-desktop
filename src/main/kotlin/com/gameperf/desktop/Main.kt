@@ -12,6 +12,7 @@ import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import java.awt.Dimension
 import com.gameperf.desktop.ui.screens.CaptureScreen
+import com.gameperf.desktop.ui.screens.ComparisonScreen
 import com.gameperf.desktop.ui.screens.HomeScreen
 import com.gameperf.desktop.ui.screens.ResultsScreen
 import com.gameperf.desktop.ui.theme.AppColors
@@ -42,6 +43,7 @@ fun main() = application {
                     AppScreen.HOME -> HomeScreen(vm)
                     AppScreen.CAPTURING -> CaptureScreen(vm)
                     AppScreen.RESULTS -> ResultsScreen(vm)
+                    AppScreen.COMPARISON -> ComparisonScreen(vm)
                 }
             }
         }

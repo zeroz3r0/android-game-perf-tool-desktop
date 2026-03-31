@@ -139,6 +139,9 @@ object AdbBridge {
     // ===== Metrics =====
 
     private var cachedLayer: Pair<String, String>? = null
+    private var prevCpuBusy: Long = 0
+    private var prevCpuTotal: Long = 0
+    private var prevCpuInitialized: Boolean = false
 
     fun findLayer(deviceId: String, pkg: String): String? {
         cachedLayer?.let { (p, l) -> if (p == pkg) return l }
@@ -203,7 +206,17 @@ object AdbBridge {
         if (p.size < 8) return -1
         val busy = (1..3).sumOf { p[it].toLongOrNull() ?: 0L } + (6..7).sumOf { p[it].toLongOrNull() ?: 0L }
         val total = (1..7).sumOf { p[it].toLongOrNull() ?: 0L }
-        return if (total > 0) (busy * 100 / total).toInt().coerceIn(0, 100) else -1
+        if (!prevCpuInitialized) {
+            prevCpuBusy = busy
+            prevCpuTotal = total
+            prevCpuInitialized = true
+            return -1
+        }
+        val deltaBusy = busy - prevCpuBusy
+        val deltaTotal = total - prevCpuTotal
+        prevCpuBusy = busy
+        prevCpuTotal = total
+        return if (deltaTotal > 0) (deltaBusy * 100 / deltaTotal).toInt().coerceIn(0, 100) else -1
     }
 
     data class ThermalSnapshot(val cpu: Double, val gpu: Double, val battery: Double, val skin: Double)

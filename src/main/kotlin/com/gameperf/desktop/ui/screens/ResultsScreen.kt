@@ -17,10 +17,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.components.MetricCard
 import com.gameperf.desktop.ui.components.MiniGraph
+import com.gameperf.desktop.ui.components.MiniGraphWithMarkers
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.components.VideoPlayer
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.viewmodel.AppViewModel
+import com.gameperf.desktop.viewmodel.MarkerType
+import com.gameperf.desktop.viewmodel.SessionMarker
 
 @Composable
 fun ResultsScreen(vm: AppViewModel) {
@@ -152,21 +155,94 @@ fun ResultsScreen(vm: AppViewModel) {
 
         Spacer(Modifier.height(16.dp))
 
-        // Graphs
-        Row(
-            modifier = Modifier.fillMaxWidth().height(140.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            MiniGraph("FPS", metrics.fpsHistory, Cyan, maxValue = 65f, modifier = Modifier.weight(1f).fillMaxHeight())
-            MiniGraph("Memoria (MB)", metrics.memHistory, Purple, modifier = Modifier.weight(1f).fillMaxHeight())
+        // Graphs — FPS graph with marker overlays
+        if (result.markers.isNotEmpty()) {
+            MiniGraphWithMarkers(
+                label = "FPS con marcadores",
+                values = metrics.fpsHistory,
+                color = Cyan,
+                maxValue = 65f,
+                markers = result.markers,
+                totalSeconds = result.duration,
+                modifier = Modifier.fillMaxWidth().height(180.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(140.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                MiniGraph("FPS", metrics.fpsHistory, Cyan, maxValue = 65f, modifier = Modifier.weight(1f).fillMaxHeight())
+                MiniGraph("Memoria (MB)", metrics.memHistory, Purple, modifier = Modifier.weight(1f).fillMaxHeight())
+            }
+            Spacer(Modifier.height(8.dp))
         }
-        Spacer(Modifier.height(8.dp))
         Row(
             modifier = Modifier.fillMaxWidth().height(140.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (result.markers.isNotEmpty()) {
+                MiniGraph("Memoria (MB)", metrics.memHistory, Purple, modifier = Modifier.weight(1f).fillMaxHeight())
+            }
             MiniGraph("CPU %", metrics.cpuHistory, Yellow, maxValue = 100f, modifier = Modifier.weight(1f).fillMaxHeight())
             MiniGraph("Temperatura (C)", metrics.tempCpuHistory, Red, modifier = Modifier.weight(1f).fillMaxHeight())
+        }
+
+        // Session markers list
+        if (result.markers.isNotEmpty()) {
+            Spacer(Modifier.height(20.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = DarkCard),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.BookmarkAdded, null, tint = Cyan, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Marcadores de sesion", color = Cyan, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        Text("${result.markers.size} marcadores", color = TextDim, fontSize = 11.sp)
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    result.markers.sortedBy { it.timestampSeconds }.forEach { marker ->
+                        val markerColor = markerColor(marker.type)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .background(markerColor.copy(alpha = 0.08f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Timestamp
+                            Text(
+                                "${marker.timestampSeconds}s",
+                                color = markerColor,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(48.dp)
+                            )
+                            // Type badge
+                            Text(
+                                marker.type.label,
+                                color = markerColor,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier
+                                    .background(markerColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                            // Note
+                            if (marker.note.isNotEmpty()) {
+                                Spacer(Modifier.width(12.dp))
+                                Text(marker.note, color = TextSecondary, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Problems
@@ -320,4 +396,12 @@ private fun formatDuration(seconds: Int): String {
     val m = seconds / 60
     val s = seconds % 60
     return "${m}m ${s}s"
+}
+
+private fun markerColor(type: MarkerType): androidx.compose.ui.graphics.Color = when (type) {
+    MarkerType.INTERSTITIAL -> Orange
+    MarkerType.VIDEO_REWARD -> Purple
+    MarkerType.LOADING -> Yellow
+    MarkerType.SCENE_CHANGE -> Cyan
+    MarkerType.CUSTOM -> Green
 }

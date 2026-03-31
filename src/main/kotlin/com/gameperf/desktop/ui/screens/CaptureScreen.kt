@@ -11,6 +11,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -18,12 +20,17 @@ import com.gameperf.desktop.ui.components.MetricCard
 import com.gameperf.desktop.ui.components.MiniGraph
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.viewmodel.AppViewModel
+import com.gameperf.desktop.viewmodel.MarkerType
 
 @Composable
 fun CaptureScreen(vm: AppViewModel) {
     val metrics by vm.liveMetrics.collectAsState()
     val gamePackage by vm.gamePackage.collectAsState()
     val deviceInfo by vm.deviceInfo.collectAsState()
+    val markers by vm.markers.collectAsState()
+
+    var showNoteField by remember { mutableStateOf(false) }
+    var noteText by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp)
@@ -101,7 +108,97 @@ fun CaptureScreen(vm: AppViewModel) {
                 if (metrics.battery < 20) Red else Green, modifier = Modifier.weight(1f))
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
+
+        // === Marker buttons ===
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .background(DarkCard, RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(Icons.Default.BookmarkAdd, null, tint = Cyan, modifier = Modifier.size(18.dp))
+            Text("Marcadores", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
+            // Quick-add buttons for each marker type (except CUSTOM which has its own flow)
+            MarkerButton("Intersticial", Color(0xFFFF6600)) { vm.addMarker(MarkerType.INTERSTITIAL) }
+            MarkerButton("Video Reward", Color(0xFF7B2CBF)) { vm.addMarker(MarkerType.VIDEO_REWARD) }
+            MarkerButton("Carga", Color(0xFFFFAA00)) { vm.addMarker(MarkerType.LOADING) }
+            MarkerButton("Cambio escena", Color(0xFF00D4FF)) { vm.addMarker(MarkerType.SCENE_CHANGE) }
+
+            // Custom note button
+            OutlinedButton(
+                onClick = { showNoteField = !showNoteField },
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Green),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp)
+            ) {
+                Icon(Icons.Default.NoteAdd, null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Nota +", fontSize = 11.sp)
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            // Marker count badge
+            if (markers.isNotEmpty()) {
+                Badge(containerColor = Cyan, contentColor = Color.Black) {
+                    Text("${markers.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // Custom note text field (shown when "Nota +" is clicked)
+        if (showNoteField) {
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .background(DarkCard.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    placeholder = { Text("Ej: FPS drop al cargar nivel 3...", color = TextDim, fontSize = 12.sp) },
+                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp),
+                    singleLine = true,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Green,
+                        cursorColor = Green
+                    )
+                )
+                Button(
+                    onClick = {
+                        if (noteText.isNotBlank()) {
+                            vm.addMarker(MarkerType.CUSTOM, noteText.trim())
+                            noteText = ""
+                            showNoteField = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Green),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Text("Agregar", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                }
+                IconButton(
+                    onClick = { showNoteField = false; noteText = "" },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(Icons.Default.Close, null, tint = TextDim, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
 
         // Graphs
         Row(
@@ -142,7 +239,20 @@ fun CaptureScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun MiniStat(label: String, value: String, color: androidx.compose.ui.graphics.Color) {
+private fun MarkerButton(label: String, color: Color, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(containerColor = color.copy(alpha = 0.2f), contentColor = color),
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+        modifier = Modifier.height(32.dp)
+    ) {
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun MiniStat(label: String, value: String, color: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = TextDim, fontSize = 10.sp)
         Text(value, color = color, fontSize = 16.sp, fontWeight = FontWeight.Bold)

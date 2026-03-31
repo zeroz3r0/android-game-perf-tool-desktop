@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.viewmodel.AppViewModel
@@ -239,6 +240,65 @@ fun HomeScreen(vm: AppViewModel) {
                         }
                     }
 
+                    Spacer(Modifier.height(16.dp))
+
+                    // Session tag selector
+                    val currentTag by vm.sessionTag.collectAsState()
+                    val currentCompetitor by vm.competitorName.collectAsState()
+
+                    Text("Tipo de sesion", color = TextSecondary, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val isOurs = currentTag == SessionHistory.SessionTag.OUR_GAME
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isOurs) Cyan.copy(alpha = 0.2f) else Color.Transparent)
+                                .border(1.dp, if (isOurs) Cyan else TextDim.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                .clickable { vm.setSessionTag(SessionHistory.SessionTag.OUR_GAME) }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Nuestro juego", color = if (isOurs) Cyan else TextSecondary, fontSize = 12.sp, fontWeight = if (isOurs) FontWeight.Bold else FontWeight.Normal)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (!isOurs) Orange.copy(alpha = 0.2f) else Color.Transparent)
+                                .border(1.dp, if (!isOurs) Orange else TextDim.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                .clickable { vm.setSessionTag(SessionHistory.SessionTag.COMPETITION) }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Competencia", color = if (!isOurs) Orange else TextSecondary, fontSize = 12.sp, fontWeight = if (!isOurs) FontWeight.Bold else FontWeight.Normal)
+                        }
+                    }
+
+                    // Competitor name field (only when tag is COMPETITION)
+                    if (currentTag == SessionHistory.SessionTag.COMPETITION) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = currentCompetitor,
+                            onValueChange = { vm.setCompetitorName(it) },
+                            label = { Text("Nombre del juego competidor", fontSize = 11.sp) },
+                            modifier = Modifier.fillMaxWidth().height(56.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Orange,
+                                unfocusedBorderColor = TextDim.copy(alpha = 0.3f),
+                                focusedLabelColor = Orange,
+                                unfocusedLabelColor = TextDim,
+                                cursorColor = Orange
+                            )
+                        )
+                    }
+
                     Spacer(Modifier.weight(1f))
 
                     // Start button
@@ -247,14 +307,17 @@ fun HomeScreen(vm: AppViewModel) {
                         enabled = gamePackage != null && selectedDevice != null,
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Cyan,
+                            containerColor = if (currentTag == SessionHistory.SessionTag.COMPETITION) Orange else Cyan,
                             disabledContainerColor = TextDim.copy(alpha = 0.3f)
                         ),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Iniciar prueba", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (currentTag == SessionHistory.SessionTag.COMPETITION) "Capturar competencia" else "Iniciar prueba",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -262,6 +325,8 @@ fun HomeScreen(vm: AppViewModel) {
 
         // Recent tests history
         val historyEntries by vm.history.collectAsState()
+        val comparisonSelection by vm.selectedForComparison.collectAsState()
+
         if (historyEntries.isNotEmpty()) {
             Spacer(Modifier.height(24.dp))
             Card(
@@ -274,22 +339,51 @@ fun HomeScreen(vm: AppViewModel) {
                         Icon(Icons.Default.History, null, tint = Cyan, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Pruebas recientes", color = Cyan, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.weight(1f))
+                        if (comparisonSelection.isNotEmpty()) {
+                            Text(
+                                "${comparisonSelection.size} seleccionadas",
+                                color = Purple, fontSize = 11.sp, fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            IconButton(
+                                onClick = { vm.clearComparisonSelection() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Default.Close, "Limpiar", tint = TextDim, modifier = Modifier.size(14.dp))
+                            }
+                        }
                     }
                     Spacer(Modifier.height(12.dp))
 
                     historyEntries.forEach { entry ->
                         var isEditing by remember { mutableStateOf(false) }
                         var editName by remember { mutableStateOf(entry.name) }
+                        val isSelectedForComp = entry.id in comparisonSelection
 
                         Card(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelectedForComp) Purple.copy(alpha = 0.12f) else DarkSurface
+                            ),
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Row(
                                 Modifier.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                // Comparison checkbox
+                                Checkbox(
+                                    checked = isSelectedForComp,
+                                    onCheckedChange = { vm.toggleComparisonSelection(entry.id) },
+                                    modifier = Modifier.size(20.dp),
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = Purple,
+                                        uncheckedColor = TextDim
+                                    )
+                                )
+                                Spacer(Modifier.width(8.dp))
+
                                 // Grade badge
                                 Text(
                                     "${entry.grade}",
@@ -298,7 +392,21 @@ fun HomeScreen(vm: AppViewModel) {
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.width(32.dp)
                                 )
-                                Spacer(Modifier.width(12.dp))
+                                Spacer(Modifier.width(8.dp))
+
+                                // Tag indicator
+                                val tagColor = if (entry.tag == SessionHistory.SessionTag.COMPETITION) Orange else Cyan
+                                val tagLabel = if (entry.tag == SessionHistory.SessionTag.COMPETITION) "COMP" else "NUESTRO"
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(tagColor.copy(alpha = 0.15f))
+                                        .border(1.dp, tagColor.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(tagLabel, color = tagColor, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(8.dp))
 
                                 // Name + info
                                 Column(Modifier.weight(1f)) {
@@ -322,7 +430,8 @@ fun HomeScreen(vm: AppViewModel) {
                                         Text(entry.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                     }
                                     Text(
-                                        "${entry.date}  |  ${entry.avgFps} FPS  |  ${entry.duration / 60}m ${entry.duration % 60}s",
+                                        "${entry.date}  |  ${entry.avgFps} FPS  |  ${entry.duration / 60}m ${entry.duration % 60}s" +
+                                            if (entry.competitorName.isNotEmpty()) "  |  ${entry.competitorName}" else "",
                                         color = TextDim, fontSize = 10.sp
                                     )
                                 }
@@ -367,6 +476,33 @@ fun HomeScreen(vm: AppViewModel) {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Comparison button
+                    if (comparisonSelection.size >= 2) {
+                        Spacer(Modifier.height(16.dp))
+                        val canCompare = vm.canCompare()
+                        Button(
+                            onClick = { vm.goToComparison() },
+                            enabled = canCompare,
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Purple,
+                                disabledContainerColor = TextDim.copy(alpha = 0.3f)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.CompareArrows, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Comparar sesiones", fontWeight = FontWeight.Bold)
+                        }
+                        if (!canCompare) {
+                            Text(
+                                "Selecciona al menos 1 sesion 'Nuestro juego' y 1 'Competencia'",
+                                color = Yellow, fontSize = 10.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
                         }
                     }
                 }
