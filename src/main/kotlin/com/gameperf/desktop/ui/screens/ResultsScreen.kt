@@ -67,7 +67,7 @@ fun ResultsScreen(vm: AppViewModel) {
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Column {
-                    // Video area — takes proportional space
+                    // Video area — portrait aspect ratio (9:16) with dark background
                     EmbeddedVideoPlayer(
                         videoPath = result.videoPath,
                         currentTimeMs = videoPosition,
@@ -77,7 +77,8 @@ fun ResultsScreen(vm: AppViewModel) {
                         onDurationReady = { vm.setVideoDuration(it) },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(400.dp)
+                            .aspectRatio(16f / 9f)
+                            .background(Color(0xFF0D1117), RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                             .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                     )
 

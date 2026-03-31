@@ -44,6 +44,12 @@ compose.desktop {
     application {
         mainClass = "com.gameperf.desktop.MainKt"
 
+        jvmArgs += listOf(
+            "--add-modules=javafx.controls,javafx.swing,javafx.media",
+            "--add-exports=javafx.graphics/com.sun.javafx.tk=ALL-UNNAMED",
+            "--add-opens=javafx.graphics/com.sun.javafx.tk=ALL-UNNAMED"
+        )
+
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi)
 
