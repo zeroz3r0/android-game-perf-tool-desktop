@@ -342,13 +342,16 @@ private fun isFfmpegAvailable(): Boolean = try {
 } catch (_: Exception) { false }
 
 private fun getVideoFps(path: String): Double = try {
+    // Use avg_frame_rate, NOT r_frame_rate — r_frame_rate returns 90000/1 for Android screenrecord
     val p = ProcessBuilder(findFfprobe(), "-v", "error", "-select_streams", "v",
-        "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", path
+        "-show_entries", "stream=avg_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1", path
     ).redirectErrorStream(true).start()
     val out = p.inputStream.bufferedReader().readText().trim()
     p.waitFor(5, TimeUnit.SECONDS)
     val parts = out.split("/")
-    if (parts.size == 2) (parts[0].toDouble() / parts[1].toDouble()) else (out.toDoubleOrNull() ?: 30.0)
+    val fps = if (parts.size == 2) (parts[0].toDouble() / parts[1].toDouble()) else (out.toDoubleOrNull() ?: 30.0)
+    // Sanity check: if fps is absurd (>120 or <1), default to 30
+    if (fps in 1.0..120.0) fps else 30.0
 } catch (_: Exception) { 30.0 }
 
 private fun getVideoDuration(path: String): Long = try {
