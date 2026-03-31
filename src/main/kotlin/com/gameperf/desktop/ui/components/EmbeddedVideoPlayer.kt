@@ -1,58 +1,56 @@
 package com.gameperf.desktop.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.theme.*
-import javafx.application.Platform
-import javafx.embed.swing.JFXPanel
-import javafx.scene.Scene
-import javafx.scene.layout.StackPane
-import javafx.scene.media.Media
-import javafx.scene.media.MediaPlayer
-import javafx.scene.media.MediaView
-import javafx.util.Duration
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
-import javax.swing.JPanel
-import java.awt.BorderLayout
+import java.util.concurrent.TimeUnit
+import javax.imageio.ImageIO
 
 /**
- * Embedded video player that renders a JavaFX MediaView inside Compose Desktop
- * via the SwingPanel -> JFXPanel bridge.
+ * Embedded video player that uses ffmpeg to extract individual frames
+ * and renders them as Compose ImageBitmap objects.
  *
- * Fixes applied:
- * - StackPane for centering (replaces Group)
- * - AtomicBoolean for thread-safe seek flag
- * - Debounced seek from timeline via snapshotFlow
- * - Player ready/error states with UI feedback
- * - Proper JavaFX scene background color
- * - Time update debouncing to prevent feedback loops
+ * Approach:
+ * - For scrubbing/seeking: extracts single frames on-demand via ffmpeg subprocess
+ * - For playback: coroutine timer advances the frame every ~33ms (30fps)
+ * - LRU cache of ~60 frames keyed by second to avoid re-extraction
+ *
+ * Requires ffmpeg and ffprobe to be installed and available on PATH
+ * (or at /usr/local/bin/).
  *
  * @param videoPath absolute path to the video file
- * @param currentTimeMs controlled externally by the timeline -- when changed, video seeks
- * @param isPlaying whether the video should be playing
+ * @param currentTimeMs controlled externally by the timeline -- when changed, extracts frame at that position
+ * @param isPlaying whether the video should be playing (auto-advance frames)
  * @param playbackSpeed playback rate (0.5, 1.0, 1.5, 2.0)
- * @param onTimeUpdate callback when video reports its current time during playback
- * @param onDurationReady callback when video duration is known
+ * @param onTimeUpdate callback when playback advances the current time
+ * @param onDurationReady callback when video duration is known (from ffprobe)
  * @param modifier Compose modifier
  */
 @OptIn(kotlinx.coroutines.FlowPreview::class)
@@ -70,28 +68,14 @@ fun EmbeddedVideoPlayer(
     val fileExists = file.exists()
 
     // Player state
-    var playerReady by remember { mutableStateOf(false) }
+    var currentFrame by remember { mutableStateOf<ImageBitmap?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    val mediaPlayerRef = remember { mutableStateOf<MediaPlayer?>(null) }
-    val isSeeking = remember { AtomicBoolean(false) }
-    val lastReportedTime = remember { AtomicLong(0L) }
+    var videoDurationMs by remember { mutableStateOf(0L) }
 
-    // Cleanup on videoPath change or disposal
-    DisposableEffect(videoPath) {
-        onDispose {
-            mediaPlayerRef.value?.let { player ->
-                Platform.runLater {
-                    player.stop()
-                    player.dispose()
-                }
-            }
-            mediaPlayerRef.value = null
-            playerReady = false
-            errorMessage = null
-            isSeeking.set(false)
-            lastReportedTime.set(0L)
-        }
-    }
+    // Frame cache: key = second (int), value = extracted ImageBitmap
+    // Max 60 entries — evicts oldest when full
+    val frameCache = remember { mutableMapOf<Int, ImageBitmap>() }
 
     // ---- UI: Error state ----
     if (errorMessage != null) {
@@ -157,35 +141,104 @@ fun EmbeddedVideoPlayer(
         return
     }
 
-    // ---- UI: Main player with loading overlay ----
-    Box(modifier = modifier) {
-        // SwingPanel with JFXPanel — always rendered so JavaFX can initialize
-        SwingPanel(
-            modifier = Modifier.fillMaxSize(),
-            factory = {
-                createJfxPanel(
-                    videoPath = videoPath,
-                    mediaPlayerRef = mediaPlayerRef,
-                    isSeeking = isSeeking,
-                    lastReportedTime = lastReportedTime,
-                    playbackSpeed = playbackSpeed,
-                    onPlayerReady = { playerReady = true },
-                    onDurationReady = onDurationReady,
-                    onTimeUpdate = onTimeUpdate,
-                    onError = { msg -> errorMessage = msg }
-                )
-            },
-            update = { /* State changes handled by LaunchedEffects below */ }
-        )
+    // ---- Get video duration on first load and extract first frame ----
+    LaunchedEffect(videoPath) {
+        isLoading = true
+        errorMessage = null
+        currentFrame = null
+        frameCache.clear()
 
-        // Loading overlay — shown while player initializes
-        if (!playerReady) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF0D1117)),
-                contentAlignment = Alignment.Center
-            ) {
+        withContext(Dispatchers.IO) {
+            // Check ffmpeg availability
+            if (!isFfmpegAvailable()) {
+                errorMessage = "ffmpeg no encontrado. Instalar con: brew install ffmpeg"
+                isLoading = false
+                return@withContext
+            }
+
+            // Get duration via ffprobe
+            val duration = getVideoDuration(videoPath)
+            if (duration > 0) {
+                videoDurationMs = duration
+                onDurationReady(duration)
+            } else {
+                errorMessage = "No se pudo leer la duracion del video"
+                isLoading = false
+                return@withContext
+            }
+
+            // Extract first frame
+            val frame = extractFrame(videoPath, 0.0)
+            if (frame != null) {
+                currentFrame = frame
+                frameCache[0] = frame
+                isLoading = false
+            } else {
+                errorMessage = "No se pudo extraer el primer frame del video"
+                isLoading = false
+            }
+        }
+    }
+
+    // ---- Debounced seek: extract frame at current time ----
+    LaunchedEffect(Unit) {
+        snapshotFlow { currentTimeMs }
+            .distinctUntilChanged()
+            .debounce(50L) // 50ms debounce for smooth scrubbing
+            .collect { timeMs ->
+                withContext(Dispatchers.IO) {
+                    val second = (timeMs / 1000).toInt()
+                    val cached = frameCache[second]
+                    if (cached != null) {
+                        currentFrame = cached
+                    } else {
+                        val frame = extractFrame(videoPath, timeMs / 1000.0)
+                        if (frame != null) {
+                            currentFrame = frame
+                            frameCache[second] = frame
+                            // Evict oldest entries if cache exceeds 60
+                            if (frameCache.size > 60) {
+                                val keysToRemove = frameCache.keys.sorted()
+                                    .take(frameCache.size - 60)
+                                keysToRemove.forEach { frameCache.remove(it) }
+                            }
+                        }
+                    }
+                }
+            }
+    }
+
+    // ---- Playback: advance time based on timer ----
+    LaunchedEffect(isPlaying, playbackSpeed) {
+        if (!isPlaying) return@LaunchedEffect
+        val frameIntervalMs = (1000.0 / 30.0 / playbackSpeed).toLong()
+            .coerceAtLeast(16L) // minimum 16ms (~60fps cap)
+        while (isActive) {
+            delay(frameIntervalMs)
+            val newTime = currentTimeMs + frameIntervalMs
+            if (newTime >= videoDurationMs) {
+                onTimeUpdate(0L) // Loop to start
+                break
+            }
+            onTimeUpdate(newTime)
+        }
+    }
+
+    // ---- UI: Main display ----
+    Box(
+        modifier = modifier.background(Color(0xFF0D1117)),
+        contentAlignment = Alignment.Center
+    ) {
+        when {
+            currentFrame != null -> {
+                Image(
+                    bitmap = currentFrame!!,
+                    contentDescription = "Video frame",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+            }
+            isLoading -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(
                         color = Cyan,
@@ -201,140 +254,107 @@ fun EmbeddedVideoPlayer(
             }
         }
     }
+}
 
-    // ---- Debounced seek from timeline (snapshotFlow) ----
-    LaunchedEffect(Unit) {
-        snapshotFlow { currentTimeMs }
-            .distinctUntilChanged()
-            .debounce(150L)
-            .collect { timeMs ->
-                val player = mediaPlayerRef.value ?: return@collect
-                if (!isSeeking.get()) {
-                    isSeeking.set(true)
-                    Platform.runLater {
-                        try {
-                            player.seek(Duration.millis(timeMs.toDouble()))
-                        } finally {
-                            isSeeking.set(false)
-                        }
-                    }
-                }
-            }
-    }
+// ═══════════════════════════════════════════════════════════════
+// ffmpeg utilities
+// ═══════════════════════════════════════════════════════════════
 
-    // ---- Play/Pause control ----
-    LaunchedEffect(isPlaying, playerReady) {
-        if (!playerReady) return@LaunchedEffect
-        val player = mediaPlayerRef.value ?: return@LaunchedEffect
-        Platform.runLater {
-            if (isPlaying) player.play() else player.pause()
-        }
-    }
+/** Resolve ffmpeg binary: prefer /usr/local/bin, fallback to PATH */
+private fun findFfmpeg(): String {
+    val localBin = File("/usr/local/bin/ffmpeg")
+    return if (localBin.exists()) localBin.absolutePath else "ffmpeg"
+}
 
-    // ---- Speed control ----
-    LaunchedEffect(playbackSpeed, playerReady) {
-        if (!playerReady) return@LaunchedEffect
-        val player = mediaPlayerRef.value ?: return@LaunchedEffect
-        Platform.runLater {
-            player.rate = playbackSpeed
-        }
+/** Resolve ffprobe binary: prefer /usr/local/bin, fallback to PATH */
+private fun findFfprobe(): String {
+    val localBin = File("/usr/local/bin/ffprobe")
+    return if (localBin.exists()) localBin.absolutePath else "ffprobe"
+}
+
+/** Check that ffmpeg is available */
+private fun isFfmpegAvailable(): Boolean {
+    return try {
+        val process = ProcessBuilder(findFfmpeg(), "-version")
+            .redirectErrorStream(true)
+            .start()
+        process.inputStream.readBytes() // consume output
+        process.waitFor(5, TimeUnit.SECONDS)
+        process.exitValue() == 0
+    } catch (_: Exception) {
+        false
     }
 }
 
 /**
- * Creates and configures the JFXPanel with a MediaPlayer inside a StackPane
- * for proper video centering and background color.
+ * Extract a single video frame at the given timestamp using ffmpeg.
+ * Outputs MJPEG to stdout via image2pipe, reads into an ImageBitmap.
+ *
+ * @param videoPath path to the video file
+ * @param timestampSeconds position in seconds (e.g., 2.5 for 2500ms)
+ * @return ImageBitmap of the frame, or null on failure
  */
-private fun createJfxPanel(
-    videoPath: String,
-    mediaPlayerRef: MutableState<MediaPlayer?>,
-    isSeeking: AtomicBoolean,
-    lastReportedTime: AtomicLong,
-    playbackSpeed: Double,
-    onPlayerReady: () -> Unit,
-    onDurationReady: (Long) -> Unit,
-    onTimeUpdate: (Long) -> Unit,
-    onError: (String) -> Unit
-): JPanel {
-    val wrapper = JPanel(BorderLayout())
-    wrapper.background = java.awt.Color(0x0D, 0x11, 0x17)
+private fun extractFrame(videoPath: String, timestampSeconds: Double): ImageBitmap? {
+    return try {
+        val process = ProcessBuilder(
+            findFfmpeg(),
+            "-ss", String.format("%.3f", timestampSeconds),
+            "-i", videoPath,
+            "-vframes", "1",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-q:v", "5", // quality: 2=best, 31=worst, 5=good balance
+            "-"
+        ).redirectErrorStream(false).start()
 
-    val jfxPanel = JFXPanel()
-    wrapper.add(jfxPanel, BorderLayout.CENTER)
+        val bytes = process.inputStream.readBytes()
+        // Consume stderr to prevent blocking on buffer fill
+        process.errorStream.readBytes()
+        process.waitFor(5, TimeUnit.SECONDS)
 
-    Platform.runLater {
-        try {
-            val file = File(videoPath)
-            val mediaUri = file.toURI().toString()
-            val media = Media(mediaUri)
-
-            // Media-level error handler
-            media.setOnError {
-                val msg = media.error?.message ?: "desconocido"
-                onError("Error de medio: $msg")
-            }
-
-            val player = MediaPlayer(media)
-
-            // Player error handler
-            player.setOnError {
-                val msg = player.error?.message ?: "desconocido"
-                onError("Error de reproduccion: $msg")
-            }
-
-            // Player ready: report duration and signal readiness
-            player.setOnReady {
-                val durationMs = player.totalDuration.toMillis().toLong()
-                onDurationReady(durationMs)
-                onPlayerReady()
-            }
-
-            // End of media: stop and reset to beginning
-            player.setOnEndOfMedia {
-                Platform.runLater {
-                    player.stop()
-                    player.seek(Duration.ZERO)
-                }
-            }
-
-            // Time updates with debounce: only report if delta > 100ms
-            player.currentTimeProperty().addListener { _, _, newTime ->
-                if (newTime != null && !isSeeking.get()) {
-                    val ms = newTime.toMillis().toLong()
-                    val last = lastReportedTime.get()
-                    if (Math.abs(ms - last) > 100) {
-                        lastReportedTime.set(ms)
-                        onTimeUpdate(ms)
-                    }
-                }
-            }
-
-            // Set up MediaView inside StackPane for proper centering
-            val view = MediaView(player)
-            view.isPreserveRatio = true
-
-            val root = StackPane(view)
-            root.style = "-fx-background-color: #0D1117;"
-
-            // Bind view size to StackPane size for responsive scaling
-            view.fitWidthProperty().bind(root.widthProperty())
-            view.fitHeightProperty().bind(root.heightProperty())
-
-            val scene = Scene(root)
-            scene.fill = javafx.scene.paint.Color.web("#0D1117")
-
-            jfxPanel.scene = scene
-
-            // Apply initial playback speed
-            player.rate = playbackSpeed
-
-            // Store reference for Compose-side control
-            mediaPlayerRef.value = player
-        } catch (e: Exception) {
-            System.err.println("EmbeddedVideoPlayer: failed to init JavaFX Media — ${e.message}")
-            onError("Error al inicializar el reproductor: ${e.message ?: "error desconocido"}")
+        if (bytes.isNotEmpty()) {
+            val bufferedImage = ImageIO.read(ByteArrayInputStream(bytes))
+            bufferedImage?.toComposeImageBitmap()
+        } else {
+            null
         }
+    } catch (_: Exception) {
+        null
     }
+}
 
-    return wrapper
+/**
+ * Get video duration in milliseconds using ffprobe.
+ *
+ * @param videoPath path to the video file
+ * @return duration in milliseconds, or 0 on failure
+ */
+private fun getVideoDuration(videoPath: String): Long {
+    return try {
+        val process = ProcessBuilder(
+            findFfprobe(),
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            videoPath
+        ).redirectErrorStream(true).start()
+
+        val output = process.inputStream.bufferedReader().readText().trim()
+        process.waitFor(5, TimeUnit.SECONDS)
+
+        (output.toDoubleOrNull()?.times(1000))?.toLong() ?: 0L
+    } catch (_: Exception) {
+        0L
+    }
+}
+
+/**
+ * Convert a java.awt.image.BufferedImage to a Compose ImageBitmap.
+ * Uses Skia's image decoding via PNG intermediary.
+ */
+private fun java.awt.image.BufferedImage.toComposeImageBitmap(): ImageBitmap {
+    val baos = ByteArrayOutputStream()
+    ImageIO.write(this, "png", baos)
+    return org.jetbrains.skia.Image.makeFromEncoded(baos.toByteArray())
+        .toComposeImageBitmap()
 }
