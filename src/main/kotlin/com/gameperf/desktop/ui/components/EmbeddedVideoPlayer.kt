@@ -173,8 +173,18 @@ fun EmbeddedVideoPlayer(
     }
 
     // ---- Playback: advance 1 second at a time ----
+    // Use a ref to track playback position independently of recomposition.
+    // This avoids the stale closure bug where currentTimeMs is captured once.
+    val playbackPositionRef = remember { mutableStateOf(0L) }
+    // Sync ref with external position when not playing (e.g., user scrubs)
+    LaunchedEffect(currentTimeMs, isPlaying) {
+        if (!isPlaying) playbackPositionRef.value = currentTimeMs
+    }
+
     LaunchedEffect(isPlaying, playbackSpeed) {
         if (!isPlaying) return@LaunchedEffect
+        // Start from wherever the current position is
+        playbackPositionRef.value = currentTimeMs
         // Interval = 1 second / speed. At 2x speed = 500ms, at 0.5x = 2000ms
         val intervalMs = (1000.0 / playbackSpeed).toLong().coerceAtLeast(100L)
         while (isActive) {
@@ -183,14 +193,14 @@ fun EmbeddedVideoPlayer(
             for (i in 0 until steps) {
                 if (!isActive) return@LaunchedEffect
                 delay(50)
-                // Re-check isPlaying — this makes pause responsive within 50ms
                 if (!isPlaying) return@LaunchedEffect
             }
-            val newTime = currentTimeMs + 1000L
+            val newTime = playbackPositionRef.value + 1000L
             if (newTime >= videoDurationMs) {
                 onTimeUpdate(0L)
                 return@LaunchedEffect
             }
+            playbackPositionRef.value = newTime
             onTimeUpdate(newTime)
         }
     }

@@ -397,6 +397,17 @@ class AppViewModel {
                     recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment)
                 }
             }
+
+            // Independent timer that updates elapsed every second (smooth UI counter)
+            // This runs independently of ADB commands which can take 2-3s each
+            val timerJob = scope.launch {
+                while (!shouldStop) {
+                    delay(1000)
+                    val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+                    _liveMetrics.value = _liveMetrics.value.copy(elapsed = currentElapsed)
+                }
+            }
+
             val fpsHistory = mutableListOf<Int>()
             val fpsTimed = mutableListOf<TimedSample>()
             val memHistory = mutableListOf<Long>()
@@ -414,7 +425,11 @@ class AppViewModel {
             while (!shouldStop) {
                 val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 if (durationSeconds > 0 && elapsed >= durationSeconds) break
-                delay(1000)
+                if (shouldStop) break
+
+                // Small delay between sampling cycles — ADB commands already take ~2-3s
+                // so this just prevents tight-looping if commands return instantly
+                delay(500)
                 if (shouldStop) break
 
                 // Run ADB commands with early-exit checks between each
@@ -480,6 +495,7 @@ class AppViewModel {
             }
 
             // Stop recording and pull videos
+            timerJob.cancel()
             recordJob?.cancel()
             AdbBridge.stopScreenRecord(recordProcess)
             recordProcess = null
