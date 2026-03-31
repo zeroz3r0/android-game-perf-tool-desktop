@@ -217,6 +217,8 @@ fun ResultsScreen(vm: AppViewModel) {
                     fpsData = fpsTimedData,
                     markers = result.markers,
                     onSeek = { vm.setVideoPosition(it) },
+                    onScrubStart = { vm.setVideoPlaying(false) },
+                    onScrubEnd = { }, // don't auto-resume — user can press play
                     onRequestAddMarker = { ms ->
                         markerDialogTimestamp = ms
                         editingMarker = null
@@ -378,7 +380,7 @@ fun ResultsScreen(vm: AppViewModel) {
                         Modifier.weight(1f)
                     )
                     CompactMetric(
-                        "Frame", "${"%.1f".format(result.avgFrameTime)}ms",
+                        "Frame", "${String.format(java.util.Locale.US, "%.1f", result.avgFrameTime)}ms",
                         Cyan,
                         Modifier.weight(1f)
                     )
@@ -555,5 +557,5 @@ private fun formatTimeMs(ms: Long): String {
     val totalSeconds = ms / 1000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
-    return "%02d:%02d".format(minutes, seconds)
+    return String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds)
 }

@@ -26,23 +26,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import javax.imageio.ImageIO
 
 /**
- * Embedded video player using ffmpeg batch frame extraction.
+ * Embedded video player using ffmpeg batch frame extraction at native FPS.
  *
- * On first load, extracts ALL frames at 10fps into a temp directory (~7ms/frame).
- * Frames are loaded from disk into memory on demand and cached.
- * Playback advances 1 frame every 100ms (10fps) for smooth video.
+ * On first load:
+ * 1. Probes the video FPS with ffprobe (e.g., 30fps for Android screenrecord)
+ * 2. Batch extracts ALL native frames into a temp directory (~1600 frames in ~5s for a 39s video)
+ * 3. Pre-loads ALL frames into memory as ImageBitmap (~112MB for 1600 frames — acceptable)
  *
- * Key design: scrubbing PAUSES playback automatically to prevent fighting.
+ * Playback uses frame INDEX, not milliseconds:
+ * - Frame interval = 1000ms / videoFps (e.g., 33ms for 30fps)
+ * - Scrubbing converts time → frame index for instant display from memory
+ *
+ * Key design: scrubbing while NOT playing shows the frame immediately.
+ * Playback loop uses a local frame counter to avoid stale compose state capture.
  */
-private const val EXTRACT_FPS = 10
-private const val FRAME_INTERVAL_MS = 1000L / EXTRACT_FPS // 100ms
-
 @Composable
 fun EmbeddedVideoPlayer(
     videoPath: String,
@@ -59,13 +63,15 @@ fun EmbeddedVideoPlayer(
     var currentFrame by remember { mutableStateOf<ImageBitmap?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var videoDurationMs by remember { mutableStateOf(0L) }
+    var videoFps by remember { mutableStateOf(30.0) }
     var totalFrames by remember { mutableStateOf(0) }
-    var extractionProgress by remember { mutableStateOf(-1f) } // -1 = not started, 0-1 = progress, 2 = done
-    var framesDir by remember { mutableStateOf<File?>(null) }
+    var extractionProgress by remember { mutableStateOf(-1f) } // -1 = not started, 0-1 = extracting, 2 = loading frames
+    var loadingProgress by remember { mutableStateOf(0f) }
 
-    // In-memory cache: frame index -> ImageBitmap. Keep last 60 loaded.
-    val frameCache = remember { mutableMapOf<Int, ImageBitmap>() }
+    // All frames pre-loaded in memory
+    var allFrames by remember { mutableStateOf<List<ImageBitmap>>(emptyList()) }
     var displayedFrameIndex by remember { mutableStateOf(-1) }
+    var framesDir by remember { mutableStateOf<File?>(null) }
 
     // ---- Error UI ----
     if (errorMessage != null) {
@@ -93,13 +99,14 @@ fun EmbeddedVideoPlayer(
         return
     }
 
-    // ---- Init: get duration + batch extract ALL frames ----
+    // ---- Init: probe FPS, get duration, batch extract ALL native frames, pre-load into memory ----
     LaunchedEffect(videoPath) {
         errorMessage = null
         currentFrame = null
-        frameCache.clear()
+        allFrames = emptyList()
         displayedFrameIndex = -1
         extractionProgress = 0f
+        loadingProgress = 0f
 
         withContext(Dispatchers.IO) {
             if (!isFfmpegAvailable()) {
@@ -107,6 +114,11 @@ fun EmbeddedVideoPlayer(
                 return@withContext
             }
 
+            // 1. Probe video FPS
+            val detectedFps = getVideoFps(videoPath)
+            videoFps = detectedFps
+
+            // 2. Get duration
             val duration = getVideoDuration(videoPath)
             if (duration <= 0) {
                 errorMessage = "No se pudo leer la duración del video"
@@ -115,24 +127,22 @@ fun EmbeddedVideoPlayer(
             videoDurationMs = duration
             onDurationReady(duration)
 
-            // Create temp directory for frames
+            // 3. Create temp directory for frames
             val tmpDir = File(System.getProperty("java.io.tmpdir"), "gameperf_frames_${System.currentTimeMillis()}")
             tmpDir.mkdirs()
 
-            // Batch extract at EXTRACT_FPS using ffmpeg -vf fps=N
-            val ts = String.format(Locale.US, "%d", EXTRACT_FPS)
+            // 4. Batch extract ALL native frames (no fps filter — extract every frame)
             val process = ProcessBuilder(
                 findFfmpeg(),
                 "-i", videoPath,
-                "-vf", "fps=$ts",
                 "-q:v", "5",
                 "${tmpDir.absolutePath}/frame_%05d.jpg"
             ).redirectErrorStream(true).start()
 
-            // Monitor progress by checking file count in a background thread
-            val expectedFrames = (duration / 1000.0 * EXTRACT_FPS).toInt()
+            // Monitor extraction progress
+            val expectedFrames = (duration / 1000.0 * detectedFps).toInt()
             var monitorRunning = true
-            val monitorThread = Thread {
+            Thread {
                 while (monitorRunning) {
                     Thread.sleep(300)
                     val count = tmpDir.listFiles()?.size ?: 0
@@ -143,24 +153,43 @@ fun EmbeddedVideoPlayer(
             process.waitFor(120, TimeUnit.SECONDS)
             monitorRunning = false
 
-            val frames = tmpDir.listFiles()?.filter { it.extension == "jpg" }?.sortedBy { it.name } ?: emptyList()
-            if (frames.isEmpty()) {
+            val frameFiles = tmpDir.listFiles()?.filter { it.extension == "jpg" }?.sortedBy { it.name } ?: emptyList()
+            if (frameFiles.isEmpty()) {
                 errorMessage = "No se pudieron extraer frames del video"
                 tmpDir.deleteRecursively()
                 return@withContext
             }
 
-            totalFrames = frames.size
+            totalFrames = frameFiles.size
             framesDir = tmpDir
-            extractionProgress = 2f // done
+            extractionProgress = 2f // extraction done, now loading
 
-            // Load first frame
-            val firstFrame = loadFrame(frames[0])
-            if (firstFrame != null) {
-                frameCache[0] = firstFrame
-                currentFrame = firstFrame
-                displayedFrameIndex = 0
+            // 5. Pre-load ALL frames into memory
+            val bitmaps = ArrayList<ImageBitmap>(frameFiles.size)
+            frameFiles.forEachIndexed { i, frameFile ->
+                val img = ImageIO.read(frameFile)
+                if (img != null) {
+                    val baos = ByteArrayOutputStream()
+                    ImageIO.write(img, "png", baos)
+                    val bitmap = org.jetbrains.skia.Image.makeFromEncoded(baos.toByteArray()).toComposeImageBitmap()
+                    bitmaps.add(bitmap)
+                } else {
+                    // Skip unreadable frame but keep index alignment — use previous frame or skip
+                    if (bitmaps.isNotEmpty()) {
+                        bitmaps.add(bitmaps.last())
+                    }
+                }
+                loadingProgress = (i + 1).toFloat() / frameFiles.size
+
+                // Show first frame as soon as it's loaded
+                if (i == 0 && bitmaps.isNotEmpty()) {
+                    currentFrame = bitmaps[0]
+                    displayedFrameIndex = 0
+                }
             }
+
+            allFrames = bitmaps
+            totalFrames = bitmaps.size
         }
     }
 
@@ -171,66 +200,37 @@ fun EmbeddedVideoPlayer(
         }
     }
 
-    // ---- Show frame for current time position ----
-    val targetFrameIndex = (currentTimeMs.toDouble() / FRAME_INTERVAL_MS).toInt().coerceIn(0, (totalFrames - 1).coerceAtLeast(0))
-
-    LaunchedEffect(targetFrameIndex, framesDir) {
-        val dir = framesDir ?: return@LaunchedEffect
-        if (targetFrameIndex == displayedFrameIndex) return@LaunchedEffect
-
-        val cached = frameCache[targetFrameIndex]
-        if (cached != null) {
-            currentFrame = cached
-            displayedFrameIndex = targetFrameIndex
-        } else {
-            withContext(Dispatchers.IO) {
-                val frameFile = File(dir, "frame_%05d.jpg".format(targetFrameIndex + 1)) // ffmpeg starts at 1
-                val bitmap = loadFrame(frameFile)
-                if (bitmap != null) {
-                    frameCache[targetFrameIndex] = bitmap
-                    currentFrame = bitmap
-                    displayedFrameIndex = targetFrameIndex
-
-                    // Evict old cache entries
-                    if (frameCache.size > 60) {
-                        val toRemove = frameCache.keys.sorted().take(frameCache.size - 60)
-                        toRemove.forEach { frameCache.remove(it) }
-                    }
-                }
-            }
+    // ---- Scrub from timeline: show frame immediately when NOT playing ----
+    LaunchedEffect(currentTimeMs) {
+        if (isPlaying) return@LaunchedEffect // playback controls the frame, not external time
+        if (allFrames.isEmpty()) return@LaunchedEffect
+        val idx = timeToFrame(currentTimeMs, videoFps, totalFrames)
+        if (idx != displayedFrameIndex && idx in allFrames.indices) {
+            currentFrame = allFrames[idx]
+            displayedFrameIndex = idx
         }
     }
 
-    // ---- Pre-load nearby frames ----
-    LaunchedEffect(targetFrameIndex, framesDir) {
-        val dir = framesDir ?: return@LaunchedEffect
-        withContext(Dispatchers.IO) {
-            // Pre-load next 20 frames (2 seconds at 10fps)
-            for (i in (targetFrameIndex + 1)..(targetFrameIndex + 20)) {
-                if (i >= totalFrames) break
-                if (frameCache.containsKey(i)) continue
-                val frameFile = File(dir, "frame_%05d.jpg".format(i + 1))
-                val bitmap = loadFrame(frameFile)
-                if (bitmap != null) frameCache[i] = bitmap
-            }
-        }
-    }
-
-    // ---- Playback ----
+    // ---- Playback loop ----
     LaunchedEffect(isPlaying, playbackSpeed) {
         if (!isPlaying) return@LaunchedEffect
-        // Use a local accumulator that starts from the current external position
-        var playPos = currentTimeMs
-        val intervalMs = (FRAME_INTERVAL_MS / playbackSpeed).toLong().coerceAtLeast(30L)
-        while (isActive) {
-            delay(intervalMs)
-            if (!isPlaying) return@LaunchedEffect
-            playPos += FRAME_INTERVAL_MS
-            if (playPos >= videoDurationMs) {
-                onTimeUpdate(0L)
-                return@LaunchedEffect
+        if (allFrames.isEmpty()) return@LaunchedEffect
+
+        var frameIdx = timeToFrame(currentTimeMs, videoFps, totalFrames)
+        val delayMs = (1000.0 / videoFps / playbackSpeed).toLong().coerceAtLeast(8L)
+
+        while (isActive && isPlaying) {
+            delay(delayMs)
+            if (!isPlaying) return@LaunchedEffect // responsive pause check
+            frameIdx++
+            if (frameIdx >= totalFrames) {
+                frameIdx = 0
             }
-            onTimeUpdate(playPos)
+            if (frameIdx in allFrames.indices) {
+                currentFrame = allFrames[frameIdx]
+                displayedFrameIndex = frameIdx
+            }
+            onTimeUpdate(frameToTime(frameIdx, videoFps))
         }
     }
 
@@ -245,6 +245,26 @@ fun EmbeddedVideoPlayer(
                     contentScale = ContentScale.Fit
                 )
             }
+            extractionProgress == 2f -> {
+                // Extraction done, loading frames into memory
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Cyan, modifier = Modifier.size(36.dp))
+                    Spacer(Modifier.height(12.dp))
+                    Text("Cargando frames en memoria...", color = TextDim, fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { loadingProgress },
+                        color = Green,
+                        trackColor = DarkCard,
+                        modifier = Modifier.width(200.dp).height(4.dp)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        String.format(Locale.US, "%d%%", (loadingProgress * 100).toInt()),
+                        color = TextDim, fontSize = 11.sp
+                    )
+                }
+            }
             extractionProgress in 0f..1f -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = Cyan, modifier = Modifier.size(36.dp))
@@ -258,7 +278,10 @@ fun EmbeddedVideoPlayer(
                         modifier = Modifier.width(200.dp).height(4.dp)
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text("${(extractionProgress * 100).toInt()}%", color = TextDim, fontSize = 11.sp)
+                    Text(
+                        String.format(Locale.US, "%d%%", (extractionProgress * 100).toInt()),
+                        color = TextDim, fontSize = 11.sp
+                    )
                 }
             }
             else -> {
@@ -271,6 +294,16 @@ fun EmbeddedVideoPlayer(
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Frame <-> Time conversion
+// ═══════════════════════════════════════════════════════════════
+
+private fun timeToFrame(timeMs: Long, fps: Double, total: Int): Int =
+    (timeMs * fps / 1000.0).toInt().coerceIn(0, (total - 1).coerceAtLeast(0))
+
+private fun frameToTime(frameIndex: Int, fps: Double): Long =
+    (frameIndex * 1000.0 / fps).toLong()
 
 // ═══════════════════════════════════════════════════════════════
 // ffmpeg utilities
@@ -295,17 +328,40 @@ private fun isFfmpegAvailable(): Boolean {
     } catch (_: Exception) { false }
 }
 
-/** Load a JPEG frame file from disk into an ImageBitmap. Fast: ~1-2ms per frame. */
+/** Load a JPEG frame file from disk into an ImageBitmap. */
 private fun loadFrame(file: File): ImageBitmap? {
     if (!file.exists()) return null
     return try {
         val img = ImageIO.read(file)
         img?.let {
-            val baos = java.io.ByteArrayOutputStream()
+            val baos = ByteArrayOutputStream()
             ImageIO.write(it, "png", baos)
             org.jetbrains.skia.Image.makeFromEncoded(baos.toByteArray()).toComposeImageBitmap()
         }
     } catch (_: Exception) { null }
+}
+
+/** Get video FPS via ffprobe. Returns fps as Double (e.g. 30.0, 29.97). Defaults to 30.0. */
+private fun getVideoFps(videoPath: String): Double {
+    return try {
+        // ffprobe returns something like "30/1" or "30000/1001"
+        val p = ProcessBuilder(
+            findFfprobe(), "-v", "error", "-select_streams", "v",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1", videoPath
+        ).redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText().trim()
+        p.waitFor(5, TimeUnit.SECONDS)
+        // Parse "30/1" format
+        val parts = out.split("/")
+        if (parts.size == 2) {
+            val num = parts[0].toDoubleOrNull() ?: 30.0
+            val den = parts[1].toDoubleOrNull() ?: 1.0
+            if (den > 0) num / den else 30.0
+        } else {
+            out.toDoubleOrNull() ?: 30.0
+        }
+    } catch (_: Exception) { 30.0 }
 }
 
 /** Get video duration in ms via ffprobe. */
