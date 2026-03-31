@@ -1,6 +1,8 @@
 package com.gameperf.desktop.report
 
 import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.core.AppVersion
+import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
 import java.io.File
@@ -14,7 +16,7 @@ object ReportGenerator {
         pkg: String, info: AdbBridge.DeviceInfo?, grade: Char, score: Int, duration: Int,
         fpsHistory: List<Int>, memHistory: List<Long>, nativeHistory: List<Long>, javaHistory: List<Long>,
         cpuHistory: List<Int>, tempCpuHistory: List<Double>, tempGpuHistory: List<Double>, tempSkinHistory: List<Double>,
-        frameTimeHistory: List<Double>, allFrameTimes: List<Double>,
+        allFrameTimes: List<Double>,
         avgFps: Int, minFps: Int, maxFps: Int, p1: Int, p5: Int, p50: Int, p90: Int, p99: Int,
         avgFrameTime: Double, p99FrameTime: Double,
         peakMem: Long, avgCpu: Int, maxCpu: Int, maxTempCpu: Double, maxTempGpu: Double,
@@ -442,7 +444,7 @@ $markersHtml
 
 <footer class="report-footer">
     <div class="footer-logo">Game Performance Tool</div>
-    <p>v1.0.0 — Informe generado el ${SimpleDateFormat("dd/MM/yyyy 'a las' HH:mm:ss").format(Date())}</p>
+    <p>v${AppVersion.NAME} — Informe generado el ${SimpleDateFormat("dd/MM/yyyy 'a las' HH:mm:ss").format(Date())}</p>
     <p class="footer-session">Session: $sessionId</p>
 </footer>
 
@@ -488,6 +490,273 @@ window.addEventListener('scroll',function(){var cur='';secs.forEach(function(s){
 
         file.writeText(html)
         return file.absolutePath
+    }
+
+    /**
+     * Generates an HTML comparison report for multiple sessions.
+     * Produces a side-by-side table with color-coded metrics (green=better, red=worse),
+     * a Chart.js radar chart, and a per-metric winner summary.
+     * Returns the file path to the generated report.
+     */
+    fun generateComparison(entries: List<SessionHistory.HistoryEntry>): String {
+        val dir = File(System.getProperty("user.home"), "GamePerf Reports")
+        dir.mkdirs()
+        val date = SimpleDateFormat("yyyy-MM-dd_HHmm").format(Date())
+        val file = File(dir, "comparativa_$date.html")
+
+        val dateDisplay = SimpleDateFormat("dd/MM/yyyy HH:mm").format(Date())
+        val oursEntries = entries.filter { it.tag == SessionHistory.SessionTag.OUR_GAME }
+        val compEntries = entries.filter { it.tag == SessionHistory.SessionTag.COMPETITION }
+
+        // Metric definitions: name, extractor, higherBetter, unit, formatter
+        data class MetricDef(
+            val name: String,
+            val extract: (SessionHistory.HistoryEntry) -> Double,
+            val higherBetter: Boolean,
+            val unit: String,
+            val format: (Double) -> String = { v -> if (unit == "ms" || unit == "°C") "%.1f".format(v) else "${v.toInt()}" }
+        )
+
+        val metrics = listOf(
+            MetricDef("FPS Promedio", { it.avgFps.toDouble() }, true, "", { "${it.toInt()}" }),
+            MetricDef("P1 FPS", { it.p1Fps.toDouble() }, true, "", { "${it.toInt()}" }),
+            MetricDef("P5 FPS", { it.p5Fps.toDouble() }, true, "", { "${it.toInt()}" }),
+            MetricDef("Frame Time Avg", { it.avgFrameTime }, false, "ms", { "%.1f".format(it) }),
+            MetricDef("P95 Frame Time", { it.p95FrameTime }, false, "ms", { "%.1f".format(it) }),
+            MetricDef("P99 Frame Time", { it.p99FrameTime }, false, "ms", { "%.1f".format(it) }),
+            MetricDef("Memoria Pico", { it.peakMemMb.toDouble() }, false, "MB", { "${it.toLong()}" }),
+            MetricDef("CPU Promedio", { it.avgCpu.toDouble() }, false, "%", { "${it.toInt()}" }),
+            MetricDef("Temp Max", { it.maxTemp }, false, "°C", { "%.0f".format(it) }),
+            MetricDef("Puntuacion", { it.score.toDouble() }, true, "/100", { "${it.toInt()}" })
+        )
+
+        // Build comparison table rows
+        val tableRows = buildString {
+            // Info rows (no comparison coloring)
+            append(comparisonInfoRow("Juego", entries) { it.gamePackage.substringAfterLast('.') })
+            append(comparisonInfoRow("Dispositivo", entries) { it.deviceModel })
+            append(comparisonInfoRow("Nota", entries) { "${it.grade}" })
+            append(comparisonInfoRow("Duracion", entries) { "${it.duration / 60}m ${it.duration % 60}s" })
+
+            // Metric rows with coloring
+            for (m in metrics) {
+                val allVals = entries.map { m.extract(it) }
+                val best = if (m.higherBetter) allVals.maxOrNull() else allVals.minOrNull()
+                val worst = if (m.higherBetter) allVals.minOrNull() else allVals.maxOrNull()
+                val allSame = allVals.distinct().size == 1
+
+                append("<tr><td class=\"metric-label\">${esc(m.name)}</td>")
+                for (e in entries) {
+                    val v = m.extract(e)
+                    val cls = if (allSame) "" else if (v == best) "best" else if (v == worst) "worst" else ""
+                    append("<td class=\"metric-val $cls\">${m.format(v)}${m.unit}")
+                    if (!allSame && v == best) append(" <span class=\"win-icon\">★</span>")
+                    append("</td>")
+                }
+                append("</tr>\n")
+            }
+        }
+
+        // Radar chart data
+        val radarLabels = listOf("FPS", "P1 FPS", "Estabilidad", "Memoria", "CPU", "Temperatura")
+        fun normalizeForRadar(entry: SessionHistory.HistoryEntry): List<Int> {
+            val fps = (entry.avgFps.coerceIn(0, 65) * 100 / 65)
+            val p1fps = (entry.p1Fps.coerceIn(0, 60) * 100 / 60)
+            val stability = (100 - entry.avgFrameTime.coerceIn(0.0, 100.0)).toInt()
+            val mem = (100 - (entry.peakMemMb.toInt() / 30).coerceIn(0, 100))
+            val cpu = 100 - entry.avgCpu.coerceIn(0, 100)
+            val temp = if (entry.maxTemp <= 0) 100 else (100 - ((entry.maxTemp - 25).coerceIn(0.0, 30.0) * 100 / 30).toInt())
+            return listOf(fps, p1fps, stability, mem, cpu, temp)
+        }
+
+        val radarDatasets = buildString {
+            for ((i, e) in entries.withIndex()) {
+                val isOurs = e.tag == SessionHistory.SessionTag.OUR_GAME
+                val color = if (isOurs) "#38bdf8" else "#f97316"
+                val bgColor = if (isOurs) "rgba(56,189,248,0.15)" else "rgba(249,115,22,0.15)"
+                val label = if (isOurs) "Nuestro juego" else e.competitorName.ifEmpty { "Competencia" }
+                val vals = normalizeForRadar(e).joinToString(",")
+                if (i > 0) append(",")
+                append("""{label:'${escJs(label)}',data:[$vals],borderColor:'$color',backgroundColor:'$bgColor',borderWidth:2.5,pointRadius:4,pointBackgroundColor:'$color',pointBorderColor:'$color'}""")
+            }
+        }
+
+        // Winner summary
+        val summaryHtml = if (oursEntries.isNotEmpty() && compEntries.isNotEmpty()) {
+            val ours = oursEntries.first()
+            val comp = compEntries.first()
+            var weWin = 0; var theyWin = 0; var tied = 0
+            val summaryRows = StringBuilder()
+            for (m in metrics) {
+                val oV = m.extract(ours); val cV = m.extract(comp)
+                val we = if (m.higherBetter) oV > cV else oV < cV
+                val they = if (m.higherBetter) cV > oV else cV < oV
+                if (we) weWin++ else if (they) theyWin++ else tied++
+                val icon = if (oV == cV) "&#8860;" else if (we) "&#10003;" else "&#10007;"
+                val cls = if (oV == cV) "tie" else if (we) "win" else "lose"
+                summaryRows.append("""<div class="summary-row $cls"><span class="summary-icon">$icon</span><span class="summary-metric">${esc(m.name)}</span><span class="summary-result">${if (oV == cV) "Empate" else if (we) "Ganamos" else "Competencia gana"}</span></div>""")
+            }
+            val competitorLabel = comp.competitorName.ifEmpty { comp.gamePackage.substringAfterLast('.') }
+            val overallColor = if (weWin > theyWin) "#10b981" else if (theyWin > weWin) "#ef4444" else "#f59e0b"
+            val overallText = if (weWin > theyWin) "Nuestro juego gana" else if (theyWin > weWin) "${esc(competitorLabel)} gana" else "Empate"
+            """
+            <section class="card">
+                <h2>&#127942; Resultado</h2>
+                <div class="scoreboard">
+                    <div class="score-team"><span class="score-label" style="color:#38bdf8">Nuestro juego</span><span class="score-num" style="color:#38bdf8">$weWin</span></div>
+                    <div class="score-vs">VS</div>
+                    <div class="score-team"><span class="score-label" style="color:#f97316">${esc(competitorLabel)}</span><span class="score-num" style="color:#f97316">$theyWin</span></div>
+                </div>
+                <div class="overall" style="border-color:$overallColor;color:$overallColor">$overallText${if (tied > 0) " ($tied empate${if (tied > 1) "s" else ""})" else ""}</div>
+                <div class="summary-grid">$summaryRows</div>
+            </section>"""
+        } else ""
+
+        // Column header classes
+        val colHeaders = entries.joinToString("\n") { e ->
+            val isOurs = e.tag == SessionHistory.SessionTag.OUR_GAME
+            val color = if (isOurs) "#38bdf8" else "#f97316"
+            val label = if (isOurs) "NUESTRO" else e.competitorName.ifEmpty { "COMP" }
+            """<th class="col-header" style="background:${color}15;color:$color;border-bottom:3px solid $color">$label</th>"""
+        }
+
+        val html = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Comparativa de Rendimiento</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;background:#0f172a;color:#e2e8f0;line-height:1.6;font-size:14px;-webkit-font-smoothing:antialiased}
+.container{max-width:960px;margin:0 auto;padding:24px 20px 40px}
+.report-header{text-align:center;padding:40px 32px 32px;margin-bottom:32px;background:linear-gradient(135deg,#1e293b,#0f172a 50%,#1e1b4b);border-radius:0 0 24px 24px;position:relative}
+.report-header::after{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(56,189,248,0.08),transparent 60%);border-radius:0 0 24px 24px}
+.report-header *{position:relative;z-index:1}
+.header-badge{display:inline-block;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.2);color:#38bdf8;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;padding:6px 16px;border-radius:100px;margin-bottom:12px}
+.header-title{font-size:2rem;font-weight:800;background:linear-gradient(135deg,#e2e8f0,#94a3b8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:6px}
+.header-sub{color:#64748b;font-size:13px}
+.card{background:linear-gradient(135deg,rgba(30,41,59,0.5),rgba(15,23,42,0.5));border:1px solid rgba(148,163,184,0.08);border-radius:16px;padding:24px;margin-bottom:20px}
+.card h2{color:#e2e8f0;font-size:1.1rem;font-weight:700;margin-bottom:16px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 14px;text-align:center;font-size:13px}
+th{background:#1e293b;color:#94a3b8;font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;position:sticky;top:0}
+td{border-bottom:1px solid rgba(148,163,184,0.04);color:#cbd5e1}
+.metric-label{text-align:left;color:#94a3b8;font-weight:600;font-size:12px}
+.metric-val{font-weight:700;color:#e2e8f0}
+.metric-val.best{color:#10b981;background:rgba(16,185,129,0.08)}
+.metric-val.worst{color:#ef4444;background:rgba(239,68,68,0.06)}
+.win-icon{color:#fbbf24;font-size:11px}
+.col-header{font-weight:800;font-size:12px;letter-spacing:0.5px}
+.chart-container{height:360px;background:rgba(0,0,0,0.2);border:1px solid rgba(148,163,184,0.04);border-radius:12px;padding:20px;margin-top:12px}
+.scoreboard{display:flex;justify-content:center;align-items:center;gap:32px;margin-bottom:16px}
+.score-team{text-align:center}
+.score-label{display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
+.score-num{font-size:3rem;font-weight:900;line-height:1}
+.score-vs{color:#475569;font-size:1.2rem;font-weight:800}
+.overall{text-align:center;font-size:1rem;font-weight:800;padding:12px;border:2px solid;border-radius:12px;margin-bottom:20px}
+.summary-grid{display:flex;flex-direction:column;gap:6px}
+.summary-row{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:10px;font-size:13px}
+.summary-row.win{background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.12)}
+.summary-row.lose{background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.12)}
+.summary-row.tie{background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.12)}
+.summary-icon{font-size:16px;flex-shrink:0}
+.summary-row.win .summary-icon{color:#10b981}
+.summary-row.lose .summary-icon{color:#ef4444}
+.summary-row.tie .summary-icon{color:#f59e0b}
+.summary-metric{flex:1;color:#e2e8f0;font-weight:600}
+.summary-result{font-weight:700;font-size:12px}
+.summary-row.win .summary-result{color:#10b981}
+.summary-row.lose .summary-result{color:#ef4444}
+.summary-row.tie .summary-result{color:#f59e0b}
+.footer{text-align:center;padding:24px 0 8px;margin-top:32px;border-top:1px solid rgba(148,163,184,0.06);color:#475569;font-size:11px}
+.footer-logo{font-size:13px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:linear-gradient(135deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:6px}
+@media print{body{background:#fff!important;color:#1e293b!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.card{background:#fafafa!important;border:1px solid #e2e8f0!important}.metric-val.best{color:#059669!important}.metric-val.worst{color:#dc2626!important}th{background:#f1f5f9!important;color:#475569!important}td{color:#1e293b!important}}
+</style>
+</head>
+<body>
+
+<div class="report-header">
+    <div class="header-badge">Game Performance Tool</div>
+    <h1 class="header-title">Comparativa de Rendimiento</h1>
+    <p class="header-sub">&#128197; $dateDisplay &nbsp;|&nbsp; ${entries.size} sesiones comparadas</p>
+</div>
+
+<div class="container">
+
+<section class="card">
+    <h2>&#128202; Tabla Comparativa</h2>
+    <div style="overflow-x:auto;border-radius:10px">
+    <table>
+        <thead>
+            <tr><th class="metric-label" style="text-align:left">Metrica</th>$colHeaders</tr>
+        </thead>
+        <tbody>
+$tableRows
+        </tbody>
+    </table>
+    </div>
+</section>
+
+<section class="card">
+    <h2>&#128205; Radar de Rendimiento</h2>
+    <p style="color:#64748b;font-size:12px;margin-bottom:8px">Valores normalizados 0-100. Mayor area = mejor rendimiento global.</p>
+    <div class="chart-container"><canvas id="radarChart"></canvas></div>
+</section>
+
+$summaryHtml
+
+<footer class="footer">
+    <div class="footer-logo">Game Performance Tool</div>
+    <p>v${AppVersion.NAME} — Comparativa generada el ${SimpleDateFormat("dd/MM/yyyy 'a las' HH:mm:ss").format(Date())}</p>
+</footer>
+
+</div>
+
+<script>
+Chart.defaults.font.family='-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+Chart.defaults.color='#94a3b8';
+new Chart(document.getElementById('radarChart').getContext('2d'),{
+    type:'radar',
+    data:{
+        labels:[${radarLabels.joinToString(",") { "'$it'" }}],
+        datasets:[$radarDatasets]
+    },
+    options:{
+        responsive:true,
+        maintainAspectRatio:false,
+        plugins:{
+            legend:{labels:{color:'#94a3b8',font:{size:12},usePointStyle:true,pointStyle:'circle',padding:16}},
+            tooltip:{backgroundColor:'rgba(15,23,42,0.95)',titleColor:'#e2e8f0',bodyColor:'#cbd5e1',borderColor:'rgba(148,163,184,0.2)',borderWidth:1,padding:12,cornerRadius:8}
+        },
+        scales:{
+            r:{
+                min:0,max:100,
+                ticks:{stepSize:20,color:'#475569',backdropColor:'transparent',font:{size:10}},
+                grid:{color:'rgba(148,163,184,0.1)'},
+                angleLines:{color:'rgba(148,163,184,0.08)'},
+                pointLabels:{color:'#94a3b8',font:{size:12,weight:'600'}}
+            }
+        }
+    }
+});
+</script>
+</body>
+</html>"""
+
+        file.writeText(html)
+        return file.absolutePath
+    }
+
+    /** Helper: builds an info-only row (no color comparison) for the comparison table. */
+    private fun comparisonInfoRow(
+        label: String,
+        entries: List<SessionHistory.HistoryEntry>,
+        extractor: (SessionHistory.HistoryEntry) -> String
+    ): String {
+        val cells = entries.joinToString("") { """<td class="metric-val">${esc(extractor(it))}</td>""" }
+        return """<tr><td class="metric-label">${esc(label)}</td>$cells</tr>"""  + "\n"
     }
 
     // ══════════ HELPERS ══════════

@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.gameperf"
-version = "1.0.0"
+version = "2.0.0"
 
 repositories {
     google()
@@ -30,7 +30,7 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi)
 
             packageName = "GamePerf"
-            packageVersion = "1.0.0"
+            packageVersion = "2.0.0"
             description = "Android Game Performance Tool"
             vendor = "GamePerf"
 

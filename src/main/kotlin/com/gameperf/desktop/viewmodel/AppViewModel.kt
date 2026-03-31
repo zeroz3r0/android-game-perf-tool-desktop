@@ -1,6 +1,9 @@
 package com.gameperf.desktop.viewmodel
 
 import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.core.AppVersion
+import com.gameperf.desktop.core.AutoUpdater
+import com.gameperf.desktop.core.CURRENT_VERSION
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.report.ReportGenerator
 import kotlinx.coroutines.*
@@ -152,6 +155,16 @@ class AppViewModel {
     private val _selectedForComparison = MutableStateFlow<Set<String>>(emptySet())
     val selectedForComparison: StateFlow<Set<String>> = _selectedForComparison
 
+    // ===== Auto-Update =====
+    private val _updateAvailable = MutableStateFlow<AutoUpdater.ReleaseInfo?>(null)
+    val updateAvailable: StateFlow<AutoUpdater.ReleaseInfo?> = _updateAvailable
+
+    private val _updateProgress = MutableStateFlow<Float?>(null)
+    val updateProgress: StateFlow<Float?> = _updateProgress
+
+    private val _updateError = MutableStateFlow<String?>(null)
+    val updateError: StateFlow<String?> = _updateError
+
     @Volatile private var shouldStop = false
     @Volatile private var captureStartTime: Long = 0L
     private var captureJob: Job? = null
@@ -172,6 +185,58 @@ class AppViewModel {
             refreshDevices()
         }
         startDevicePolling()
+        checkForUpdates()
+    }
+
+    // ===== Auto-Update =====
+
+    fun checkForUpdates() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val release = AutoUpdater.checkForUpdate()
+                if (release != null && AutoUpdater.isNewer(release.version, CURRENT_VERSION)) {
+                    _updateAvailable.value = release
+                }
+            } catch (_: Exception) {
+                // Silently ignore — update check is non-critical
+            }
+        }
+    }
+
+    fun downloadAndApplyUpdate() {
+        val release = _updateAvailable.value ?: return
+        val downloadUrl = release.jarUrl
+        if (downloadUrl == null) {
+            _updateError.value = "No se encontro archivo JAR en el release."
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            _updateProgress.value = 0f
+            _updateError.value = null
+            try {
+                val file = AutoUpdater.downloadUpdate(downloadUrl) { progress ->
+                    _updateProgress.value = progress
+                }
+                if (file != null) {
+                    _updateProgress.value = 1f
+                    // Small delay to show 100%
+                    delay(500)
+                    AutoUpdater.applyUpdate(file)
+                } else {
+                    _updateError.value = "Error al descargar la actualizacion."
+                    _updateProgress.value = null
+                }
+            } catch (e: Exception) {
+                _updateError.value = "Error: ${e.message}"
+                _updateProgress.value = null
+            }
+        }
+    }
+
+    fun dismissUpdate() {
+        _updateAvailable.value = null
+        _updateError.value = null
+        _updateProgress.value = null
     }
 
     private fun startDevicePolling() {
@@ -450,7 +515,7 @@ class AppViewModel {
                 fpsHistory = fpsHistory, memHistory = memHistory, nativeHistory = nativeHistory,
                 javaHistory = javaHistory, cpuHistory = cpuHistory,
                 tempCpuHistory = tempCpuHistory, tempGpuHistory = tempGpuHistory, tempSkinHistory = tempSkinHistory,
-                frameTimeHistory = frameTimeAvgHistory, allFrameTimes = allFrameTimes,
+                allFrameTimes = allFrameTimes,
                 avgFps = avgFps, minFps = minFps, maxFps = maxFps,
                 p1 = p1, p5 = p5, p50 = p50, p90 = p90, p99 = p99,
                 avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,

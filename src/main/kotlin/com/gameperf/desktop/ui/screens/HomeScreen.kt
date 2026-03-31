@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.theme.*
@@ -37,6 +38,10 @@ fun HomeScreen(vm: AppViewModel) {
     val statusMessage by vm.statusMessage.collectAsState()
     var duration by remember { mutableStateOf("") }
 
+    val updateInfo by vm.updateAvailable.collectAsState()
+    val updateProgress by vm.updateProgress.collectAsState()
+    val updateError by vm.updateError.collectAsState()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -44,6 +49,97 @@ fun HomeScreen(vm: AppViewModel) {
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // ===== Update Banner =====
+        if (updateInfo != null) {
+            val info = updateInfo!!
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                colors = CardDefaults.cardColors(containerColor = Yellow.copy(alpha = 0.12f)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            Icons.Default.SystemUpdate,
+                            contentDescription = null,
+                            tint = Yellow,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Nueva version v${info.version} disponible",
+                                color = Yellow,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                info.name,
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                        if (updateProgress == null) {
+                            TextButton(
+                                onClick = { vm.dismissUpdate() },
+                                colors = ButtonDefaults.textButtonColors(contentColor = TextDim)
+                            ) {
+                                Text("Despues", fontSize = 12.sp)
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            Button(
+                                onClick = { vm.downloadAndApplyUpdate() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Yellow),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    "Actualizar",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // Download progress
+                    if (updateProgress != null) {
+                        Spacer(Modifier.height(10.dp))
+                        LinearProgressIndicator(
+                            progress = { updateProgress!! },
+                            modifier = Modifier.fillMaxWidth().height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = Yellow,
+                            trackColor = Yellow.copy(alpha = 0.15f)
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            if (updateProgress!! >= 1f) "Reiniciando..."
+                            else "Descargando... ${"%.0f".format(updateProgress!! * 100)}%",
+                            color = Yellow,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    // Error
+                    if (updateError != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            updateError!!,
+                            color = Red,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
         // Header
         Text(
             "Game Performance Tool",
@@ -51,7 +147,7 @@ fun HomeScreen(vm: AppViewModel) {
             fontWeight = FontWeight.Bold,
             color = Cyan
         )
-        Text("v1.0.0", color = TextDim, fontSize = 12.sp)
+        Text("v${AppVersion.NAME}", color = TextDim, fontSize = 12.sp)
         Spacer(Modifier.height(8.dp))
         Text(statusMessage, color = TextSecondary, fontSize = 13.sp)
         Spacer(Modifier.height(24.dp))

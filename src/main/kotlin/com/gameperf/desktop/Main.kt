@@ -15,6 +15,7 @@ import com.gameperf.desktop.ui.screens.CaptureScreen
 import com.gameperf.desktop.ui.screens.ComparisonScreen
 import com.gameperf.desktop.ui.screens.HomeScreen
 import com.gameperf.desktop.ui.screens.ResultsScreen
+import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.ui.theme.AppColors
 import com.gameperf.desktop.ui.theme.DarkBg
 import com.gameperf.desktop.viewmodel.AppScreen
@@ -29,7 +30,7 @@ fun main() = application {
 
     Window(
         onCloseRequest = ::exitApplication,
-        title = "Game Performance Tool",
+        title = AppVersion.FULL,
         state = WindowState(size = DpSize(960.dp, 700.dp))
     ) {
         window.minimumSize = Dimension(800, 600)
