@@ -10,6 +10,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
+import androidx.compose.ui.res.painterResource
 import java.awt.Dimension
 import com.gameperf.desktop.ui.screens.CaptureScreen
 import com.gameperf.desktop.ui.screens.ComparisonScreen
@@ -31,6 +32,7 @@ fun main() = application {
     Window(
         onCloseRequest = ::exitApplication,
         title = AppVersion.FULL,
+        icon = painterResource("app-icon.png"),
         state = WindowState(size = DpSize(960.dp, 700.dp))
     ) {
         window.minimumSize = Dimension(800, 600)
