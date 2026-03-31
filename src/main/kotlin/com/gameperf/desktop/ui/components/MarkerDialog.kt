@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.theme.*
+import com.gameperf.desktop.ui.util.formatTimeMs
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
 

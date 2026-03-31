@@ -2,6 +2,7 @@ package com.gameperf.desktop.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -16,13 +17,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.components.*
 import com.gameperf.desktop.ui.theme.*
+import com.gameperf.desktop.ui.util.formatDurationHuman
+import com.gameperf.desktop.ui.util.formatTimeMs
 import com.gameperf.desktop.viewmodel.AppViewModel
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
@@ -52,11 +58,38 @@ fun ResultsScreen(vm: AppViewModel) {
     val speedOptions = listOf(0.5, 1.0, 1.5, 2.0)
     var speedMenuExpanded by remember { mutableStateOf(false) }
 
+    // Focus requester for keyboard shortcuts
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
+            .padding(24.dp)
+            .focusRequester(focusRequester)
+            .focusable()
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) {
+                    when (event.key) {
+                        Key.Spacebar -> {
+                            vm.setVideoPlaying(!isVideoPlaying)
+                            true
+                        }
+                        Key.DirectionLeft -> {
+                            vm.setVideoPosition((videoPosition - 5000).coerceAtLeast(0))
+                            true
+                        }
+                        Key.DirectionRight -> {
+                            vm.setVideoPosition(
+                                (videoPosition + 5000).coerceAtMost(effectiveDurationMs)
+                            )
+                            true
+                        }
+                        else -> false
+                    }
+                } else false
+            },
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // ═══════ EMBEDDED VIDEO PLAYER ═══════
@@ -419,7 +452,7 @@ fun ResultsScreen(vm: AppViewModel) {
 
         // ═══════ SESSION INFO ═══════
         Text(
-            "${result.gamePackage}  ·  ${result.deviceModel}  ·  ${formatDuration(result.duration)}",
+            "${result.gamePackage}  ·  ${result.deviceModel}  ·  ${formatDurationHuman(result.duration)}",
             color = TextDim, fontSize = 11.sp
         )
 
@@ -541,21 +574,10 @@ private fun CompactMetric(label: String, value: String, color: Color, modifier: 
     }
 }
 
-private fun formatDuration(seconds: Int): String {
-    val m = seconds / 60
-    val s = seconds % 60
-    return "${m}m ${s}s"
-}
+// formatDuration and formatTimeMs moved to com.gameperf.desktop.ui.util.Formatting
 
 private fun fpsColor(fps: Int): Color = when {
     fps >= 55 -> Green
     fps >= 30 -> Yellow
     else -> Red
-}
-
-private fun formatTimeMs(ms: Long): String {
-    val totalSeconds = ms / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds)
 }

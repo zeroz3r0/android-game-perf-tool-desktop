@@ -101,6 +101,12 @@ object SessionHistory {
         }
     }
 
+    fun deleteEntry(id: String) {
+        val entries = load().toMutableList()
+        entries.removeAll { it.id == id }
+        save(entries)
+    }
+
     // ===== Simple JSON serialization (no dependencies) =====
 
     private fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")

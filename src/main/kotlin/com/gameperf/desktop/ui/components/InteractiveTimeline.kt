@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.theme.*
+import com.gameperf.desktop.ui.util.formatTimeMs
 import com.gameperf.desktop.viewmodel.SessionMarker
 import java.util.Locale
 
@@ -453,10 +454,4 @@ internal fun parseColorHex(hex: String): Color {
     }
 }
 
-/** Format milliseconds to MM:SS. */
-internal fun formatTimeMs(ms: Long): String {
-    val totalSeconds = ms / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return String.format(Locale.US, "%02d:%02d", minutes, seconds)
-}
+// formatTimeMs moved to com.gameperf.desktop.ui.util.Formatting

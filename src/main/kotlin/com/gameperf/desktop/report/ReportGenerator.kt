@@ -5,9 +5,11 @@ import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
+import com.gameperf.desktop.ui.util.fmtUS
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 object ReportGenerator {
@@ -72,9 +74,9 @@ object ReportGenerator {
         val javD = javaHistory.joinToString(",")
         val memL = memHistory.indices.joinToString(",") { "\"${it + 1}s\"" }
         val cpuD = cpuHistory.joinToString(",")
-        val tcD = tempCpuHistory.joinToString(",") { "%.1f".format(it) }
-        val tgD = tempGpuHistory.joinToString(",") { "%.1f".format(it) }
-        val tsD = tempSkinHistory.joinToString(",") { "%.1f".format(it) }
+        val tcD = tempCpuHistory.joinToString(",") { fmtUS("%.1f", it) }
+        val tgD = tempGpuHistory.joinToString(",") { fmtUS("%.1f", it) }
+        val tsD = tempSkinHistory.joinToString(",") { fmtUS("%.1f", it) }
         val tL = (1..maxOf(cpuHistory.size, tempCpuHistory.size, 1)).joinToString(",") { "\"${it}s\"" }
 
         val ftBuckets = listOf(
@@ -250,7 +252,7 @@ $CSS
             <div class="summary-stats">
                 <div class="summary-stat"><span class="summary-stat-value ${fpsClass(avgFps)}">${avgFps}</span><span class="summary-stat-label">FPS Prom.</span></div>
                 <div class="summary-stat"><span class="summary-stat-value ${fpsClass(p1)}">${p1}</span><span class="summary-stat-label">P1 FPS</span></div>
-                <div class="summary-stat"><span class="summary-stat-value">${"%.1f".format(avgFrameTime)}ms</span><span class="summary-stat-label">Frame Time</span></div>
+                <div class="summary-stat"><span class="summary-stat-value">${fmtUS("%.1f", avgFrameTime)}ms</span><span class="summary-stat-label">Frame Time</span></div>
                 <div class="summary-stat"><span class="summary-stat-value">${peakMem}MB</span><span class="summary-stat-label">Mem. Pico</span></div>
                 <div class="summary-stat"><span class="summary-stat-value ${cls(avgCpu, 85, 70)}">${avgCpu}%</span><span class="summary-stat-label">CPU Prom.</span></div>
                 <div class="summary-stat"><span class="summary-stat-value">${stability}%</span><span class="summary-stat-label">Estabilidad</span></div>
@@ -263,7 +265,7 @@ $CSS
     <h2 class="section-title">&#128202; Panel de Metricas</h2>
     <div class="metrics-grid">
         ${metricCard("FPS", "$avgFps", "fps", fpsGrade, gradeColor(fpsGrade), "Min $minFps / Max $maxFps / P1 $p1")}
-        ${metricCard("Frame Time", "${"%.1f".format(avgFrameTime)}ms", "frametime", ftGrade, gradeColor(ftGrade), "P99 ${"%.1f".format(p99FrameTime)}ms / Jank $jank")}
+        ${metricCard("Frame Time", "${fmtUS("%.1f", avgFrameTime)}ms", "frametime", ftGrade, gradeColor(ftGrade), "P99 ${fmtUS("%.1f", p99FrameTime)}ms / Jank $jank")}
         ${metricCard("Memoria", "${peakMem}MB", "memory", memGrade, gradeColor(memGrade), "Inicio ${memHistory.firstOrNull() ?: "?"}MB / Final ${memHistory.lastOrNull() ?: "?"}MB")}
         ${metricCard("CPU", "${avgCpu}%", "cpu", cpuGrade, gradeColor(cpuGrade), "Max ${maxCpu}%")}
         ${metricCard("Temperatura", if (maxTempCpu > 0) "${maxTempCpu.toInt()}\u00B0C" else "N/A", "temp", tempGrade, gradeColor(tempGrade), if (maxTempGpu > 0) "GPU ${maxTempGpu.toInt()}\u00B0C" else "Solo CPU")}
@@ -304,8 +306,8 @@ $CSS
     </div>
     <p class="card-desc">Tiempo que tarda cada frame en renderizarse. Menos = mejor. >16.67ms = por debajo de 60fps.</p>
     <div class="stats-row">
-        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value">${"%.1f".format(avgFrameTime)}ms</span></div>
-        <div class="stat-pill"><span class="stat-pill-label">P99</span><span class="stat-pill-value ${cls(p99FrameTime.toInt(), 50, 17, "r")}">${"%.1f".format(p99FrameTime)}ms</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value">${fmtUS("%.1f", avgFrameTime)}ms</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">P99</span><span class="stat-pill-value ${cls(p99FrameTime.toInt(), 50, 17, "r")}">${fmtUS("%.1f", p99FrameTime)}ms</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Jank (&gt;16ms)</span><span class="stat-pill-value warn">${jank}</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Stutter (&gt;100ms)</span><span class="stat-pill-value bad">${stutter}</span></div>
     </div>
@@ -358,7 +360,7 @@ $CSS
         <div class="stat-pill"><span class="stat-pill-label">Inicio</span><span class="stat-pill-value">${batteryStart}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Final</span><span class="stat-pill-value">${batteryEnd}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Consumo</span><span class="stat-pill-value ${cls(batteryDrain, 10, 5)}">${batteryDrain}%</span></div>
-        <div class="stat-pill"><span class="stat-pill-label">Consumo/min</span><span class="stat-pill-value">${if (duration > 0) "%.2f".format(batteryDrain.toDouble() / (duration / 60.0)) else "0"}%</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Consumo/min</span><span class="stat-pill-value">${if (duration > 0) fmtUS("%.2f", batteryDrain.toDouble() / (duration / 60.0)) else "0"}%</span></div>
     </div>
     ${if (!isWifi) """<p class="hint">&#9888; Medido con USB conectado. Para consumo real de bateria, usa modo WiFi.</p>""" else """<p class="hint good">&#10003; Medido via WiFi — consumo real de bateria sin carga USB.</p>"""}
 </section>
@@ -515,19 +517,19 @@ window.addEventListener('scroll',function(){var cur='';secs.forEach(function(s){
             val extract: (SessionHistory.HistoryEntry) -> Double,
             val higherBetter: Boolean,
             val unit: String,
-            val format: (Double) -> String = { v -> if (unit == "ms" || unit == "°C") "%.1f".format(v) else "${v.toInt()}" }
+            val format: (Double) -> String = { v -> if (unit == "ms" || unit == "°C") fmtUS("%.1f", v) else "${v.toInt()}" }
         )
 
         val metrics = listOf(
             MetricDef("FPS Promedio", { it.avgFps.toDouble() }, true, "", { "${it.toInt()}" }),
             MetricDef("P1 FPS", { it.p1Fps.toDouble() }, true, "", { "${it.toInt()}" }),
             MetricDef("P5 FPS", { it.p5Fps.toDouble() }, true, "", { "${it.toInt()}" }),
-            MetricDef("Frame Time Avg", { it.avgFrameTime }, false, "ms", { "%.1f".format(it) }),
-            MetricDef("P95 Frame Time", { it.p95FrameTime }, false, "ms", { "%.1f".format(it) }),
-            MetricDef("P99 Frame Time", { it.p99FrameTime }, false, "ms", { "%.1f".format(it) }),
+            MetricDef("Frame Time Avg", { it.avgFrameTime }, false, "ms", { fmtUS("%.1f", it) }),
+            MetricDef("P95 Frame Time", { it.p95FrameTime }, false, "ms", { fmtUS("%.1f", it) }),
+            MetricDef("P99 Frame Time", { it.p99FrameTime }, false, "ms", { fmtUS("%.1f", it) }),
             MetricDef("Memoria Pico", { it.peakMemMb.toDouble() }, false, "MB", { "${it.toLong()}" }),
             MetricDef("CPU Promedio", { it.avgCpu.toDouble() }, false, "%", { "${it.toInt()}" }),
-            MetricDef("Temp Max", { it.maxTemp }, false, "°C", { "%.0f".format(it) }),
+            MetricDef("Temp Max", { it.maxTemp }, false, "°C", { fmtUS("%.0f", it) }),
             MetricDef("Puntuacion", { it.score.toDouble() }, true, "/100", { "${it.toInt()}" })
         )
 
@@ -826,9 +828,9 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
   "device": {"model":"${escJs(info?.model ?: "?")}","manufacturer":"${escJs(info?.manufacturer ?: "?")}","cpu":"${escJs(info?.cpu ?: "?")}","gpu":"${escJs((info?.gpu ?: "?").take(60))}","ram":"${escJs(info?.ram ?: "?")}","cores":${info?.cores ?: 0},"sdk":${info?.sdk ?: 0},"resolution":"${escJs(info?.resolution ?: "?")}","tier":"${escJs(deviceTier)}"},
   "grade": "$grade", "score": $score, "deviceGrade": "$deviceGrade", "deviceScore": $deviceScore, "duration": $duration,
   "fps": {"avg":$avgFps,"min":$minFps,"max":$maxFps,"p1":$p1,"p5":$p5,"p50":$p50,"p90":$p90,"p99":$p99,"stability":$stability},
-  "frameTime": {"avg":${"%.2f".format(avgFrameTime)},"p99":${"%.2f".format(p99FrameTime)},"jank":$jank,"stutter":$stutter},
+  "frameTime": {"avg":${fmtUS("%.2f", avgFrameTime)},"p99":${fmtUS("%.2f", p99FrameTime)},"jank":$jank,"stutter":$stutter},
   "memory": {"peakMb":$peakMem}, "cpu": {"avg":$avgCpu,"max":$maxCpu},
-  "temperature": {"cpuMax":${"%.1f".format(maxTempCpu)},"gpuMax":${"%.1f".format(maxTempGpu)}},
+  "temperature": {"cpuMax":${fmtUS("%.1f", maxTempCpu)},"gpuMax":${fmtUS("%.1f", maxTempGpu)}},
   "battery": {"start":$batteryStart,"end":$batteryEnd,"drain":${batteryStart - batteryEnd},"isWifi":$isWifi},
   "frameDrops": $frameDrops, "problems": [$problemsJson]
 }"""

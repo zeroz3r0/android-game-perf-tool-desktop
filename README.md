@@ -2,7 +2,7 @@
 
 Aplicacion de escritorio para medir rendimiento de juegos en dispositivos Android en tiempo real. Genera informes HTML con graficos, percentiles, notas y diagnostico de problemas.
 
-Graba video del gameplay durante la sesion para contrastar datos con lo que ocurre en pantalla.
+Graba video del gameplay durante la sesion para contrastar datos con lo que ocurre en pantalla. Incluye reproductor integrado con timeline interactivo, marcadores, comparacion de competencia y auto-actualizador.
 
 ---
 
@@ -20,7 +20,7 @@ Graba video del gameplay durante la sesion para contrastar datos con lo que ocur
 
 #### Opcion 1: Instalar el DMG (recomendado)
 
-1. Descargar `GamePerf-1.0.0.dmg` desde Releases
+1. Descargar `GamePerf-3.0.0.dmg` desde Releases
 2. Abrir el DMG y arrastrar **GamePerf** a la carpeta Aplicaciones
 3. **Primera vez**: macOS bloqueara la app por no estar firmada:
    - Ve a **Preferencias del Sistema > Seguridad y Privacidad**
@@ -58,7 +58,7 @@ adb version
 
 #### Opcion 1: Instalar el MSI
 
-1. Descargar `GamePerf-1.0.0.msi` desde Releases
+1. Descargar `GamePerf-3.0.0.msi` desde Releases
 2. Ejecutar el instalador
 3. **Windows Defender / SmartScreen**: Al no estar firmado, Windows lo bloqueara:
    - Clic en **"Mas informacion"** en el dialogo de SmartScreen
@@ -107,7 +107,10 @@ cd android-game-perf-tool-desktop
 
 # Crear JAR ejecutable
 ./gradlew jar
-java -jar build/libs/android-game-perf-tool-desktop-1.0.0.jar
+java -jar build/libs/android-game-perf-tool-desktop-3.0.0.jar
+
+# Ejecutar tests
+./gradlew test
 ```
 
 No necesitas instalar Gradle - el proyecto incluye Gradle Wrapper (`./gradlew` / `gradlew.bat`).
@@ -147,6 +150,32 @@ Permite medir el **consumo real de bateria** sin que el cable USB cargue el disp
 
 ### Metricas en tiempo real
 - FPS, Frame Times, CPU, Memoria, Temperatura, Bateria
+- Graficos en vivo durante la captura
+- Indicador pulsante de grabacion
+
+### Reproductor de video integrado
+- Reproduce el video del gameplay directamente en la app
+- Controles de reproduccion: play/pause, avanzar/retroceder 5s, velocidad variable (0.5x-2x)
+- Atajos de teclado: Espacio (play/pause), Flechas izq/der (seek ±5s), Escape (detener captura)
+- Usa extraccion de frames batch con ffmpeg y decodificacion directa JPEG via Skia
+
+### Timeline interactivo con overlay de FPS
+- Timeline arrastrabe con playhead sincronizado al video
+- Zonas de color por rendimiento FPS (verde >30, amarillo 20-30, rojo <20)
+- Pausado automatico al scrubear manualmente
+
+### Marcadores de sesion
+- Tipos predefinidos: Intersticial, Video Reward, Carga, Cambio de escena
+- Notas personalizadas con texto libre
+- Selector de color (10 colores predefinidos)
+- Se pueden agregar durante la captura en vivo o desde el timeline en resultados
+- Edicion y eliminacion de marcadores existentes
+
+### Comparacion de competencia
+- Etiqueta sesiones como "Nuestro juego" o "Competencia"
+- Campo para nombre del juego competidor
+- ComparisonScreen con metricas lado a lado y graficos radar
+- Generacion de informe comparativo HTML
 
 ### Grabacion de video
 - Se graba automaticamente el gameplay al iniciar la prueba
@@ -160,7 +189,8 @@ Permite medir el **consumo real de bateria** sin que el cable USB cargue el disp
 - **Nota por Dispositivo**: ajustada al hardware del movil. Un juego a 45 FPS en un Snapdragon 450 es nota A (impresionante para ese hardware), pero en un SD 8 Gen 3 seria nota D (pobre para ese hardware)
 
 ### Informe HTML
-- Graficos interactivos con Chart.js
+- Graficos interactivos con Chart.js 4
+- Tema oscuro rediseñado
 - Percentiles FPS y Frame Times
 - Timeline de temperaturas
 - Problemas detectados con explicacion y solucion
@@ -177,11 +207,26 @@ Permite medir el **consumo real de bateria** sin que el cable USB cargue el disp
 - Archivos de video con nombre unico por sesion (`video_yyyyMMdd_HHmmss_N.mp4`)
 
 ### Historial de sesiones
-- Las ultimas 5 pruebas se guardan en `~/GamePerf Reports/history.json`
+- Las ultimas 20 pruebas se guardan en `~/GamePerf Reports/history.json`
 - Desde la pantalla principal podes:
   - Ver nombre, dispositivo, nota y duracion de pruebas anteriores
   - Renombrar sesiones
+  - Eliminar sesiones con confirmacion
   - Abrir informe o video de sesiones previas
+  - Seleccionar sesiones para comparacion
+
+### Auto-actualizador
+- Chequea GitHub Releases al iniciar la app
+- Muestra banner con nueva version disponible
+- Descarga e instala la actualizacion con barra de progreso
+- Soporta macOS, Linux y Windows
+
+### CI/CD
+- Pipeline de GitHub Actions para builds multi-plataforma (macOS, Linux, Windows)
+- Genera artefactos descargables por cada release
+
+### Icono personalizado
+- Icono de app personalizado para macOS (.icns) y Windows (.ico)
 
 ---
 
@@ -193,7 +238,7 @@ Para evitar que antivirus y SmartScreen bloqueen la app en Windows:
 
 ```bash
 # Firmar el MSI con signtool (incluido en Windows SDK)
-signtool sign /f certificado.pfx /p password /tr http://timestamp.digicert.com /td sha256 GamePerf-1.0.0.msi
+signtool sign /f certificado.pfx /p password /tr http://timestamp.digicert.com /td sha256 GamePerf-3.0.0.msi
 ```
 
 Proveedores de certificados: DigiCert (~$300/ano), Sectigo (~$70/ano), SSL.com (~$70/ano).
@@ -214,23 +259,36 @@ Para despliegue masivo, crear una GPO que permita la ejecucion del MSI sin firma
 
 ```
 src/main/kotlin/com/gameperf/desktop/
-├── Main.kt                     # Entry point, ventana principal
+├── Main.kt                         # Entry point, ventana principal
 ├── core/
-│   ├── AdbBridge.kt             # Comunicacion con ADB
-│   └── HardwareScoring.kt      # Clasificacion de hardware y nota por dispositivo
+│   ├── AdbBridge.kt                # Comunicacion con ADB
+│   ├── AppVersion.kt               # Version de la app (single source of truth)
+│   ├── AutoUpdater.kt              # Auto-actualizador via GitHub Releases
+│   ├── HardwareScoring.kt          # Clasificacion de hardware y nota por dispositivo
+│   └── SessionHistory.kt           # Persistencia del historial de sesiones
 ├── viewmodel/
-│   └── AppViewModel.kt         # Estado de la app, loop de captura, grading
+│   └── AppViewModel.kt             # Estado de la app, loop de captura, grading
 ├── report/
-│   └── ReportGenerator.kt      # Generacion de informe HTML
+│   └── ReportGenerator.kt          # Generacion de informe HTML y comparativo
 └── ui/
-    ├── theme/Theme.kt           # Colores y tema Material3
+    ├── theme/Theme.kt              # Colores y tema Material3
+    ├── util/Formatting.kt          # Utilidades de formato (locale-safe)
     ├── components/
-    │   ├── MetricCard.kt        # Card de metrica reutilizable
-    │   └── MiniGraph.kt         # Grafico en tiempo real
+    │   ├── EmbeddedVideoPlayer.kt  # Reproductor de video integrado (ffmpeg + Skia)
+    │   ├── InteractiveTimeline.kt  # Timeline interactivo con FPS overlay y marcadores
+    │   ├── MarkerDialog.kt         # Dialog para crear/editar marcadores
+    │   ├── MetricCard.kt           # Card de metrica reutilizable + StatRow
+    │   └── MiniGraph.kt            # Grafico en tiempo real
     └── screens/
-        ├── HomeScreen.kt        # Seleccion de dispositivo y juego
-        ├── CaptureScreen.kt     # Dashboard de captura en vivo
-        └── ResultsScreen.kt     # Resultados, notas, graficos
+        ├── HomeScreen.kt           # Seleccion de dispositivo, juego e historial
+        ├── CaptureScreen.kt        # Dashboard de captura en vivo con marcadores
+        ├── ResultsScreen.kt        # Resultados, video player, timeline, metricas
+        └── ComparisonScreen.kt     # Comparacion lado a lado entre sesiones
+
+src/test/kotlin/com/gameperf/desktop/
+├── AutoUpdaterTest.kt              # Tests de comparacion de versiones
+├── FormattingTest.kt               # Tests de formateo de tiempo y locale
+└── HardwareScoringTest.kt          # Tests de clasificacion de hardware y grading
 ```
 
 ---

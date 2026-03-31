@@ -1,6 +1,5 @@
 package com.gameperf.desktop.core
 
-import java.util.Calendar
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
@@ -103,7 +102,7 @@ object AdbBridge {
         val res = shell(deviceId, "wm size").trim()
         val ramKb = Regex("MemTotal:\\s+(\\d+)").find(shell(deviceId, "cat /proc/meminfo"))
             ?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-        val ramGb = "%.1f GB".format(ramKb * 1024.0 / (1024 * 1024 * 1024))
+        val ramGb = String.format(java.util.Locale.US, "%.1f GB", ramKb * 1024.0 / (1024 * 1024 * 1024))
         val cores = Regex("processor\\s*:\\s*(\\d+)").findAll(shell(deviceId, "cat /proc/cpuinfo")).count().let { if (it > 0) it else 4 }
         val sf = shell(deviceId, "dumpsys SurfaceFlinger", timeoutMs = 3000)
         val gpu = Regex("GLES:\\s*(.+)").find(sf)?.groupValues?.get(1)?.trim()?.take(60) ?: shell(deviceId, "getprop ro.hardware.egl").trim().ifEmpty { "Unknown" }
@@ -142,6 +141,14 @@ object AdbBridge {
     private var prevCpuBusy: Long = 0
     private var prevCpuTotal: Long = 0
     private var prevCpuInitialized: Boolean = false
+
+    /** Reset session-scoped state so consecutive captures start clean. */
+    fun resetSessionState() {
+        cachedLayer = null
+        prevCpuBusy = 0
+        prevCpuTotal = 0
+        prevCpuInitialized = false
+    }
 
     fun findLayer(deviceId: String, pkg: String): String? {
         cachedLayer?.let { (p, l) -> if (p == pkg) return l }

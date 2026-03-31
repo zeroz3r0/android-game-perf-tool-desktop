@@ -114,6 +114,11 @@ data class SessionResult(
 class AppViewModel {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
+    /** Must be called when the application window is closed to avoid scope leaks. */
+    fun cleanup() {
+        scope.cancel()
+    }
+
     private val _screen = MutableStateFlow(AppScreen.HOME)
     val screen: StateFlow<AppScreen> = _screen
 
@@ -189,6 +194,10 @@ class AppViewModel {
 
     private val _updateError = MutableStateFlow<String?>(null)
     val updateError: StateFlow<String?> = _updateError
+
+    // ===== Capture Error (device disconnect, etc.) =====
+    private val _captureError = MutableStateFlow<String?>(null)
+    val captureError: StateFlow<String?> = _captureError
 
     @Volatile private var shouldStop = false
     @Volatile private var captureStartTime: Long = 0L
@@ -364,7 +373,9 @@ class AppViewModel {
         _isCapturing.value = true
         _liveMetrics.value = LiveMetrics()
         _markers.value = emptyList()
+        _captureError.value = null
         shouldStop = false
+        AdbBridge.resetSessionState()
 
         captureJob = scope.launch {
             val batteryStart = AdbBridge.getBatteryLevel(device.id)
@@ -421,6 +432,7 @@ class AppViewModel {
             val allFrameTimes = mutableListOf<Double>()
             var totalJank = 0
             var totalStutter = 0
+            var consecutiveAdbFailures = 0
 
             while (!shouldStop) {
                 val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
@@ -442,6 +454,20 @@ class AppViewModel {
                 val thermal = AdbBridge.captureTemperature(device.id)
                 if (shouldStop) break
                 val battery = AdbBridge.getBatteryLevel(device.id)
+
+                // Device disconnect detection: if ALL ADB commands returned null/0/empty,
+                // the device is likely disconnected
+                val allFailed = frame == null && mem == null && cpu == 0 && battery == 0
+                if (allFailed) {
+                    consecutiveAdbFailures++
+                    if (consecutiveAdbFailures >= 3) {
+                        shouldStop = true
+                        _captureError.value = "Dispositivo desconectado durante la captura"
+                        break
+                    }
+                } else {
+                    consecutiveAdbFailures = 0
+                }
 
                 val sampleSecond = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 val fps = frame?.fps ?: 0
@@ -550,26 +576,31 @@ class AppViewModel {
             // Snapshot markers before generating report
             val sessionMarkers = _markers.value
 
-            // Generate HTML report
-            val reportPath = ReportGenerator.generate(
-                pkg = pkg, info = _deviceInfo.value, grade = grade, score = score, duration = finalElapsed,
-                fpsHistory = fpsHistory, memHistory = memHistory, nativeHistory = nativeHistory,
-                javaHistory = javaHistory, cpuHistory = cpuHistory,
-                tempCpuHistory = tempCpuHistory, tempGpuHistory = tempGpuHistory, tempSkinHistory = tempSkinHistory,
-                allFrameTimes = allFrameTimes,
-                avgFps = avgFps, minFps = minFps, maxFps = maxFps,
-                p1 = p1, p5 = p5, p50 = p50, p90 = p90, p99 = p99,
-                avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
-                p99FrameTime = p99ft,
-                peakMem = peakMem, avgCpu = avgCpu, maxCpu = maxCpu,
-                maxTempCpu = maxTempCpu, maxTempGpu = maxTempGpu,
-                batteryStart = batteryStart, batteryEnd = batteryEnd,
-                frameDrops = totalDrops, jank = totalJank, stutter = totalStutter,
-                problems = problems, isWifi = isWifiMode,
-                deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
-                fpsTimestamps = fpsTimed.map { it.second to it.value.toInt() },
-                markers = sessionMarkers
-            )
+            // Generate HTML report (wrapped in try-catch to avoid crash on report failure)
+            val reportPath = try {
+                ReportGenerator.generate(
+                    pkg = pkg, info = _deviceInfo.value, grade = grade, score = score, duration = finalElapsed,
+                    fpsHistory = fpsHistory, memHistory = memHistory, nativeHistory = nativeHistory,
+                    javaHistory = javaHistory, cpuHistory = cpuHistory,
+                    tempCpuHistory = tempCpuHistory, tempGpuHistory = tempGpuHistory, tempSkinHistory = tempSkinHistory,
+                    allFrameTimes = allFrameTimes,
+                    avgFps = avgFps, minFps = minFps, maxFps = maxFps,
+                    p1 = p1, p5 = p5, p50 = p50, p90 = p90, p99 = p99,
+                    avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
+                    p99FrameTime = p99ft,
+                    peakMem = peakMem, avgCpu = avgCpu, maxCpu = maxCpu,
+                    maxTempCpu = maxTempCpu, maxTempGpu = maxTempGpu,
+                    batteryStart = batteryStart, batteryEnd = batteryEnd,
+                    frameDrops = totalDrops, jank = totalJank, stutter = totalStutter,
+                    problems = problems, isWifi = isWifiMode,
+                    deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
+                    fpsTimestamps = fpsTimed.map { it.second to it.value.toInt() },
+                    markers = sessionMarkers
+                )
+            } catch (e: Exception) {
+                System.err.println("Error generating report: ${e.message}")
+                ""
+            }
 
             _result.value = SessionResult(
                 gamePackage = pkg, deviceModel = _deviceInfo.value?.model ?: device.model,
@@ -619,6 +650,10 @@ class AppViewModel {
     fun stopCapture() {
         shouldStop = true
         _statusMessage.value = "Deteniendo captura..."
+    }
+
+    fun clearCaptureError() {
+        _captureError.value = null
     }
 
     /** Place a marker at the current capture second (used during live capture). */
@@ -701,6 +736,13 @@ class AppViewModel {
         _history.value = SessionHistory.load()
     }
 
+    fun deleteHistoryEntry(id: String) {
+        SessionHistory.deleteEntry(id)
+        // Also remove from comparison selection if present
+        _selectedForComparison.value = _selectedForComparison.value - id
+        _history.value = SessionHistory.load()
+    }
+
     fun openHistoryReport(entry: SessionHistory.HistoryEntry) {
         openFile(entry.reportPath)
     }
@@ -710,6 +752,8 @@ class AppViewModel {
     }
 
     fun goHome() {
+        captureJob?.cancel()
+        shouldStop = true
         _screen.value = AppScreen.HOME
         _liveMetrics.value = LiveMetrics()
         _markers.value = emptyList()
@@ -752,14 +796,7 @@ class AppViewModel {
         _selectedForComparison.value = emptySet()
     }
 
-    fun canCompare(): Boolean {
-        val selected = _selectedForComparison.value
-        if (selected.size < 2) return false
-        val entries = _history.value.filter { it.id in selected }
-        val hasOurs = entries.any { it.tag == SessionHistory.SessionTag.OUR_GAME }
-        val hasCompetition = entries.any { it.tag == SessionHistory.SessionTag.COMPETITION }
-        return hasOurs && hasCompetition
-    }
+    fun canCompare(): Boolean = _selectedForComparison.value.size >= 2
 
     fun getSelectedEntries(): List<SessionHistory.HistoryEntry> {
         val selected = _selectedForComparison.value

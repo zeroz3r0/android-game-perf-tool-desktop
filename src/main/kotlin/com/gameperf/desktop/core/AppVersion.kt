@@ -1,9 +1,6 @@
 package com.gameperf.desktop.core
 
 object AppVersion {
-    const val MAJOR = 2
-    const val MINOR = 2
-    const val PATCH = 0
-    const val NAME = "$MAJOR.$MINOR.$PATCH"
+    const val NAME = "3.0.0" // Single source of truth — keep in sync with gradle.properties appVersion
     const val FULL = "Game Perf Desktop v$NAME"
 }

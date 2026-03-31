@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.ui.theme.*
+import com.gameperf.desktop.ui.util.fmtUS
 import com.gameperf.desktop.viewmodel.AppViewModel
 
 /**
@@ -42,7 +44,7 @@ fun ComparisonScreen(vm: AppViewModel) {
         // Header
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.goHome() }) {
-                Icon(Icons.Default.ArrowBack, "Volver", tint = Cyan)
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver", tint = Cyan)
             }
             Spacer(Modifier.width(8.dp))
             Text(
@@ -148,9 +150,9 @@ fun ComparisonScreen(vm: AppViewModel) {
                             ComparisonCell(entry.p5Fps.toDouble(), entries, { it.p5Fps.toDouble() }, higher = true, entry, "${entry.p5Fps}")
 
                             // Frame time - lower is better
-                            ComparisonCell(entry.avgFrameTime, entries, { it.avgFrameTime }, higher = false, entry, "${"%.1f".format(entry.avgFrameTime)}ms")
-                            ComparisonCell(entry.p95FrameTime, entries, { it.p95FrameTime }, higher = false, entry, "${"%.1f".format(entry.p95FrameTime)}ms")
-                            ComparisonCell(entry.p99FrameTime, entries, { it.p99FrameTime }, higher = false, entry, "${"%.1f".format(entry.p99FrameTime)}ms")
+                            ComparisonCell(entry.avgFrameTime, entries, { it.avgFrameTime }, higher = false, entry, "${fmtUS("%.1f", entry.avgFrameTime)}ms")
+                            ComparisonCell(entry.p95FrameTime, entries, { it.p95FrameTime }, higher = false, entry, "${fmtUS("%.1f", entry.p95FrameTime)}ms")
+                            ComparisonCell(entry.p99FrameTime, entries, { it.p99FrameTime }, higher = false, entry, "${fmtUS("%.1f", entry.p99FrameTime)}ms")
 
                             // Memory - lower is better
                             ComparisonCell(entry.peakMemMb.toDouble(), entries, { it.peakMemMb.toDouble() }, higher = false, entry, "${entry.peakMemMb}MB")
@@ -403,7 +405,7 @@ fun ComparisonScreen(vm: AppViewModel) {
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan)
             ) {
-                Icon(Icons.Default.ArrowBack, null, modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Volver")
             }

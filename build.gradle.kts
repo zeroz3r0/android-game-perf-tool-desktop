@@ -5,8 +5,10 @@ plugins {
     id("org.jetbrains.compose") version "1.6.1"
 }
 
+val appVersion: String by project
+
 group = "com.gameperf"
-version = "2.2.0"
+version = appVersion
 
 repositories {
     google()
@@ -20,6 +22,8 @@ dependencies {
     implementation(compose.materialIconsExtended)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.7.3")
+    testImplementation(kotlin("test"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 }
 
 compose.desktop {
@@ -36,7 +40,7 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi)
 
             packageName = "GamePerf"
-            packageVersion = "2.2.0"
+            packageVersion = appVersion
             description = "Android Game Performance Tool"
             vendor = "GamePerf"
 

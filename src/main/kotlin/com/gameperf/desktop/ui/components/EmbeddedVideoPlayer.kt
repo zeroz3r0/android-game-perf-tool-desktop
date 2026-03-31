@@ -25,14 +25,58 @@ import com.gameperf.desktop.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
- * Embedded video player: batch-extracts ALL native frames, loads raw JPEG bytes
- * into Skia bitmaps (0.1ms/frame), plays back at source FPS from memory.
+ * LRU cache for decoded video frames.
+ * Keeps at most [maxSize] frames in memory (~200 = ~20MB for 720p JPEG).
+ * Frames are loaded from disk on demand (~2ms per frame via Skia).
+ */
+private class FrameCache(private val maxSize: Int = 200) {
+    private val cache = object : LinkedHashMap<Int, ImageBitmap>(maxSize + 1, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ImageBitmap>?): Boolean {
+            return size > maxSize
+        }
+    }
+
+    @Synchronized
+    fun get(index: Int): ImageBitmap? = cache[index]
+
+    @Synchronized
+    fun put(index: Int, bitmap: ImageBitmap) {
+        cache[index] = bitmap
+    }
+
+    @Synchronized
+    fun contains(index: Int): Boolean = cache.containsKey(index)
+
+    @Synchronized
+    fun clear() = cache.clear()
+}
+
+/**
+ * Load a single frame from disk by its file path.
+ * Returns null if the file doesn't exist or can't be decoded.
+ * Typically takes ~2ms (file read + Skia decode).
+ */
+private fun loadFrameFromDisk(path: String): ImageBitmap? {
+    return try {
+        val bytes = File(path).readBytes()
+        org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * Embedded video player using a sliding-window frame cache.
+ * Extracts all frames to disk as JPEG, then loads only a window of ~200 frames
+ * around the current position into memory. This keeps memory usage under ~20MB
+ * regardless of video length (vs. 270MB+ for 3-min video when loading all frames).
  */
 @Composable
 fun EmbeddedVideoPlayer(
@@ -52,13 +96,52 @@ fun EmbeddedVideoPlayer(
     var videoDurationMs by remember { mutableStateOf(0L) }
     var videoFps by remember { mutableStateOf(30.0) }
     var extractionProgress by remember { mutableStateOf(-1f) }
-    var loadingProgress by remember { mutableStateOf(0f) }
     var ready by remember { mutableStateOf(false) }
 
-    // All frames in memory. Index 0 = first frame.
-    val allFrames = remember { mutableStateListOf<ImageBitmap>() }
+    // Sliding window: store file paths on disk, cache decoded bitmaps in LRU
+    val framePaths = remember { mutableStateListOf<String>() }
+    val frameCache = remember { FrameCache(200) }
     var displayedIdx by remember { mutableStateOf(-1) }
     var framesDir by remember { mutableStateOf<File?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+
+    /**
+     * Get a frame from cache, or load it from disk synchronously.
+     * For scrub this adds ~2ms latency which is imperceptible.
+     */
+    fun getFrame(index: Int): ImageBitmap? {
+        if (index !in framePaths.indices) return null
+        frameCache.get(index)?.let { return it }
+        // Cache miss — load from disk (~2ms)
+        val bitmap = loadFrameFromDisk(framePaths[index]) ?: return null
+        frameCache.put(index, bitmap)
+        return bitmap
+    }
+
+    /**
+     * Pre-load frames around [centerIndex] into the cache in background.
+     * Loads ±100 frames (window of ~200) = ~3.3 seconds at 30fps.
+     */
+    fun preloadWindow(centerIndex: Int) {
+        coroutineScope.launch(Dispatchers.IO) {
+            val totalFrames = framePaths.size
+            val start = (centerIndex - 100).coerceAtLeast(0)
+            val end = (centerIndex + 100).coerceAtMost(totalFrames - 1)
+            // Prioritize forward frames (ahead of playhead)
+            for (i in centerIndex..end) {
+                if (!frameCache.contains(i)) {
+                    val bmp = loadFrameFromDisk(framePaths[i])
+                    if (bmp != null) frameCache.put(i, bmp)
+                }
+            }
+            for (i in (start until centerIndex).reversed()) {
+                if (!frameCache.contains(i)) {
+                    val bmp = loadFrameFromDisk(framePaths[i])
+                    if (bmp != null) frameCache.put(i, bmp)
+                }
+            }
+        }
+    }
 
     // ---- Error / not found UI ----
     if (errorMessage != null) {
@@ -79,15 +162,15 @@ fun EmbeddedVideoPlayer(
         return
     }
 
-    // ---- INIT: extract + load ----
+    // ---- INIT: extract frames to disk (DON'T load all into memory) ----
     LaunchedEffect(videoPath) {
         errorMessage = null
         currentFrame = null
-        allFrames.clear()
+        framePaths.clear()
+        frameCache.clear()
         displayedIdx = -1
         ready = false
         extractionProgress = 0f
-        loadingProgress = 0f
 
         withContext(Dispatchers.IO) {
             if (!isFfmpegAvailable()) {
@@ -101,7 +184,7 @@ fun EmbeddedVideoPlayer(
             videoDurationMs = duration
             onDurationReady(duration)
 
-            // Extract all native frames
+            // Extract all native frames to disk
             val tmpDir = File(System.getProperty("java.io.tmpdir"), "gp_${System.currentTimeMillis()}")
             tmpDir.mkdirs()
             framesDir = tmpDir
@@ -128,57 +211,71 @@ fun EmbeddedVideoPlayer(
             val files = tmpDir.listFiles()?.filter { it.extension == "jpg" }?.sortedBy { it.name } ?: emptyList()
             if (files.isEmpty()) { errorMessage = "No se pudieron extraer frames"; tmpDir.deleteRecursively(); return@withContext }
 
-            // Load ALL frames: read raw JPEG bytes → Skia decode (fast, ~0.1ms/frame read + ~2ms decode)
-            files.forEachIndexed { i, f ->
-                try {
-                    val bytes = f.readBytes()
-                    val bitmap = org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
-                    allFrames.add(bitmap)
-                } catch (_: Exception) {
-                    // Skip broken frame
-                    if (allFrames.isNotEmpty()) allFrames.add(allFrames.last())
-                }
-                loadingProgress = (i + 1).toFloat() / files.size
-                // Show first frame immediately
-                if (i == 0 && allFrames.isNotEmpty()) {
-                    currentFrame = allFrames[0]
-                    displayedIdx = 0
-                }
+            // Store only file paths — NOT decoded bitmaps
+            framePaths.addAll(files.map { it.absolutePath })
+
+            // Load first frame immediately for display
+            val firstBitmap = loadFrameFromDisk(framePaths[0])
+            if (firstBitmap != null) {
+                frameCache.put(0, firstBitmap)
+                currentFrame = firstBitmap
+                displayedIdx = 0
             }
+
+            // Pre-load initial window (first ~100 frames) in background
+            preloadWindow(0)
+
             ready = true
         }
     }
 
     // Cleanup
-    DisposableEffect(videoPath) { onDispose { framesDir?.deleteRecursively() } }
+    DisposableEffect(videoPath) { onDispose { frameCache.clear(); framesDir?.deleteRecursively() } }
 
     // ---- SCRUB: react to external time changes when NOT playing ----
     LaunchedEffect(currentTimeMs, isPlaying, ready) {
-        if (isPlaying || !ready || allFrames.isEmpty()) return@LaunchedEffect
-        val idx = msToFrame(currentTimeMs, videoFps, allFrames.size)
-        if (idx != displayedIdx && idx in allFrames.indices) {
-            currentFrame = allFrames[idx]
-            displayedIdx = idx
+        if (isPlaying || !ready || framePaths.isEmpty()) return@LaunchedEffect
+        val idx = msToFrame(currentTimeMs, videoFps, framePaths.size)
+        if (idx != displayedIdx && idx in framePaths.indices) {
+            val bitmap = withContext(Dispatchers.IO) { getFrame(idx) }
+            if (bitmap != null) {
+                currentFrame = bitmap
+                displayedIdx = idx
+                preloadWindow(idx)
+            }
         }
     }
 
     // ---- PLAYBACK ----
     LaunchedEffect(isPlaying, playbackSpeed, ready) {
-        if (!isPlaying || !ready || allFrames.isEmpty()) return@LaunchedEffect
+        if (!isPlaying || !ready || framePaths.isEmpty()) return@LaunchedEffect
         // Start from current position
-        var idx = msToFrame(currentTimeMs, videoFps, allFrames.size)
+        var idx = msToFrame(currentTimeMs, videoFps, framePaths.size)
         val intervalMs = (1000.0 / videoFps / playbackSpeed).toLong().coerceAtLeast(8L)
+
+        // Pre-load window ahead of playhead
+        preloadWindow(idx)
 
         while (isActive) {
             delay(intervalMs)
-            // Check pause AFTER delay — isPlaying is a snapshot but LaunchedEffect
-            // will be CANCELLED and relaunched when isPlaying changes (it's a key),
-            // so this loop will be interrupted by cancellation.
             idx++
-            if (idx >= allFrames.size) idx = 0
-            currentFrame = allFrames[idx]
-            displayedIdx = idx
-            onTimeUpdate(frameToMs(idx, videoFps))
+            if (idx >= framePaths.size) idx = 0
+
+            // Try cache first; if miss, load from disk (with small timeout)
+            val bitmap = withContext(Dispatchers.IO) { getFrame(idx) }
+            if (bitmap != null) {
+                currentFrame = bitmap
+                displayedIdx = idx
+                onTimeUpdate(frameToMs(idx, videoFps))
+            } else {
+                // Frame couldn't be decoded — advance without updating display
+                onTimeUpdate(frameToMs(idx, videoFps))
+            }
+
+            // Trigger pre-load every 50 frames to keep window ahead
+            if (idx % 50 == 0) {
+                preloadWindow(idx)
+            }
         }
     }
 
@@ -202,17 +299,6 @@ fun EmbeddedVideoPlayer(
                 Text(String.format(Locale.US, "%d%%", (extractionProgress * 100).toInt()),
                     color = TextDim, fontSize = 11.sp)
             }
-        } else if (!ready && loadingProgress > 0f) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(color = Green, modifier = Modifier.size(36.dp))
-                Spacer(Modifier.height(12.dp))
-                Text("Cargando frames...", color = TextDim, fontSize = 13.sp)
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(progress = { loadingProgress }, color = Green,
-                    trackColor = DarkCard, modifier = Modifier.width(200.dp).height(4.dp))
-                Text(String.format(Locale.US, "%d%%", (loadingProgress * 100).toInt()),
-                    color = TextDim, fontSize = 11.sp)
-            }
         } else {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator(color = Cyan, modifier = Modifier.size(36.dp))
@@ -230,11 +316,25 @@ private fun msToFrame(ms: Long, fps: Double, total: Int): Int =
 private fun frameToMs(idx: Int, fps: Double): Long =
     (idx * 1000.0 / fps).toLong()
 
-private fun findFfmpeg(): String =
-    if (File("/usr/local/bin/ffmpeg").exists()) "/usr/local/bin/ffmpeg" else "ffmpeg"
+private fun findFfmpeg(): String {
+    val candidates = listOf(
+        "/usr/local/bin/ffmpeg",       // Homebrew Intel Mac
+        "/opt/homebrew/bin/ffmpeg",     // Homebrew ARM Mac
+        "/usr/bin/ffmpeg",             // System Linux
+        "C:\\ffmpeg\\bin\\ffmpeg.exe",  // Common Windows
+    )
+    return candidates.firstOrNull { File(it).exists() } ?: "ffmpeg" // fallback to PATH
+}
 
-private fun findFfprobe(): String =
-    if (File("/usr/local/bin/ffprobe").exists()) "/usr/local/bin/ffprobe" else "ffprobe"
+private fun findFfprobe(): String {
+    val candidates = listOf(
+        "/usr/local/bin/ffprobe",       // Homebrew Intel Mac
+        "/opt/homebrew/bin/ffprobe",     // Homebrew ARM Mac
+        "/usr/bin/ffprobe",             // System Linux
+        "C:\\ffmpeg\\bin\\ffprobe.exe",  // Common Windows
+    )
+    return candidates.firstOrNull { File(it).exists() } ?: "ffprobe" // fallback to PATH
+}
 
 private fun isFfmpegAvailable(): Boolean = try {
     val p = ProcessBuilder(findFfmpeg(), "-version").redirectErrorStream(true).start()

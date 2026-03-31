@@ -31,12 +31,17 @@ fun main() {
     }
 
     Window(
-        onCloseRequest = ::exitApplication,
+        onCloseRequest = {
+            vm.cleanup()
+            exitApplication()
+        },
         title = AppVersion.FULL,
         icon = painterResource("app-icon.png"),
         state = WindowState(size = DpSize(960.dp, 700.dp))
     ) {
-        window.minimumSize = Dimension(800, 600)
+        SideEffect {
+            window.minimumSize = Dimension(800, 600)
+        }
         MaterialTheme(colorScheme = AppColors) {
             val screen by vm.screen.collectAsState()
 

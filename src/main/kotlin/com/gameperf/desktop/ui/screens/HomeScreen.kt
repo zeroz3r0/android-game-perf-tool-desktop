@@ -9,13 +9,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -119,7 +119,7 @@ fun HomeScreen(vm: AppViewModel) {
                         Spacer(Modifier.height(4.dp))
                         Text(
                             if (updateProgress!! >= 1f) "Reiniciando..."
-                            else "Descargando... ${"%.0f".format(updateProgress!! * 100)}%",
+                            else "Descargando... ${String.format(java.util.Locale.US, "%.0f", updateProgress!! * 100)}%",
                             color = Yellow,
                             fontSize = 11.sp,
                             textAlign = TextAlign.Center,
@@ -262,7 +262,7 @@ fun HomeScreen(vm: AppViewModel) {
                         if (deviceInfo != null) {
                             val info = deviceInfo!!
                             Spacer(Modifier.height(12.dp))
-                            Divider(color = TextDim.copy(alpha = 0.3f))
+                            HorizontalDivider(color = TextDim.copy(alpha = 0.3f))
                             Spacer(Modifier.height(8.dp))
                             StatRow("CPU", info.cpu)
                             StatRow("GPU", info.gpu.take(40))
@@ -455,6 +455,7 @@ fun HomeScreen(vm: AppViewModel) {
                     historyEntries.forEach { entry ->
                         var isEditing by remember { mutableStateOf(false) }
                         var editName by remember { mutableStateOf(entry.name) }
+                        var showDeleteConfirmation by remember { mutableStateOf(false) }
                         val isSelectedForComp = entry.id in comparisonSelection
 
                         Card(
@@ -571,7 +572,43 @@ fun HomeScreen(vm: AppViewModel) {
                                         Icon(Icons.Default.Videocam, "Video", tint = Purple, modifier = Modifier.size(16.dp))
                                     }
                                 }
+
+                                // Delete entry
+                                IconButton(
+                                    onClick = { showDeleteConfirmation = true },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, "Eliminar", tint = Red.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
+                                }
                             }
+                        }
+
+                        // Delete confirmation dialog
+                        if (showDeleteConfirmation) {
+                            AlertDialog(
+                                onDismissRequest = { showDeleteConfirmation = false },
+                                title = { Text("Eliminar sesión", fontWeight = FontWeight.Bold) },
+                                text = { Text("¿Eliminar esta sesión del historial? Esta acción no se puede deshacer.") },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            showDeleteConfirmation = false
+                                            vm.deleteHistoryEntry(entry.id)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Red)
+                                    ) {
+                                        Text("Eliminar", fontWeight = FontWeight.Bold)
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showDeleteConfirmation = false }) {
+                                        Text("Cancelar")
+                                    }
+                                },
+                                containerColor = DarkCard,
+                                titleContentColor = Color.White,
+                                textContentColor = TextSecondary
+                            )
                         }
                     }
 
@@ -589,7 +626,7 @@ fun HomeScreen(vm: AppViewModel) {
                             ),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.CompareArrows, null, modifier = Modifier.size(20.dp))
+                            Icon(Icons.AutoMirrored.Filled.CompareArrows, null, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("Comparar sesiones", fontWeight = FontWeight.Bold)
                         }

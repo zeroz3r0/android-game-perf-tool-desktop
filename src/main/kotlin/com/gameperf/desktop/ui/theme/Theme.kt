@@ -40,8 +40,4 @@ fun gradeColor(grade: Char): Color = when (grade) {
     else -> Red
 }
 
-fun severityColor(severity: String): Color = when (severity.lowercase()) {
-    "alto" -> Red
-    "medio" -> Yellow
-    else -> Cyan
-}
+
