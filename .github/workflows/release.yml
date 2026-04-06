@@ -8,11 +8,10 @@ jobs:
   build:
     strategy:
       matrix:
-        # macos-latest = arm64 (Apple Silicon), macos-13 = x64 (Intel).
-        # Both are needed because Apple Silicon Macs running the JVM under Rosetta
-        # report os.arch=x86_64, so they download the macos-x64 JAR. Without it,
-        # the auto-updater falls back to the wrong asset and the update never lands.
-        os: [ubuntu-latest, macos-latest, macos-13, windows-latest]
+        # macos-13 (Intel x64) is deprecated in GitHub Actions and gets cancelled at runtime.
+        # We build macos-x64 manually post-release via `gh release upload` from a local x64
+        # build. See docs/IntegrationManualTest.md for the procedure.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
