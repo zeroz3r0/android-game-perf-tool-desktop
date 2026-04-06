@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.6] — 2026-04-06
+
+### Que hay de nuevo
+- El cartel de actualizacion ahora muestra los puntos alineados correctamente
+- Mejoramos el estilo del resumen para que sea mas facil de leer
+- Ahora podes escribir las notas de version pensando directamente en los usuarios
+
+### Arreglado
+- Los puntos del resumen ya no se ven desalineados cuando el texto ocupa varias lineas
+- El color de los puntos es mas visible sobre el fondo oscuro del cartel
+
+### Technical changes (for devs)
+- HomeScreen.kt: bullet rendering unified into a single Text with inline prefix to guarantee baseline alignment regardless of wrap
+- summarizeReleaseBody: new priority tier for human-friendly sections ("Que hay de nuevo", "Novedades", "Highlights", "What's new") that ranks above "Added"/"Fixed"
+- Sort stability: bullets now sort by (priority, original order) to preserve author-intended reading order within a section
+- Section matching accepts Spanish variants ("Nuevo", "Arreglado", "Correcciones", "Cambios") alongside English
+
 ## [3.1.5] — 2026-04-06
 
 ### Added

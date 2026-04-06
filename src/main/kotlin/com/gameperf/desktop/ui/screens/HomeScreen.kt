@@ -125,32 +125,33 @@ fun HomeScreen(vm: AppViewModel) {
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(Color.Black.copy(alpha = 0.25f))
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
                         ) {
                             Text(
-                                "Que hay de nuevo",
-                                color = Yellow.copy(alpha = 0.85f),
+                                "QUE HAY DE NUEVO",
+                                color = Yellow.copy(alpha = 0.9f),
                                 fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.8.sp
                             )
-                            Spacer(Modifier.height(4.dp))
-                            miniChangelog.forEach { line ->
-                                Row(verticalAlignment = Alignment.Top) {
-                                    Text(
-                                        "•  ",
-                                        color = TextSecondary,
-                                        fontSize = 11.sp,
-                                        modifier = Modifier.padding(top = 1.dp)
-                                    )
-                                    Text(
-                                        line,
-                                        color = TextSecondary,
-                                        fontSize = 11.sp,
-                                        lineHeight = 15.sp,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                            Spacer(Modifier.height(6.dp))
+                            miniChangelog.forEachIndexed { index, line ->
+                                // Single Text with the bullet prefixed guarantees the bullet
+                                // and the first line share the same baseline. Hanging-indent
+                                // via textIndent equivalent: we use a double-space indent on
+                                // wrapped lines by prefixing the bullet inline. Since Compose
+                                // Text doesn't expose hanging indent natively, we render the
+                                // bullet and text as one string — wrapped lines will align to
+                                // the left of the bullet, which is acceptable at this width.
+                                Text(
+                                    text = "•  $line",
+                                    color = Color.White.copy(alpha = 0.82f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp
+                                )
+                                if (index < miniChangelog.lastIndex) {
+                                    Spacer(Modifier.height(4.dp))
                                 }
-                                Spacer(Modifier.height(2.dp))
                             }
                         }
                     }
@@ -727,33 +728,63 @@ fun HomeScreen(vm: AppViewModel) {
 /**
  * Extract the most relevant bullet points from a GitHub release body (markdown).
  *
- * Strategy: prefer lines under "### Added", "### Fixed", "### Changed" sections (in that order)
- * but fall back to ANY top-level bullet if no sections match. Strips markdown formatting
- * (bold, code, links) and truncates each line to a readable length. Returns at most 5 bullets.
+ * Section priority (highest first):
+ *   1. "Que hay de nuevo" / "Novedades" / "Highlights" / "What's new"  — human-friendly summary
+ *      written specifically for end users. Always shown first if present.
+ *   2. "Added" / "Nuevo" / "Nuevas" / "New features"                    — new features
+ *   3. "Fixed" / "Arreglado" / "Arreglos" / "Correcciones"              — bug fixes
+ *   4. "Changed" / "Cambios" / "Cambiado"                               — changes
+ *   5. "Critical"                                                         — critical notices
  *
- * Empty list means: nothing useful was extracted (very short body, no bullets, etc.) — caller
- * should hide the changelog block in that case.
+ * Any top-level bullet that is not under a recognized section gets the lowest priority.
+ *
+ * Empty list means nothing useful was extracted (very short body, no bullets, etc.) —
+ * the caller should hide the changelog block in that case.
+ *
+ * Authors writing release notes should put a "## Que hay de nuevo" section at the top with
+ * plain-language bullets aimed at non-technical users. Technical details can live in the
+ * lower sections without polluting the in-app banner.
  */
 private fun summarizeReleaseBody(body: String?): List<String> {
     if (body.isNullOrBlank()) return emptyList()
 
-    // Section priority: anything under these gets surfaced first.
-    val priority = listOf("added", "fixed", "changed", "critical", "feature", "bug")
+    // Section priority (lower index = higher priority = appears first in the banner).
+    // Each entry is a list of substrings that match the section header (lowercased).
+    val prioritySections: List<List<String>> = listOf(
+        // 0: user-friendly summary, highest priority
+        listOf("que hay de nuevo", "novedades", "highlights", "what's new", "whats new", "resumen"),
+        // 1: new features
+        listOf("added", "nuevo", "nuevas", "new features", "features"),
+        // 2: bug fixes
+        listOf("fixed", "arreglado", "arreglos", "correcciones", "bug fix"),
+        // 3: changes
+        listOf("changed", "cambios", "cambiado"),
+        // 4: critical / important
+        listOf("critical", "importante", "aviso")
+    )
+    val lowestPriority = prioritySections.size
 
-    data class Bullet(val priority: Int, val text: String)
+    fun matchPriority(header: String): Int {
+        prioritySections.forEachIndexed { idx, keywords ->
+            if (keywords.any { header.contains(it) }) return idx
+        }
+        return lowestPriority
+    }
+
+    data class Bullet(val priority: Int, val order: Int, val text: String)
     val bullets = mutableListOf<Bullet>()
-    var currentPriority = priority.size // default = lowest priority
+    var currentPriority = lowestPriority
+    var order = 0
 
     body.lineSequence().forEach { rawLine ->
         val line = rawLine.trim()
 
-        // Section header detection: ##, ###, or **Section** style
+        // Section header detection: #, ##, ### ... or **Bold**: style
         val headerMatch = Regex("""^#{1,6}\s+(.+)$""").find(line)
             ?: Regex("""^\*\*(.+?)\*\*\s*:?$""").find(line)
         if (headerMatch != null) {
             val name = headerMatch.groupValues[1].lowercase()
-            currentPriority = priority.indexOfFirst { name.contains(it) }
-                .takeIf { it >= 0 } ?: priority.size
+            currentPriority = matchPriority(name)
             return@forEach
         }
 
@@ -774,11 +805,13 @@ private fun summarizeReleaseBody(body: String?): List<String> {
         if (text.length < 3) return@forEach
         // Truncate very long lines so the banner stays compact
         val truncated = if (text.length > 140) text.substring(0, 137).trimEnd() + "..." else text
-        bullets.add(Bullet(currentPriority, truncated))
+        bullets.add(Bullet(currentPriority, order++, truncated))
     }
 
+    // Sort by priority (ascending — highest priority first) then by original order (preserve
+    // the author's intended reading order within a section).
     return bullets
-        .sortedBy { it.priority }
+        .sortedWith(compareBy({ it.priority }, { it.order }))
         .take(5)
         .map { it.text }
 }
