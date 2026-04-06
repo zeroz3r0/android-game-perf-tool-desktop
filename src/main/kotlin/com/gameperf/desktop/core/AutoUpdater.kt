@@ -62,10 +62,25 @@ object AutoUpdater {
     )
 
     /**
+     * Last error encountered by [checkForUpdate], for debugging.
+     * Populated on both `Exception` and `Error` failures (including `StackOverflowError`
+     * from the old regex-based parser that made the whole check fail silently).
+     */
+    @Volatile
+    var lastCheckError: String? = null
+        private set
+
+    /**
      * Check GitHub API for latest release.
-     * Returns null if no update is available or on any error.
+     * Returns null if no update is available or on any error. The reason is recorded in
+     * [lastCheckError].
+     *
+     * NOTE: catches `Throwable`, not `Exception`. The old implementation only caught
+     * `Exception`, so `StackOverflowError` from catastrophic regex backtracking on long
+     * release bodies escaped silently and stopped the update banner from ever appearing.
      */
     fun checkForUpdate(): ReleaseInfo? {
+        lastCheckError = null
         return try {
             val url = URL("https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest")
             val conn = url.openConnection() as HttpURLConnection
@@ -75,12 +90,18 @@ object AutoUpdater {
             conn.connectTimeout = 10_000
             conn.readTimeout = 10_000
 
-            if (conn.responseCode != 200) return null
+            if (conn.responseCode != 200) {
+                lastCheckError = "HTTP ${conn.responseCode} from GitHub API"
+                return null
+            }
 
             val json = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
             conn.disconnect()
 
-            val tagName = extractJsonString(json, "tag_name") ?: return null
+            val tagName = extractJsonString(json, "tag_name") ?: run {
+                lastCheckError = "Could not extract tag_name from GitHub response"
+                return null
+            }
             val version = tagName.removePrefix("v").removePrefix("V")
             val name = extractJsonString(json, "name") ?: tagName
             val body = extractJsonString(json, "body") ?: ""
@@ -91,7 +112,8 @@ object AutoUpdater {
             val jarUrl = extractJarAssetUrl(json)
 
             ReleaseInfo(tagName, version, name, body, publishedAt, jarUrl, htmlUrl)
-        } catch (_: Exception) {
+        } catch (t: Throwable) {
+            lastCheckError = "${t.javaClass.simpleName}: ${t.message ?: "no details"}"
             null
         }
     }
@@ -651,15 +673,151 @@ del /f "${script.absolutePath}"
             .start()
     }
 
-    /** Extract a simple top-level string value from JSON without a parser. */
-    private fun extractJsonString(json: String, key: String): String? {
-        // Match "key" : "value" handling escaped quotes in value
-        val pattern = """"$key"\s*:\s*"((?:[^"\\]|\\.)*)"""".toRegex()
-        return pattern.find(json)?.groupValues?.get(1)
-            ?.replace("\\\"", "\"")
-            ?.replace("\\\\", "\\")
-            ?.replace("\\n", "\n")
-            ?.replace("\\t", "\t")
+    /**
+     * Extract a top-level string value from JSON without a regex.
+     *
+     * WHY NOT REGEX: the previous implementation used `"$key"\s*:\s*"((?:[^"\\]|\\.)*)"`
+     * which worked for short values but hit `StackOverflowError` on long release bodies
+     * (e.g. v3.1.3 with 1827 characters of mixed unicode, escaped quotes, and `\n`). Java's
+     * regex engine does recursive backtracking on alternations with `*`, and once the body
+     * crosses a certain length with enough escape sequences the stack blows up. The catch
+     * block in `checkForUpdate()` only catches `Exception`, not `Error`, so the failure was
+     * silent — the update banner simply never appeared.
+     *
+     * THIS IMPLEMENTATION: linear scan, no recursion. Finds the first occurrence of the key
+     * (as a quoted string followed by `:`), then reads the value character by character,
+     * honoring JSON escape sequences (`\"`, `\\`, `\n`, `\t`, `\r`, `\b`, `\f`, `\/`, `\uXXXX`).
+     * Safe for bodies of arbitrary length.
+     *
+     * Returns `null` if the key is not found, if its value is not a string, or if the string
+     * is malformed.
+     */
+    internal fun extractJsonString(json: String, key: String): String? {
+        val needle = "\"$key\""
+        var searchFrom = 0
+        while (true) {
+            val kIdx = json.indexOf(needle, searchFrom)
+            if (kIdx < 0) return null
+
+            // Verify this is actually a key (followed by optional whitespace + `:` + optional whitespace + `"`)
+            var after = kIdx + needle.length
+            while (after < json.length && json[after].isWhitespace()) after++
+            if (after >= json.length || json[after] != ':') {
+                // Not a key — could be a value containing the same text. Keep searching.
+                searchFrom = kIdx + 1
+                continue
+            }
+            after++
+            while (after < json.length && json[after].isWhitespace()) after++
+            if (after >= json.length || json[after] != '"') {
+                // Value is not a string (number, bool, object, array, null). This extractor
+                // only handles strings — bail out.
+                return null
+            }
+            after++
+
+            // Scan the string body, handling escapes, until the closing unescaped `"`.
+            val out = StringBuilder()
+            while (after < json.length) {
+                val c = json[after]
+                if (c == '"') return out.toString()
+                if (c == '\\') {
+                    after++
+                    if (after >= json.length) return null
+                    when (val esc = json[after]) {
+                        '"'  -> out.append('"')
+                        '\\' -> out.append('\\')
+                        '/'  -> out.append('/')
+                        'n'  -> out.append('\n')
+                        't'  -> out.append('\t')
+                        'r'  -> out.append('\r')
+                        'b'  -> out.append('\b')
+                        'f'  -> out.append('\u000C')
+                        'u'  -> {
+                            if (after + 4 >= json.length) return null
+                            val hex = json.substring(after + 1, after + 5)
+                            val cp = hex.toIntOrNull(16) ?: return null
+                            out.append(cp.toChar())
+                            after += 4
+                        }
+                        else -> out.append(esc) // tolerant of unknown escapes
+                    }
+                    after++
+                } else {
+                    out.append(c)
+                    after++
+                }
+            }
+            return null // unterminated string
+        }
+    }
+
+    /**
+     * Extract all values of a repeating top-level string key from JSON. Used to scan the
+     * `assets[].browser_download_url` fields. Same non-regex strategy as [extractJsonString]
+     * to avoid the StackOverflowError issue.
+     */
+    internal fun extractAllJsonStrings(json: String, key: String): List<String> {
+        val needle = "\"$key\""
+        val results = mutableListOf<String>()
+        var searchFrom = 0
+        while (true) {
+            val kIdx = json.indexOf(needle, searchFrom)
+            if (kIdx < 0) return results
+
+            var after = kIdx + needle.length
+            while (after < json.length && json[after].isWhitespace()) after++
+            if (after >= json.length || json[after] != ':') {
+                searchFrom = kIdx + 1
+                continue
+            }
+            after++
+            while (after < json.length && json[after].isWhitespace()) after++
+            if (after >= json.length || json[after] != '"') {
+                searchFrom = kIdx + 1
+                continue
+            }
+            after++
+
+            val out = StringBuilder()
+            var terminated = false
+            while (after < json.length) {
+                val c = json[after]
+                if (c == '"') {
+                    results.add(out.toString())
+                    terminated = true
+                    searchFrom = after + 1
+                    break
+                }
+                if (c == '\\') {
+                    after++
+                    if (after >= json.length) return results
+                    when (val esc = json[after]) {
+                        '"'  -> out.append('"')
+                        '\\' -> out.append('\\')
+                        '/'  -> out.append('/')
+                        'n'  -> out.append('\n')
+                        't'  -> out.append('\t')
+                        'r'  -> out.append('\r')
+                        'b'  -> out.append('\b')
+                        'f'  -> out.append('\u000C')
+                        'u'  -> {
+                            if (after + 4 >= json.length) return results
+                            val hex = json.substring(after + 1, after + 5)
+                            val cp = hex.toIntOrNull(16) ?: return results
+                            out.append(cp.toChar())
+                            after += 4
+                        }
+                        else -> out.append(esc)
+                    }
+                    after++
+                } else {
+                    out.append(c)
+                    after++
+                }
+            }
+            if (!terminated) return results
+        }
     }
 
     /**
@@ -679,23 +837,20 @@ del /f "${script.absolutePath}"
     }
 
     /**
-     * Extract the platform-matching .jar asset URL from the GitHub release JSON.
-     * Matches by platform tag (e.g., "macos-x64") in the filename.
-     * Falls back to first .jar if no platform match is found.
+     * Extract the platform-matching `.jar` asset URL from the GitHub release JSON.
+     * Matches by platform tag (e.g. `macos-x64`) in the filename. Falls back to the first
+     * `.jar` if no platform match is found.
+     *
+     * Uses [extractAllJsonStrings] (linear scan) instead of regex to avoid the
+     * `StackOverflowError` that the previous regex-based implementation hit on long bodies.
      */
     private fun extractJarAssetUrl(json: String): String? {
         val platform = detectPlatformTag()
-        val pattern = """"browser_download_url"\s*:\s*"((?:[^"\\]|\\.)*)"""".toRegex()
-        val allJarUrls = mutableListOf<String>()
-        for (match in pattern.findAll(json)) {
-            val url = match.groupValues[1]
-            if (url.endsWith(".jar")) {
-                // Prefer exact platform match
-                if (url.contains(platform)) return url
-                allJarUrls.add(url)
-            }
-        }
-        // Fallback: return first JAR if no platform match
-        return allJarUrls.firstOrNull()
+        val allUrls = extractAllJsonStrings(json, "browser_download_url")
+        val jarUrls = allUrls.filter { it.endsWith(".jar") }
+        // Prefer exact platform match first
+        jarUrls.firstOrNull { it.contains(platform) }?.let { return it }
+        // Fallback: first JAR (better than returning null — gives the user *something*)
+        return jarUrls.firstOrNull()
     }
 }

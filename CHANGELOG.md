@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.4] — 2026-04-06
+
+### Fixed
+- CRITICAL: el banner de actualizacion disponible nunca aparecia para releases con release notes largas (mas de ~1500 caracteres mezclando unicode, comillas escapadas y saltos de linea). El parser de JSON del auto-updater usaba un regex con catastrophic backtracking que explotaba con StackOverflowError al procesar el body del release. El catch de checkForUpdate solo atrapaba Exception, no Error, asi que el fallo era silencioso — el update check se mataba sin notificar al ViewModel y _updateAvailable quedaba en null. Reemplazado por un parser JSON manual en AutoUpdater.kt sin regex ni recursion: scan lineal, zero backtracking, imposible de romper con bodies de cualquier tamano.
+- El catch de checkForUpdate ahora atrapa Throwable en vez de Exception, para cubrir tambien errores de la JVM como StackOverflowError que antes escapaban silenciosamente.
+
+### Added
+- `AutoUpdater.lastCheckError`: nuevo campo volatile que captura el motivo del ultimo fallo de checkForUpdate (HTTP code, excepcion, error). Util para debugging post-mortem y para mostrar mensajes especificos en el UI en el futuro.
+
+### Verified empirically
+- Parser JSON portado a Java puro y testeado contra el body real de v3.1.3 (1827 caracteres con unicode, escapes y mixed content) — extraccion completa sin StackOverflow.
+- Bundle local actualizado a v3.1.4 y launch verificado — corre 6+ segundos sin crash.
+
 ## [3.1.3] — 2026-04-06
 
 ### Added
