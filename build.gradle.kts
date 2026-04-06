@@ -10,6 +10,40 @@ val appVersion: String by project
 group = "com.gameperf"
 version = appVersion
 
+// Regenerate AppVersion.kt from gradle.properties every build so the runtime
+// version always matches the build version. This prevents the v3.0.0 bug
+// where AppVersion.NAME was hardcoded and never bumped, causing the
+// auto-updater to offer the same version forever.
+val generateAppVersion by tasks.registering {
+    val outputDir = layout.buildDirectory.dir("generated/sources/appversion/kotlin")
+    outputs.dir(outputDir)
+    inputs.property("appVersion", appVersion)
+    doLast {
+        val pkgDir = outputDir.get().asFile.resolve("com/gameperf/desktop/core")
+        pkgDir.mkdirs()
+        pkgDir.resolve("AppVersion.kt").writeText(
+            """
+            package com.gameperf.desktop.core
+
+            // AUTO-GENERATED at build time from gradle.properties.
+            // DO NOT EDIT — change `appVersion` in gradle.properties instead.
+            object AppVersion {
+                const val NAME = "$appVersion"
+                const val FULL = "Game Perf Desktop v${'$'}NAME"
+            }
+            """.trimIndent() + "\n"
+        )
+    }
+}
+
+kotlin {
+    sourceSets["main"].kotlin.srcDir(generateAppVersion.map { it.outputs.files })
+}
+
+tasks.named("compileKotlin") {
+    dependsOn(generateAppVersion)
+}
+
 repositories {
     google()
     mavenCentral()
