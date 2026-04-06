@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.5] — 2026-04-06
+
+### Added
+- Release de prueba para validar end-to-end el mini-changelog en el banner de actualizacion
+- Este release existe para que usuarios en v3.1.4 vean el banner amarillo con bullets
+- Cada bullet se trunca a 140 caracteres para mantener el banner compacto
+
+### Fixed
+- Confirmacion de que el fix del regex StackOverflow funciona contra bodies largos en produccion
+- El parser lineal de extractJsonString maneja correctamente unicode, escapes y newlines
+
 ## [3.1.4] — 2026-04-06
 
 ### Fixed
