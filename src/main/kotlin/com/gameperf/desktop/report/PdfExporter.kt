@@ -55,9 +55,10 @@ object PdfExporter {
             "gameperf-chrome-${System.currentTimeMillis()}-${(Math.random() * 1_000_000).toInt()}"
         ).apply { mkdirs() }
 
-        // 11 flags, order-sensitive. Validated experimentally with Chrome 146 in
-        // sdd-explore. --virtual-time-budget=10000 is critical for Chart.js animations
-        // to settle before the print snapshot.
+        // Flags validated experimentally with Chrome 146+. --virtual-time-budget gives
+        // Chart.js a chance to draw before the print snapshot. The ?print=1 query string
+        // signals the report HTML to use the print color palette (dark text, light fills,
+        // no animations) so charts render legibly on white paper.
         val command = listOf(
             browser.executable.absolutePath,
             "--headless",
@@ -69,7 +70,7 @@ object PdfExporter {
             "--run-all-compositor-stages-before-draw",
             "--user-data-dir=${userDataDir.absolutePath}",
             "--print-to-pdf=${targetPdf.absolutePath}",
-            "file://${source.absolutePath}",
+            "file://${source.absolutePath}?print=1",
         )
 
         val process = try {

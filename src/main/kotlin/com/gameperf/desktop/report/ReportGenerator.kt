@@ -471,30 +471,160 @@ $markersHtml
 <script id="sessionData" type="application/json">$jsonData</script>
 
 <script>
+// Detect print mode: PdfExporter passes ?print=1 in the file:// URL when generating a PDF.
+// When in print mode, we use a high-contrast palette so charts are legible on white paper.
+// This MUST run before any chart is instantiated, because Chart.js bakes the colors into the
+// canvas at construction time and CSS @media print cannot reach inside a <canvas>.
+var IS_PRINT = (function(){
+  try { return window.location.search.indexOf('print=1') >= 0; } catch(e) { return false; }
+})();
+
 Chart.defaults.font.family='-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif';
-Chart.defaults.color='#94a3b8';
-var B={responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{labels:{color:'#94a3b8',font:{size:11},usePointStyle:true,pointStyle:'circle',padding:16}},tooltip:{mode:'index',intersect:false,backgroundColor:'rgba(15,23,42,0.95)',titleColor:'#e2e8f0',bodyColor:'#cbd5e1',borderColor:'rgba(148,163,184,0.2)',borderWidth:1,padding:12,cornerRadius:8,titleFont:{weight:'600'}}},scales:{x:{ticks:{color:'#64748b',maxTicksLimit:20,font:{size:10}},grid:{color:'rgba(148,163,184,0.06)'}},y:{ticks:{color:'#94a3b8',font:{size:11}},grid:{color:'rgba(148,163,184,0.08)'}}}};
-var ZP={zoom:{wheel:{enabled:true},pinch:{enabled:true},mode:'x'},pan:{enabled:true,mode:'x'}};
+Chart.defaults.color = IS_PRINT ? '#1e293b' : '#94a3b8';
+
+// Chart base options. The two halves (interactive vs print) share the same shape so the
+// `{...B, ...}` spread further down works for both modes.
+var B = IS_PRINT ? {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,                                  // PDFs do not need animation; faster + deterministic capture
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { labels: { color: '#1e293b', font: { size: 12, weight: '600' }, usePointStyle: true, pointStyle: 'circle', padding: 16 } },
+    tooltip: { enabled: false }                       // tooltips never appear in PDF anyway
+  },
+  scales: {
+    x: { ticks: { color: '#334155', maxTicksLimit: 12, font: { size: 11, weight: '500' } }, grid: { color: 'rgba(15,23,42,0.12)' }, border: { color: '#94a3b8' } },
+    y: { ticks: { color: '#334155', font: { size: 11, weight: '500' } }, grid: { color: 'rgba(15,23,42,0.10)' }, border: { color: '#94a3b8' } }
+  }
+} : {
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { labels: { color: '#94a3b8', font: { size: 11 }, usePointStyle: true, pointStyle: 'circle', padding: 16 } },
+    tooltip: { mode: 'index', intersect: false, backgroundColor: 'rgba(15,23,42,0.95)', titleColor: '#e2e8f0', bodyColor: '#cbd5e1', borderColor: 'rgba(148,163,184,0.2)', borderWidth: 1, padding: 12, cornerRadius: 8, titleFont: { weight: '600' } }
+  },
+  scales: {
+    x: { ticks: { color: '#64748b', maxTicksLimit: 20, font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.06)' } },
+    y: { ticks: { color: '#94a3b8', font: { size: 11 } }, grid: { color: 'rgba(148,163,184,0.08)' } }
+  }
+};
+
+var ZP = IS_PRINT
+  ? { zoom: { wheel: { enabled: false }, pinch: { enabled: false } }, pan: { enabled: false } }
+  : { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' }, pan: { enabled: true, mode: 'x' } };
+
+// Print-mode color overrides for line/area charts.
+// We need stronger borders and darker backgrounds because Chrome print rendering tends to
+// flatten alpha channels and gradients become washed out on white paper.
+var COLORS_PRINT = { primary: '#0369a1', accent: '#9a3412', good: '#15803d', warn: '#b45309', bad: '#b91c1c' };
+var COLORS_DARK  = { primary: '#38bdf8', accent: '#f97316', good: '#10b981', warn: '#f59e0b', bad: '#ef4444' };
+var C = IS_PRINT ? COLORS_PRINT : COLORS_DARK;
 """)
-            // FPS Chart
+            // FPS Chart — uses C.primary/bad/warn so colors swap automatically in print mode
             if (fpsD.isNotEmpty()) append("""
-(function(){var c=document.getElementById('fpsChart').getContext('2d');var g=c.createLinearGradient(0,0,0,300);g.addColorStop(0,'rgba(16,185,129,0.25)');g.addColorStop(0.5,'rgba(245,158,11,0.10)');g.addColorStop(1,'rgba(239,68,68,0.05)');new Chart(c,{type:'line',data:{labels:[$fpsL],datasets:[{label:'FPS',data:[$fpsD],borderColor:'#38bdf8',backgroundColor:g,fill:true,tension:0.3,pointRadius:0,pointHoverRadius:5,pointHoverBackgroundColor:'#38bdf8',borderWidth:2.5,segment:{borderColor:function(ctx){var v=ctx.p1.parsed.y;if(v<20)return'#ef4444';if(v<30)return'#f59e0b';return'#38bdf8'}}}]},options:{...B,scales:{...B.scales,y:{...B.scales.y,min:0,suggestedMax:65}},plugins:{...B.plugins,zoom:ZP,annotation:{annotations:{zr:{type:'box',yMin:0,yMax:20,backgroundColor:'rgba(239,68,68,0.04)',borderWidth:0},zy:{type:'box',yMin:20,yMax:30,backgroundColor:'rgba(245,158,11,0.03)',borderWidth:0},l30:{type:'line',yMin:30,yMax:30,borderColor:'rgba(245,158,11,0.4)',borderWidth:1,borderDash:[6,4],label:{content:'30 FPS',display:true,color:'#f59e0b',font:{size:10,weight:'600'},backgroundColor:'rgba(15,23,42,0.8)',padding:4}},l60:{type:'line',yMin:60,yMax:60,borderColor:'rgba(16,185,129,0.4)',borderWidth:1,borderDash:[6,4],label:{content:'60 FPS',display:true,color:'#10b981',font:{size:10,weight:'600'},backgroundColor:'rgba(15,23,42,0.8)',padding:4}}${if (markerAnnotationsJs.isNotEmpty()) ",$markerAnnotationsJs" else ""}}}}}})})();
+(function(){
+  var c=document.getElementById('fpsChart').getContext('2d');
+  var g;
+  if (IS_PRINT) {
+    // Solid light fill in print mode — gradients with alpha get washed out
+    g = 'rgba(3,105,161,0.10)';
+  } else {
+    g = c.createLinearGradient(0,0,0,300);
+    g.addColorStop(0,'rgba(16,185,129,0.25)');
+    g.addColorStop(0.5,'rgba(245,158,11,0.10)');
+    g.addColorStop(1,'rgba(239,68,68,0.05)');
+  }
+  new Chart(c,{
+    type:'line',
+    data:{labels:[$fpsL],datasets:[{
+      label:'FPS',data:[$fpsD],
+      borderColor:C.primary,backgroundColor:g,fill:true,tension:0.3,
+      pointRadius:0,pointHoverRadius:5,pointHoverBackgroundColor:C.primary,
+      borderWidth: IS_PRINT ? 2 : 2.5,
+      segment:{borderColor:function(ctx){var v=ctx.p1.parsed.y;if(v<20)return C.bad;if(v<30)return C.warn;return C.primary}}
+    }]},
+    options:{...B,scales:{...B.scales,y:{...B.scales.y,min:0,suggestedMax:65}},plugins:{...B.plugins,zoom:ZP,annotation:{annotations:{
+      zr:{type:'box',yMin:0,yMax:20,backgroundColor: IS_PRINT ? 'rgba(185,28,28,0.06)' : 'rgba(239,68,68,0.04)',borderWidth:0},
+      zy:{type:'box',yMin:20,yMax:30,backgroundColor: IS_PRINT ? 'rgba(180,83,9,0.05)' : 'rgba(245,158,11,0.03)',borderWidth:0},
+      l30:{type:'line',yMin:30,yMax:30,borderColor: IS_PRINT ? 'rgba(180,83,9,0.7)' : 'rgba(245,158,11,0.4)',borderWidth:1,borderDash:[6,4],label:{content:'30 FPS',display:true,color: C.warn,font:{size:10,weight:'600'},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:4}},
+      l60:{type:'line',yMin:60,yMax:60,borderColor: IS_PRINT ? 'rgba(21,128,61,0.7)' : 'rgba(16,185,129,0.4)',borderWidth:1,borderDash:[6,4],label:{content:'60 FPS',display:true,color: C.good,font:{size:10,weight:'600'},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:4}}${if (markerAnnotationsJs.isNotEmpty()) ",$markerAnnotationsJs" else ""}
+    }}}}
+  });
+})();
 """)
-            // Frame Time Histogram
+            // Frame Time Histogram — print uses darker bar colors for contrast on white
             if (ftBuckets.isNotEmpty()) append("""
-(function(){new Chart(document.getElementById('ftChart').getContext('2d'),{type:'bar',data:{labels:['<8ms (>120fps)','8-16ms (60-120fps)','16-33ms (30-60fps)','33-50ms (20-30fps)','50-100ms (<20fps)','>100ms (stutter)'],datasets:[{label:'Frames',data:[$ftBuckets],backgroundColor:['#10b981','#84cc16','#f59e0b','#f97316','#ef4444','#dc2626'],borderRadius:6,borderSkipped:false,maxBarThickness:60}]},options:{indexAxis:'y',...B,plugins:{...B.plugins,legend:{display:false}},scales:{x:{...B.scales.x},y:{...B.scales.y,ticks:{...B.scales.y.ticks,font:{size:11}}}}}})})();
+(function(){
+  var barColors = IS_PRINT
+    ? ['#15803d','#65a30d','#b45309','#c2410c','#b91c1c','#7f1d1d']
+    : ['#10b981','#84cc16','#f59e0b','#f97316','#ef4444','#dc2626'];
+  new Chart(document.getElementById('ftChart').getContext('2d'),{
+    type:'bar',
+    data:{
+      labels:['<8ms (>120fps)','8-16ms (60-120fps)','16-33ms (30-60fps)','33-50ms (20-30fps)','50-100ms (<20fps)','>100ms (stutter)'],
+      datasets:[{label:'Frames',data:[$ftBuckets],backgroundColor:barColors,borderRadius:6,borderSkipped:false,maxBarThickness: IS_PRINT ? 40 : 60}]
+    },
+    options:{indexAxis:'y',...B,plugins:{...B.plugins,legend:{display:false}},scales:{x:{...B.scales.x},y:{...B.scales.y,ticks:{...B.scales.y.ticks,font:{size: IS_PRINT ? 10 : 11}}}}}
+  });
+})();
 """)
-            // Memory Chart
+            // Memory Chart — print uses solid dark borders + light fills
             if (memD.isNotEmpty()) append("""
-(function(){new Chart(document.getElementById('memChart').getContext('2d'),{type:'line',data:{labels:[$memL],datasets:[{label:'Total PSS (MB)',data:[$memD],borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,0.08)',fill:true,tension:0.3,pointRadius:0,borderWidth:2.5},{label:'Native Heap (MB)',data:[$natD],borderColor:'#f97316',tension:0.3,pointRadius:0,borderWidth:1.5},{label:'Java Heap (MB)',data:[$javD],borderColor:'#10b981',tension:0.3,pointRadius:0,borderWidth:1.5}]},options:{...B,plugins:{...B.plugins,zoom:ZP}}})})();
+(function(){
+  new Chart(document.getElementById('memChart').getContext('2d'),{
+    type:'line',
+    data:{labels:[$memL],datasets:[
+      {label:'Total PSS (MB)',data:[$memD],borderColor:C.primary,backgroundColor: IS_PRINT ? 'rgba(3,105,161,0.08)' : 'rgba(56,189,248,0.08)',fill:true,tension:0.3,pointRadius:0,borderWidth: IS_PRINT ? 2 : 2.5},
+      {label:'Native Heap (MB)',data:[$natD],borderColor:C.accent,tension:0.3,pointRadius:0,borderWidth:1.5},
+      {label:'Java Heap (MB)',data:[$javD],borderColor:C.good,tension:0.3,pointRadius:0,borderWidth:1.5}
+    ]},
+    options:{...B,plugins:{...B.plugins,zoom:ZP}}
+  });
+})();
 """)
-            // CPU Chart
+            // CPU Chart — same color treatment as FPS
             if (cpuD.isNotEmpty()) append("""
-(function(){var c=document.getElementById('cpuChart').getContext('2d');var g=c.createLinearGradient(0,0,0,300);g.addColorStop(0,'rgba(56,189,248,0.2)');g.addColorStop(1,'rgba(56,189,248,0.01)');new Chart(c,{type:'line',data:{labels:[$tL],datasets:[{label:'CPU %',data:[$cpuD],borderColor:'#38bdf8',backgroundColor:g,fill:true,tension:0.3,pointRadius:0,borderWidth:2.5,segment:{borderColor:function(ctx){var v=ctx.p1.parsed.y;if(v>85)return'#ef4444';if(v>70)return'#f59e0b';return'#38bdf8'}}}]},options:{...B,scales:{...B.scales,y:{...B.scales.y,min:0,max:100}},plugins:{...B.plugins,annotation:{annotations:{w:{type:'line',yMin:85,yMax:85,borderColor:'rgba(239,68,68,0.3)',borderWidth:1,borderDash:[6,4],label:{content:'85% Saturacion',display:true,color:'#ef4444',font:{size:9},backgroundColor:'rgba(15,23,42,0.8)',padding:3}}}}}}})})();
+(function(){
+  var c=document.getElementById('cpuChart').getContext('2d');
+  var g;
+  if (IS_PRINT) {
+    g = 'rgba(3,105,161,0.08)';
+  } else {
+    g = c.createLinearGradient(0,0,0,300);
+    g.addColorStop(0,'rgba(56,189,248,0.2)');
+    g.addColorStop(1,'rgba(56,189,248,0.01)');
+  }
+  new Chart(c,{
+    type:'line',
+    data:{labels:[$tL],datasets:[{
+      label:'CPU %',data:[$cpuD],
+      borderColor:C.primary,backgroundColor:g,fill:true,tension:0.3,pointRadius:0,
+      borderWidth: IS_PRINT ? 2 : 2.5,
+      segment:{borderColor:function(ctx){var v=ctx.p1.parsed.y;if(v>85)return C.bad;if(v>70)return C.warn;return C.primary}}
+    }]},
+    options:{...B,scales:{...B.scales,y:{...B.scales.y,min:0,max:100}},plugins:{...B.plugins,annotation:{annotations:{
+      w:{type:'line',yMin:85,yMax:85,borderColor: IS_PRINT ? 'rgba(185,28,28,0.6)' : 'rgba(239,68,68,0.3)',borderWidth:1,borderDash:[6,4],label:{content:'85% Saturacion',display:true,color: C.bad,font:{size:9},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:3}}
+    }}}}
+  });
+})();
 """)
-            // Temperature Chart
+            // Temperature Chart — print uses darker red/orange/amber palette
             if (tcD.isNotEmpty()) append("""
-(function(){new Chart(document.getElementById('tempChart').getContext('2d'),{type:'line',data:{labels:[$tL],datasets:[{label:'CPU',data:[$tcD],borderColor:'#ef4444',tension:0.3,pointRadius:0,borderWidth:2.5},{label:'GPU',data:[$tgD],borderColor:'#f97316',tension:0.3,pointRadius:0,borderWidth:1.5},{label:'Skin',data:[$tsD],borderColor:'#f59e0b',tension:0.3,pointRadius:0,borderWidth:1.5}]},options:{...B,plugins:{...B.plugins,annotation:{annotations:{t:{type:'line',yMin:42,yMax:42,borderColor:'rgba(239,68,68,0.4)',borderWidth:1,borderDash:[6,4],label:{content:'Thermal Throttle (~42\u00B0C)',display:true,color:'#ef4444',font:{size:9},backgroundColor:'rgba(15,23,42,0.8)',padding:3}}}}}}})})();
+(function(){
+  new Chart(document.getElementById('tempChart').getContext('2d'),{
+    type:'line',
+    data:{labels:[$tL],datasets:[
+      {label:'CPU',data:[$tcD],borderColor:C.bad,tension:0.3,pointRadius:0,borderWidth: IS_PRINT ? 2 : 2.5},
+      {label:'GPU',data:[$tgD],borderColor:C.accent,tension:0.3,pointRadius:0,borderWidth:1.5},
+      {label:'Skin',data:[$tsD],borderColor:C.warn,tension:0.3,pointRadius:0,borderWidth:1.5}
+    ]},
+    options:{...B,plugins:{...B.plugins,annotation:{annotations:{
+      t:{type:'line',yMin:42,yMax:42,borderColor: IS_PRINT ? 'rgba(185,28,28,0.6)' : 'rgba(239,68,68,0.4)',borderWidth:1,borderDash:[6,4],label:{content:'Thermal Throttle (~42\u00B0C)',display:true,color: C.bad,font:{size:9},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:3}}
+    }}}}
+  });
+})();
 """)
             append("""
 function copyJson(){var d=document.getElementById('sessionData').textContent;navigator.clipboard.writeText(d).then(function(){var b=document.getElementById('jsonBtn');b.innerHTML='&#10003;';b.classList.add('fab-success');setTimeout(function(){b.innerHTML='&#128203;';b.classList.remove('fab-success')},2000)})}
@@ -985,6 +1115,79 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .footer-session{font-family:monospace;font-size:10px!important;color:#334155!important;letter-spacing:0.5px}
 @media(max-width:768px){.container{padding:0 12px 32px}.report-header{padding:32px 20px 28px}.header-title{font-size:1.6rem}.header-meta{flex-direction:column;gap:4px}.meta-sep{display:none}.summary-grid{grid-template-columns:1fr}.summary-grade{padding:24px;border-right:none;border-bottom:1px solid rgba(148,163,184,0.06)}.summary-stats{grid-template-columns:repeat(2,1fr)}.metrics-grid{grid-template-columns:repeat(2,1fr)}.hw-grid{grid-template-columns:1fr}.hw-item{border-radius:0!important}.hw-item:first-child{border-radius:10px 10px 0 0!important}.hw-item:last-child{border-radius:0 0 10px 10px!important}.stats-row{gap:6px}.stat-pill{padding:6px 10px;font-size:12px}.grade-ring{width:110px;height:110px}.grade-letter{font-size:2.8rem}.fab-group{top:auto;bottom:16px;right:16px}}
 @media(max-width:480px){.metrics-grid{grid-template-columns:1fr}.summary-stats{grid-template-columns:1fr 1fr}.nav-link{font-size:11px;padding:5px 8px}}
-@media print{@page{size:A4;margin:12mm 10mm}body{background:#fff!important;color:#1e293b!important;font-size:11px!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.container{max-width:100%;padding:0}.fab-group,.topnav{display:none!important}.report-header{border-radius:0;padding:24px 16px 20px;page-break-after:avoid}.header-bg{background:linear-gradient(135deg,#f1f5f9,#e2e8f0)!important}.header-bg::after{display:none}.header-title{-webkit-text-fill-color:#1e293b!important;font-size:1.6rem}.header-badge{color:#475569;border-color:#cbd5e1;background:#f1f5f9!important}.header-pkg,.header-meta,.header-session{color:#64748b!important}.card,.card-summary{background:#fafafa!important;border:1px solid #e2e8f0!important;page-break-inside:avoid;box-shadow:none}.metric-card{background:#f8fafc!important;border:1px solid #e2e8f0!important}.card-header h2,.section-title{color:#1e293b!important}.card-desc,.hint{color:#64748b!important}.verdict{color:#475569!important}.summary-grade{background:rgba(0,0,0,0.02)!important}.grade-ring{background:none!important;border:4px solid var(--grade-color)}.grade-ring-inner{background:#fff!important}.stat-pill{background:#f1f5f9!important;border-color:#e2e8f0!important}.stat-pill-value,.summary-stat-value{color:#1e293b!important}.stat-pill-label,.summary-stat-label{color:#64748b!important}.hw-item{background:#f8fafc!important}.hw-label{color:#64748b!important}.hw-value{color:#1e293b!important}.data-table th{background:#f1f5f9!important;color:#475569!important}.data-table td{color:#1e293b!important;border-color:#e2e8f0!important}.good{color:#059669!important}.warn{color:#d97706!important}.bad{color:#dc2626!important}.chart-container{background:#f8fafc!important;border-color:#e2e8f0!important;height:220px}.grade-bar{background:#e2e8f0!important}.footer-logo{-webkit-text-fill-color:#475569!important}.report-footer{border-color:#e2e8f0!important}.report-footer p{color:#94a3b8!important}.expand-content{display:block!important}.expand-btn .expand-icon{transform:rotate(90deg)}.problem-critical{background:#fef2f2!important;border-color:#fecaca!important;color:#991b1b!important}.problem-warning{background:#fffbeb!important;border-color:#fde68a!important;color:#92400e!important}.problem-info{background:#eff6ff!important;border-color:#bfdbfe!important;color:#1e40af!important}.status-ok{background:#f0fdf4!important;border-color:#86efac!important;color:#166534!important}.method-item{background:#f8fafc!important}.method-label{color:#475569!important}.method-value{color:#64748b!important}.summary-info,.summary-stat{background:transparent!important}}
+@media print {
+  @page { size: A4; margin: 10mm 10mm 12mm 10mm }
+  html, body { background: #fff !important; color: #0f172a !important; font-size: 10.5px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact }
+  .container { max-width: 100%; padding: 0 }
+  /* Hide interactive-only chrome */
+  .fab-group, .topnav, .expand-btn { display: none !important }
+  .expand-content { display: block !important }
+  /* Header — compact, NOT forcing page-break-after:avoid (caused blank page 1 in v3.1.6) */
+  .report-header { border-radius: 0; padding: 18px 16px 16px; margin-bottom: 14px }
+  .header-bg { background: linear-gradient(135deg, #f1f5f9, #e2e8f0) !important }
+  .header-bg::after { display: none }
+  .header-title { -webkit-text-fill-color: #0f172a !important; background: none !important; font-size: 1.4rem !important; margin-bottom: 4px }
+  .header-badge { color: #1e40af !important; border-color: #93c5fd !important; background: #eff6ff !important; font-size: 9px !important; padding: 4px 12px !important; margin-bottom: 8px !important }
+  .header-pkg { color: #475569 !important; font-size: 12px !important; margin-bottom: 6px }
+  .header-meta, .header-session { color: #64748b !important; font-size: 10px !important }
+  /* Cards — allow them to break across pages so we never end up with a blank header page */
+  .card, .card-summary { background: #fff !important; border: 1px solid #cbd5e1 !important; box-shadow: none !important; padding: 14px !important; margin-bottom: 12px !important; page-break-inside: auto }
+  .card h2, .card-header h2, .section-title { color: #0f172a !important; font-size: 0.95rem !important; margin-bottom: 10px !important }
+  .card-desc, .hint, .verdict { color: #64748b !important; font-size: 10px !important }
+  /* Metric cards row */
+  .metric-card { background: #f8fafc !important; border: 1px solid #e2e8f0 !important; padding: 10px !important }
+  .metric-card .metric-value { color: #0f172a !important }
+  .metrics-grid { gap: 8px !important }
+  /* Summary card — keep grade ring readable on white */
+  .summary-grade { background: #f8fafc !important; padding: 18px !important; border-right: 1px solid #e2e8f0 !important }
+  .grade-ring { background: none !important; border: 4px solid var(--grade-color); width: 110px !important; height: 110px !important }
+  .grade-ring-inner { background: #fff !important }
+  .grade-letter { font-size: 2.6rem !important }
+  .grade-score { color: #475569 !important }
+  .device-grade-pill { background: #fff !important; border-color: #e2e8f0 !important; margin-top: 12px !important }
+  .device-grade-label, .device-grade-score { color: #64748b !important }
+  .summary-info { padding: 18px !important }
+  .summary-info h2 { color: #0f172a !important }
+  /* Stats pills */
+  .stat-pill { background: #f1f5f9 !important; border: 1px solid #e2e8f0 !important; padding: 6px 10px !important }
+  .stat-pill-value, .summary-stat-value { color: #0f172a !important; font-size: 13px !important }
+  .stat-pill-label, .summary-stat-label { color: #64748b !important; font-size: 9px !important }
+  .stats-row { gap: 6px !important }
+  /* Hardware grid */
+  .hw-item { background: #f8fafc !important; border-color: #e2e8f0 !important; padding: 8px 10px !important }
+  .hw-label { color: #64748b !important; font-size: 9px !important }
+  .hw-value { color: #0f172a !important; font-size: 11px !important }
+  /* Tables */
+  .data-table { font-size: 10px !important }
+  .data-table th { background: #f1f5f9 !important; color: #1e293b !important; font-size: 9px !important; padding: 6px 8px !important }
+  .data-table td { color: #0f172a !important; border-color: #e2e8f0 !important; padding: 5px 8px !important }
+  .good { color: #15803d !important; font-weight: 600 }
+  .warn { color: #b45309 !important; font-weight: 600 }
+  .bad { color: #b91c1c !important; font-weight: 700 }
+  /* Charts — explicit white background, fixed height to avoid layout overflow */
+  .chart-container { background: #fff !important; border: 1px solid #e2e8f0 !important; height: 220px !important; padding: 12px !important; margin-top: 8px !important }
+  /* Grade bar */
+  .grade-bar { background: #e2e8f0 !important }
+  .grade-fill { background: var(--grade-color) !important }
+  /* Final score */
+  .final-score-num, .final-score-grade { color: #0f172a !important }
+  .final-score-sep { color: #94a3b8 !important }
+  /* Footer */
+  .report-footer { border-top: 1px solid #e2e8f0 !important; padding: 14px 0 !important; margin-top: 16px !important }
+  .footer-logo { -webkit-text-fill-color: #475569 !important; background: none !important; font-size: 11px !important }
+  .report-footer p { color: #94a3b8 !important; font-size: 9px !important }
+  .footer-session { color: #cbd5e1 !important }
+  /* Problem cards — colored backgrounds with strong borders for paper readability */
+  .problem-critical { background: #fef2f2 !important; border: 1px solid #fecaca !important; color: #991b1b !important }
+  .problem-warning { background: #fffbeb !important; border: 1px solid #fde68a !important; color: #92400e !important }
+  .problem-info { background: #eff6ff !important; border: 1px solid #bfdbfe !important; color: #1e40af !important }
+  .status-ok { background: #f0fdf4 !important; border: 1px solid #86efac !important; color: #166534 !important }
+  /* Method/details items */
+  .method-item { background: #f8fafc !important; border-color: #e2e8f0 !important }
+  .method-label { color: #475569 !important }
+  .method-value { color: #0f172a !important }
+  /* Misc backgrounds that need to disappear */
+  .summary-info, .summary-stat { background: transparent !important }
+}
 """.trimIndent()
 }
