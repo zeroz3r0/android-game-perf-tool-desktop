@@ -8,7 +8,11 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macos-latest = arm64 (Apple Silicon), macos-13 = x64 (Intel).
+        # Both are needed because Apple Silicon Macs running the JVM under Rosetta
+        # report os.arch=x86_64, so they download the macos-x64 JAR. Without it,
+        # the auto-updater falls back to the wrong asset and the update never lands.
+        os: [ubuntu-latest, macos-latest, macos-13, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
