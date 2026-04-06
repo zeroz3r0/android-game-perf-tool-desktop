@@ -20,7 +20,7 @@ Graba video del gameplay durante la sesion para contrastar datos con lo que ocur
 
 #### Opcion 1: Instalar el DMG (recomendado)
 
-1. Descargar `GamePerf-3.0.0.dmg` desde Releases
+1. Descargar `GamePerf-3.1.0.dmg` desde Releases
 2. Abrir el DMG y arrastrar **GamePerf** a la carpeta Aplicaciones
 3. **Primera vez**: macOS bloqueara la app por no estar firmada:
    - Ve a **Preferencias del Sistema > Seguridad y Privacidad**
@@ -58,7 +58,7 @@ adb version
 
 #### Opcion 1: Instalar el MSI
 
-1. Descargar `GamePerf-3.0.0.msi` desde Releases
+1. Descargar `GamePerf-3.1.0.msi` desde Releases
 2. Ejecutar el instalador
 3. **Windows Defender / SmartScreen**: Al no estar firmado, Windows lo bloqueara:
    - Clic en **"Mas informacion"** en el dialogo de SmartScreen
@@ -107,7 +107,7 @@ cd android-game-perf-tool-desktop
 
 # Crear JAR ejecutable
 ./gradlew jar
-java -jar build/libs/android-game-perf-tool-desktop-3.0.0.jar
+java -jar build/libs/android-game-perf-tool-desktop-3.1.0.jar
 
 # Ejecutar tests
 ./gradlew test
@@ -196,6 +196,15 @@ Permite medir el **consumo real de bateria** sin que el cable USB cargue el disp
 - Problemas detectados con explicacion y solucion
 - Desglose de la nota
 - Soporte para impresion/PDF
+- **Chart.js embebido inline**: el HTML funciona 100% offline despues de generarse, se puede mover/copiar/enviar por mail sin perder los graficos
+
+### Exportacion a PDF
+- Boton "Exportar PDF" en pantalla principal (por sesion del historial), pantalla de resultados y pantalla de comparacion
+- Selector nativo de archivo (NSSavePanel en macOS, IFileDialog en Windows, GTK en Linux): el usuario decide donde guardar el PDF
+- Formato A4 con backgrounds del tema oscuro preservados
+- Renderiza identico al HTML del browser (todos los Chart.js incluidos)
+- El PDF queda en el sistema de archivos del usuario y NO esta sujeto a la politica de retencion (no se borra automaticamente)
+- Usa Playwright + Chromium headless por debajo. La primera ejecucion descarga Chromium (~180 MB) a `~/.cache/ms-playwright/` con un dialogo "Preparando motor PDF (primera vez solamente)..."; las ejecuciones siguientes funcionan offline
 
 ### Correlacion video-metricas
 - Cada muestra de FPS se registra con su segundo exacto
@@ -207,13 +216,27 @@ Permite medir el **consumo real de bateria** sin que el cable USB cargue el disp
 - Archivos de video con nombre unico por sesion (`video_yyyyMMdd_HHmmss_N.mp4`)
 
 ### Historial de sesiones
-- Las ultimas 20 pruebas se guardan en `~/GamePerf Reports/history.json`
+- Las ultimas **5** pruebas se guardan en `~/GamePerf Reports/history.json` (politica de retencion)
+- Cuando se captura una nueva sesion estando ya en el limite, la mas vieja se borra silenciosamente junto con su informe HTML y todos los segmentos de video
+- Una linea pasiva en el header del historial avisa cuando estas en 5/5 ("Historial: 5/5 - la proxima captura reemplazara la mas antigua")
+- Para preservar una sesion permanentemente, exportala a PDF antes de la proxima captura
 - Desde la pantalla principal podes:
   - Ver nombre, dispositivo, nota y duracion de pruebas anteriores
   - Renombrar sesiones
-  - Eliminar sesiones con confirmacion
+  - Exportar sesiones a PDF (preservacion permanente fuera de la politica de retencion)
+  - Eliminar sesiones con confirmacion (borra entrada JSON + informe HTML + todos los segmentos de video)
   - Abrir informe o video de sesiones previas
   - Seleccionar sesiones para comparacion
+
+### Limpieza automatica de archivos
+- Al iniciar la app, se hace un barrido de `~/GamePerf Reports/` que:
+  - Borra archivos huerfanos (HTMLs/videos que ya no estan referenciados en `history.json`)
+  - Repara entradas del historial cuyos paths apuntan a archivos inexistentes (vacia el path, conserva las metricas)
+- El barrido NUNCA toca:
+  - El subdirectorio `updates/` (auto-actualizador protegido)
+  - `history.json`
+  - Archivos fuera de los prefijos `informe_`, `video_`, `recording_`, `comparativa_` (ej. tus notas o backups)
+- Las comparativas se generan en `java.io.tmpdir` (no ensucian `~/GamePerf Reports/`) y se borran al cerrar la app o al siguiente inicio
 
 ### Auto-actualizador
 - Chequea GitHub Releases al iniciar la app
@@ -238,7 +261,7 @@ Para evitar que antivirus y SmartScreen bloqueen la app en Windows:
 
 ```bash
 # Firmar el MSI con signtool (incluido en Windows SDK)
-signtool sign /f certificado.pfx /p password /tr http://timestamp.digicert.com /td sha256 GamePerf-3.0.0.msi
+signtool sign /f certificado.pfx /p password /tr http://timestamp.digicert.com /td sha256 GamePerf-3.1.0.msi
 ```
 
 Proveedores de certificados: DigiCert (~$300/ano), Sectigo (~$70/ano), SSL.com (~$70/ano).

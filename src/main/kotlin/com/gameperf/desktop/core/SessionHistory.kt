@@ -9,11 +9,23 @@ import java.util.Date
 /**
  * Persists the last N test sessions to a JSON file in ~/GamePerf Reports/history.json.
  * Simple manual JSON serialization (no external dependencies).
+ *
+ * Retention policy: hard cap of [MAX_ENTRIES] sessions. When a new entry pushes the
+ * list over the limit, [addEntry] returns the evicted entries so the caller can delete
+ * their physical files via FileCleanup. Below the limit, [addEntry] returns an empty list.
+ *
+ * Thread-safety: all write operations are `@Synchronized` on the SessionHistory singleton.
+ * Reads are lock-free (filesystem consistency is enough for read-only callers).
  */
 object SessionHistory {
 
-    private const val MAX_ENTRIES = 20
-    private val historyFile = File(System.getProperty("user.home"), "GamePerf Reports/history.json")
+    const val MAX_ENTRIES = 5
+
+    /** Test-only override. When non-null, overrides the history file location. */
+    internal var historyFileOverride: File? = null
+
+    private val historyFile: File
+        get() = historyFileOverride ?: File(System.getProperty("user.home"), "GamePerf Reports/history.json")
 
     /** Tag to classify sessions as our game or a competitor's game. */
     enum class SessionTag { OUR_GAME, COMPETITION }
@@ -52,6 +64,7 @@ object SessionHistory {
         } catch (_: Exception) { emptyList() }
     }
 
+    @Synchronized
     fun save(entries: List<HistoryEntry>) {
         try {
             historyFile.parentFile?.mkdirs()
@@ -59,6 +72,32 @@ object SessionHistory {
         } catch (_: Exception) {}
     }
 
+    /**
+     * Insert a pre-built [HistoryEntry] at index 0 and enforce the retention limit.
+     *
+     * @return the entries that were evicted from the end of the list because the new
+     *         insertion pushed the size over [MAX_ENTRIES]. Empty list if below the limit.
+     *         Callers should delete the physical files of the returned entries via
+     *         `FileCleanup.deleteSessionFiles`.
+     */
+    @Synchronized
+    fun addEntry(entry: HistoryEntry): List<HistoryEntry> {
+        val all = load().toMutableList()
+        all.add(0, entry)
+        val top = all.take(MAX_ENTRIES)
+        val evicted = if (all.size > MAX_ENTRIES) all.drop(MAX_ENTRIES) else emptyList()
+        save(top)
+        return evicted
+    }
+
+    /**
+     * Legacy overload that accepts field parameters, builds the [HistoryEntry] internally,
+     * and delegates to the entry-based [addEntry]. Retained to keep existing callers
+     * in AppViewModel source-compatible.
+     *
+     * @return the evicted entries (see entry-based overload). Callers that previously
+     *         discarded the Unit return can use `val _ = addEntry(...)`.
+     */
     fun addEntry(
         gamePackage: String, deviceModel: String, grade: Char, deviceGrade: Char,
         avgFps: Int, duration: Int, reportPath: String, videoPath: String,
@@ -67,22 +106,22 @@ object SessionHistory {
         p95FrameTime: Double = 0.0, p99FrameTime: Double = 0.0,
         peakMemMb: Long = 0, avgCpu: Int = 0, maxTemp: Double = 0.0, score: Int = 0,
         markers: List<SessionMarker> = emptyList()
-    ) {
-        val entries = load().toMutableList()
+    ): List<HistoryEntry> {
         val date = SimpleDateFormat("dd/MM/yyyy HH:mm").format(Date())
         val id = System.currentTimeMillis().toString()
         val displayName = if (tag == SessionTag.COMPETITION && competitorName.isNotEmpty())
             "$competitorName - $deviceModel"
         else "$gamePackage - $deviceModel"
-        entries.add(0, HistoryEntry(
+        val entry = HistoryEntry(
             id, displayName, gamePackage, deviceModel, grade, deviceGrade, avgFps, duration, date,
             reportPath, videoPath, tag, competitorName,
             p1Fps, p5Fps, avgFrameTime, p95FrameTime, p99FrameTime, peakMemMb, avgCpu, maxTemp, score,
             markers
-        ))
-        save(entries.take(MAX_ENTRIES))
+        )
+        return addEntry(entry)
     }
 
+    @Synchronized
     fun updateTag(id: String, tag: SessionTag, competitorName: String = "") {
         val entries = load().toMutableList()
         val idx = entries.indexOfFirst { it.id == id }
@@ -92,6 +131,7 @@ object SessionHistory {
         }
     }
 
+    @Synchronized
     fun updateName(id: String, newName: String) {
         val entries = load().toMutableList()
         val idx = entries.indexOfFirst { it.id == id }
@@ -101,10 +141,37 @@ object SessionHistory {
         }
     }
 
-    fun deleteEntry(id: String) {
+    /**
+     * Replace the entry with matching id, preserving its index in the list.
+     * No-op if the id is not found. Used by `FileCleanup.pruneOrphans` repair path
+     * to persist entries whose `reportPath` or `videoPath` were cleared.
+     */
+    @Synchronized
+    fun updateEntry(entry: HistoryEntry) {
         val entries = load().toMutableList()
-        entries.removeAll { it.id == id }
-        save(entries)
+        val idx = entries.indexOfFirst { it.id == entry.id }
+        if (idx >= 0) {
+            entries[idx] = entry
+            save(entries)
+        }
+    }
+
+    /**
+     * Remove the entry with matching id from the history file.
+     *
+     * @return the removed [HistoryEntry], or null if no entry matched. Callers should
+     *         pass the returned entry to `FileCleanup.deleteSessionFiles` to also remove
+     *         the physical files.
+     */
+    @Synchronized
+    fun deleteEntry(id: String): HistoryEntry? {
+        val entries = load().toMutableList()
+        val removed = entries.firstOrNull { it.id == id }
+        if (removed != null) {
+            entries.removeAll { it.id == id }
+            save(entries)
+        }
+        return removed
     }
 
     // ===== Simple JSON serialization (no dependencies) =====

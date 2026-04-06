@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.ui.components.ExportBanner
+import com.gameperf.desktop.ui.components.PreparingEngineDialog
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.viewmodel.AppViewModel
@@ -42,6 +44,12 @@ fun HomeScreen(vm: AppViewModel) {
     val updateProgress by vm.updateProgress.collectAsState()
     val updateError by vm.updateError.collectAsState()
 
+    val exportStatus by vm.exportStatus.collectAsState()
+
+    // First-run modal for Playwright Chromium download. Outside the Column so it
+    // overlays the entire screen as a proper dialog.
+    PreparingEngineDialog(exportStatus)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -49,6 +57,13 @@ fun HomeScreen(vm: AppViewModel) {
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // ===== PDF Export Banner =====
+        ExportBanner(
+            status = exportStatus,
+            onDismiss = { vm.resetExportStatus() },
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
         // ===== Update Banner =====
         if (updateInfo != null) {
             val info = updateInfo!!
@@ -450,6 +465,19 @@ fun HomeScreen(vm: AppViewModel) {
                             }
                         }
                     }
+
+                    // Passive capacity hint: appears only when the history is at the
+                    // hard 5/5 retention limit. Tells the user that the next capture
+                    // will silently replace the oldest entry, so they can choose to
+                    // export to PDF first if they care about persisting it.
+                    if (historyEntries.size == SessionHistory.MAX_ENTRIES) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Historial: 5/5 - la próxima captura reemplazará la más antigua",
+                            color = TextSecondary.copy(alpha = 0.7f),
+                            fontSize = 11.sp
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
 
                     historyEntries.forEach { entry ->
@@ -573,6 +601,25 @@ fun HomeScreen(vm: AppViewModel) {
                                     }
                                 }
 
+                                // Export to PDF — only enabled when the source HTML still exists
+                                // and there is no PDF export already running.
+                                if (entry.reportPath.isNotEmpty()) {
+                                    val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress ||
+                                        exportStatus is AppViewModel.ExportStatus.PreparingEngine
+                                    IconButton(
+                                        onClick = { vm.exportHistoryEntryToPdf(entry) },
+                                        enabled = !exportingNow,
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.PictureAsPdf,
+                                            "Exportar PDF",
+                                            tint = if (exportingNow) TextDim else Cyan,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+
                                 // Delete entry
                                 IconButton(
                                     onClick = { showDeleteConfirmation = true },
@@ -588,7 +635,7 @@ fun HomeScreen(vm: AppViewModel) {
                             AlertDialog(
                                 onDismissRequest = { showDeleteConfirmation = false },
                                 title = { Text("Eliminar sesión", fontWeight = FontWeight.Bold) },
-                                text = { Text("¿Eliminar esta sesión del historial? Esta acción no se puede deshacer.") },
+                                text = { Text("Se eliminarán la entrada del historial, el video y el informe. Esta acción no se puede deshacer.") },
                                 confirmButton = {
                                     Button(
                                         onClick = {

@@ -14,6 +14,21 @@ import java.util.UUID
 
 object ReportGenerator {
 
+    // ══════════ EMBEDDED ASSETS (offline Chart.js) ══════════
+    // Loaded once per process via `by lazy` (thread-safe, SYNCHRONIZED mode by default).
+    // Keeps generated HTML fully offline-capable: no CDN references, no runtime network.
+    private object Assets {
+        val chartJs: String by lazy { loadResource("/web/chart.umd.js") }
+        val annotationPlugin: String by lazy { loadResource("/web/chartjs-plugin-annotation.min.js") }
+        val zoomPlugin: String by lazy { loadResource("/web/chartjs-plugin-zoom.min.js") }
+
+        private fun loadResource(path: String): String =
+            javaClass.getResourceAsStream(path)
+                ?.bufferedReader(Charsets.UTF_8)
+                ?.use { it.readText() }
+                ?: error("Missing classpath resource: $path")
+    }
+
     fun generate(
         pkg: String, info: AdbBridge.DeviceInfo?, grade: Char, score: Int, duration: Int,
         fpsHistory: List<Int>, memHistory: List<Long>, nativeHistory: List<Long>, javaHistory: List<Long>,
@@ -183,9 +198,9 @@ object ReportGenerator {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Informe de Rendimiento — ${esc(pkg)}</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2"></script>
+<script>${Assets.chartJs}</script>
+<script>${Assets.annotationPlugin}</script>
+<script>${Assets.zoomPlugin}</script>
 <style>
 $CSS
 </style>
@@ -501,11 +516,13 @@ window.addEventListener('scroll',function(){var cur='';secs.forEach(function(s){
      * a Chart.js radar chart, and a per-metric winner summary.
      * Returns the file path to the generated report.
      */
-    fun generateComparison(entries: List<SessionHistory.HistoryEntry>): String {
-        val dir = File(System.getProperty("user.home"), "GamePerf Reports")
-        dir.mkdirs()
+    fun generateComparison(
+        entries: List<SessionHistory.HistoryEntry>,
+        outputDir: File = File(System.getProperty("java.io.tmpdir"))
+    ): String {
+        outputDir.mkdirs()
         val date = SimpleDateFormat("yyyy-MM-dd_HHmm").format(Date())
-        val file = File(dir, "comparativa_$date.html")
+        val file = File(outputDir, "comparativa_$date.html")
 
         val dateDisplay = SimpleDateFormat("dd/MM/yyyy HH:mm").format(Date())
         val oursEntries = entries.filter { it.tag == SessionHistory.SessionTag.OUR_GAME }
@@ -629,7 +646,7 @@ window.addEventListener('scroll',function(){var cur='';secs.forEach(function(s){
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Comparativa de Rendimiento</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>${Assets.chartJs}</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;background:#0f172a;color:#e2e8f0;line-height:1.6;font-size:14px;-webkit-font-smoothing:antialiased}

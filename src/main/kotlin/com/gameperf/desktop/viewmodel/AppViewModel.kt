@@ -4,13 +4,20 @@ import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.AutoUpdater
 import com.gameperf.desktop.core.CURRENT_VERSION
+import com.gameperf.desktop.core.FileCleanup
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.report.PdfExporter
+import com.gameperf.desktop.report.PlaywrightManager
 import com.gameperf.desktop.report.ReportGenerator
+import com.gameperf.desktop.ui.util.PickerUtils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.awt.Desktop
 import java.io.File
+import java.time.LocalDate
+import java.util.Collections
 
 enum class AppScreen { HOME, CAPTURING, RESULTS, COMPARISON }
 
@@ -116,6 +123,15 @@ class AppViewModel {
 
     /** Must be called when the application window is closed to avoid scope leaks. */
     fun cleanup() {
+        // Delete tracked tmpdir comparison HTMLs created during this session.
+        synchronized(_tempComparisons) {
+            _tempComparisons.forEach { path ->
+                runCatching { File(path).delete() }
+            }
+            _tempComparisons.clear()
+        }
+        // Release the shared Playwright Browser + Playwright instance.
+        runCatching { PlaywrightManager.shutdown() }
         scope.cancel()
     }
 
@@ -199,6 +215,31 @@ class AppViewModel {
     private val _captureError = MutableStateFlow<String?>(null)
     val captureError: StateFlow<String?> = _captureError
 
+    // ===== PDF Export =====
+    /**
+     * Lifecycle of a single PDF export attempt. Drives the [ExportBanner] composable
+     * and the modal [PreparingEngineDialog] when Playwright launches Chromium for the
+     * first time. The flow is always Idle -> InProgress -> (PreparingEngine?) ->
+     * Success | Error -> auto-reset to Idle by the banner after 3s.
+     */
+    sealed class ExportStatus {
+        object Idle : ExportStatus()
+        object InProgress : ExportStatus()
+        object PreparingEngine : ExportStatus()
+        data class Success(val path: String) : ExportStatus()
+        data class Error(val message: String) : ExportStatus()
+    }
+
+    private val _exportStatus = MutableStateFlow<ExportStatus>(ExportStatus.Idle)
+    val exportStatus: StateFlow<ExportStatus> = _exportStatus.asStateFlow()
+
+    /**
+     * Tracks comparison HTMLs written to `java.io.tmpdir` during this run so they can
+     * be deleted by [cleanup] on window close. Synchronized for safety against
+     * concurrent generations from different threads.
+     */
+    private val _tempComparisons: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
     @Volatile private var shouldStop = false
     @Volatile private var captureStartTime: Long = 0L
     private var captureJob: Job? = null
@@ -208,7 +249,18 @@ class AppViewModel {
     private var recordJob: Job? = null
 
     fun init() {
-        scope.launch {
+        // Startup file-system cleanup runs on IO before the rest of init touches the
+        // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
+        // and repair broken refs, persist the repairs, then load the cleaned state.
+        scope.launch(Dispatchers.IO) {
+            try {
+                val snapshot = SessionHistory.load()
+                val result = FileCleanup.pruneOrphans(snapshot)
+                result.repairedEntries.forEach { SessionHistory.updateEntry(it) }
+                FileCleanup.pruneTmpComparisons()
+            } catch (t: Throwable) {
+                System.err.println("AppViewModel.init: pruneOrphans failed: ${t.message}")
+            }
             _history.value = SessionHistory.load()
             _adbAvailable.value = AdbBridge.isAvailable()
             if (!_adbAvailable.value) {
@@ -632,10 +684,13 @@ class AppViewModel {
             // P95 frame time
             val p95ft = if (ftSorted.isNotEmpty()) ftSorted[(ftSorted.size * 0.95).toInt().coerceIn(0, ftSorted.size - 1)] else 0.0
 
-            // Save to history
+            // Save to history. The legacy overload returns the entries that the new
+            // hard 5-session retention limit pushed off the bottom of the list. We
+            // forward each evicted entry to FileCleanup so its HTML report and all
+            // video segments disappear from disk in the same atomic step.
             val captureTag = _sessionTag.value
             val captureCompetitor = _competitorName.value
-            SessionHistory.addEntry(
+            val evicted = SessionHistory.addEntry(
                 gamePackage = pkg, deviceModel = _deviceInfo.value?.model ?: device.model,
                 grade = grade, deviceGrade = deviceGrade,
                 avgFps = avgFps, duration = finalElapsed,
@@ -648,6 +703,7 @@ class AppViewModel {
                 maxTemp = maxTempCpu, score = score,
                 markers = sessionMarkers
             )
+            evicted.forEach { FileCleanup.deleteSessionFiles(it) }
             _history.value = SessionHistory.load()
 
             captureStartTime = 0L
@@ -746,7 +802,13 @@ class AppViewModel {
     }
 
     fun deleteHistoryEntry(id: String) {
-        SessionHistory.deleteEntry(id)
+        // Atomic manual delete: remove the JSON entry AND its physical files (HTML
+        // report + every video segment matching the sessionId). The trash button
+        // used to leak orphans because the previous impl only mutated history.json.
+        val removed = SessionHistory.deleteEntry(id)
+        if (removed != null) {
+            FileCleanup.deleteSessionFiles(removed)
+        }
         // Also remove from comparison selection if present
         _selectedForComparison.value = _selectedForComparison.value - id
         _history.value = SessionHistory.load()
@@ -817,6 +879,130 @@ class AppViewModel {
     }
 
     fun generateComparisonReport(entries: List<SessionHistory.HistoryEntry>): String {
-        return ReportGenerator.generateComparison(entries)
+        // Comparisons live in java.io.tmpdir (not ~/GamePerf Reports) so they never
+        // pollute the user's reports folder. Each generated path is tracked so
+        // cleanup() can sweep them on window close.
+        val tmpDir = File(System.getProperty("java.io.tmpdir"))
+        val path = ReportGenerator.generateComparison(entries, tmpDir)
+        if (path.isNotEmpty()) {
+            _tempComparisons.add(path)
+        }
+        return path
     }
+
+    /** Reset the export status banner to Idle. Called by [ExportBanner] after auto-dismiss. */
+    fun resetExportStatus() {
+        _exportStatus.value = ExportStatus.Idle
+    }
+
+    // ===== PDF Export — sourced from current session result =====
+
+    /**
+     * Export the current ResultsScreen report to a user-chosen PDF location. Drives
+     * the [exportStatus] flow through the full lifecycle so the UI can show the
+     * banner / preparing-engine modal at the right moments.
+     */
+    fun exportCurrentReportToPdf() {
+        val current = _result.value
+        if (current.reportPath.isEmpty()) {
+            _exportStatus.value = ExportStatus.Error("No hay informe HTML para exportar.")
+            return
+        }
+        val defaultName = "informe_${safePkg(current.gamePackage)}_${safeDevice(current.deviceModel)}_${shortDate(currentDateString())}.pdf"
+        runExportPipeline(current.reportPath, defaultName)
+    }
+
+    /**
+     * Export a history entry's HTML report to PDF. Same pipeline as
+     * [exportCurrentReportToPdf] but sourced from the entry instead of `_result`.
+     */
+    fun exportHistoryEntryToPdf(entry: SessionHistory.HistoryEntry) {
+        if (entry.reportPath.isEmpty()) {
+            _exportStatus.value = ExportStatus.Error("Esta entrada no tiene informe HTML.")
+            return
+        }
+        val defaultName = "informe_${safePkg(entry.gamePackage)}_${safeDevice(entry.deviceModel)}_${shortDate(entry.date)}.pdf"
+        runExportPipeline(entry.reportPath, defaultName)
+    }
+
+    /**
+     * Export the comparison HTML at [htmlPath] to PDF. The path is typically the one
+     * returned by [generateComparisonReport] (lives in `java.io.tmpdir`).
+     */
+    fun exportComparisonToPdf(htmlPath: String) {
+        if (htmlPath.isEmpty()) {
+            _exportStatus.value = ExportStatus.Error("No hay comparativa generada para exportar.")
+            return
+        }
+        val defaultName = "comparativa_${shortDate(LocalDate.now().toString())}.pdf"
+        runExportPipeline(htmlPath, defaultName)
+    }
+
+    /**
+     * Shared export pipeline used by all three exportXxxToPdf entry points.
+     * Handles: status transitions, file picker, optional PreparingEngine state,
+     * blocking PdfExporter call on Dispatchers.IO, and exhaustive error wrapping.
+     */
+    private fun runExportPipeline(htmlPath: String, defaultFileName: String) {
+        scope.launch {
+            _exportStatus.value = ExportStatus.InProgress
+            val target: File? = try {
+                PickerUtils.pickSaveFile(
+                    title = "Guardar informe PDF",
+                    defaultName = defaultFileName,
+                    extension = "pdf"
+                )
+            } catch (t: Throwable) {
+                _exportStatus.value = ExportStatus.Error("No se pudo abrir el selector: ${t.message}")
+                return@launch
+            }
+            if (target == null) {
+                _exportStatus.value = ExportStatus.Idle
+                return@launch
+            }
+            // Show the modal "Preparando motor PDF..." dialog only if Chromium has
+            // not been launched yet in this process.
+            if (!PlaywrightManager.isReady) {
+                _exportStatus.value = ExportStatus.PreparingEngine
+            }
+            try {
+                withContext(Dispatchers.IO) {
+                    PdfExporter.exportHtmlToPdf(htmlPath, target)
+                }
+                _exportStatus.value = ExportStatus.Success(target.absolutePath)
+            } catch (e: PdfExporter.PdfExportException) {
+                _exportStatus.value = ExportStatus.Error(e.message ?: "Error desconocido al exportar PDF")
+            } catch (e: Throwable) {
+                _exportStatus.value = ExportStatus.Error("Error inesperado: ${e.message}")
+            }
+        }
+    }
+
+    // ===== Filename helpers =====
+    // Match the convention used by ReportGenerator.generate's HTML filenames so that
+    // exported PDFs are visually grouped with their source HTMLs in file managers.
+
+    private fun safePkg(pkg: String): String =
+        pkg.replace('.', '_').replace(Regex("[^A-Za-z0-9_]"), "").takeLast(30)
+
+    private fun safeDevice(device: String): String =
+        device.replace(' ', '_').replace(Regex("[^A-Za-z0-9_]"), "")
+
+    /**
+     * Compress a date string like "31/03/2026 12:21" or "2026-03-31 12:21:49" or
+     * "2026-04-06" into "YYYYMMDD". Tolerant of either dd/MM/yyyy or yyyy-MM-dd input.
+     */
+    private fun shortDate(date: String): String {
+        if (date.isEmpty()) return ""
+        // dd/MM/yyyy ... -> yyyyMMdd
+        val slashRegex = Regex("""^(\d{2})/(\d{2})/(\d{4})""")
+        slashRegex.find(date)?.let { m ->
+            return "${m.groupValues[3]}${m.groupValues[2]}${m.groupValues[1]}"
+        }
+        // yyyy-MM-dd ... -> yyyyMMdd
+        return date.take(10).replace("-", "")
+    }
+
+    private fun currentDateString(): String =
+        java.text.SimpleDateFormat("dd/MM/yyyy HH:mm").format(java.util.Date())
 }

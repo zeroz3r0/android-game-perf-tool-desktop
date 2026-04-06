@@ -26,6 +26,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.components.*
+import com.gameperf.desktop.ui.components.ExportBanner
+import com.gameperf.desktop.ui.components.PreparingEngineDialog
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.ui.util.formatDurationHuman
 import com.gameperf.desktop.ui.util.formatTimeMs
@@ -41,6 +43,10 @@ fun ResultsScreen(vm: AppViewModel) {
     val isVideoPlaying by vm.isVideoPlaying.collectAsState()
     val videoDuration by vm.videoDuration.collectAsState()
     val playbackSpeed by vm.playbackSpeed.collectAsState()
+    val exportStatus by vm.exportStatus.collectAsState()
+
+    // Modal "Preparando motor PDF..." dialog. Outside the Column to overlay the screen.
+    PreparingEngineDialog(exportStatus)
     // Marker dialog state
     var showMarkerDialog by remember { mutableStateOf(false) }
     var markerDialogTimestamp by remember { mutableStateOf(0L) }
@@ -92,6 +98,13 @@ fun ResultsScreen(vm: AppViewModel) {
             },
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // ═══════ PDF EXPORT BANNER ═══════
+        ExportBanner(
+            status = exportStatus,
+            onDismiss = { vm.resetExportStatus() },
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
         // ═══════ EMBEDDED VIDEO PLAYER ═══════
         if (result.videoPath.isNotEmpty()) {
             Card(
@@ -503,6 +516,25 @@ fun ResultsScreen(vm: AppViewModel) {
                     Icon(Icons.Default.Description, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Informe HTML", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+
+                // Export to PDF — disabled while a previous export is still running
+                // (we only allow one Playwright pipeline at a time per design (l)).
+                val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress ||
+                    exportStatus is AppViewModel.ExportStatus.PreparingEngine
+                Button(
+                    onClick = { vm.exportCurrentReportToPdf() },
+                    enabled = !exportingNow,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Cyan,
+                        disabledContainerColor = TextDim.copy(alpha = 0.3f)
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).height(44.dp)
+                ) {
+                    Icon(Icons.Default.PictureAsPdf, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Exportar PDF", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
 

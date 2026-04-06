@@ -21,6 +21,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.ui.components.ExportBanner
+import com.gameperf.desktop.ui.components.PreparingEngineDialog
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.ui.util.fmtUS
 import com.gameperf.desktop.viewmodel.AppViewModel
@@ -35,12 +37,28 @@ fun ComparisonScreen(vm: AppViewModel) {
     val oursEntries = entries.filter { it.tag == SessionHistory.SessionTag.OUR_GAME }
     val compEntries = entries.filter { it.tag == SessionHistory.SessionTag.COMPETITION }
 
+    val exportStatus by vm.exportStatus.collectAsState()
+    // The comparison HTML path is generated lazily on demand. We remember it so the
+    // "Exportar comparativa a PDF" button can hand it to the ViewModel, and so that
+    // multiple PDF exports of the same comparison reuse the same source.
+    var lastComparisonPath by remember { mutableStateOf("") }
+
+    // Modal "Preparando motor PDF..." dialog. Outside the Column to overlay the screen.
+    PreparingEngineDialog(exportStatus)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(32.dp)
     ) {
+        // ═══════ PDF EXPORT BANNER ═══════
+        ExportBanner(
+            status = exportStatus,
+            onDismiss = { vm.resetExportStatus() },
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
         // Header
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.goHome() }) {
@@ -413,6 +431,7 @@ fun ComparisonScreen(vm: AppViewModel) {
                 onClick = {
                     val path = vm.generateComparisonReport(entries)
                     if (path.isNotEmpty()) {
+                        lastComparisonPath = path
                         try {
                             if (java.awt.Desktop.isDesktopSupported()) {
                                 java.awt.Desktop.getDesktop().open(java.io.File(path))
@@ -428,6 +447,42 @@ fun ComparisonScreen(vm: AppViewModel) {
                 Spacer(Modifier.width(8.dp))
                 Text("Generar informe comparativo", fontWeight = FontWeight.Bold)
             }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // PDF export action — separate row so it does not visually compete with
+        // the primary "generate" button. Generates the HTML on demand if the user
+        // hasn't done so yet, then forwards the path to the ViewModel.
+        val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress ||
+            exportStatus is AppViewModel.ExportStatus.PreparingEngine
+        Button(
+            onClick = {
+                // If the user clicks PDF without having generated the HTML first,
+                // generate it now so the export has a source. The path is also
+                // tracked in the ViewModel's _tempComparisons for cleanup on close.
+                val path = if (lastComparisonPath.isNotEmpty() && java.io.File(lastComparisonPath).exists()) {
+                    lastComparisonPath
+                } else {
+                    val fresh = vm.generateComparisonReport(entries)
+                    if (fresh.isNotEmpty()) lastComparisonPath = fresh
+                    fresh
+                }
+                if (path.isNotEmpty()) {
+                    vm.exportComparisonToPdf(path)
+                }
+            },
+            enabled = !exportingNow && entries.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Cyan,
+                disabledContainerColor = TextDim.copy(alpha = 0.3f)
+            ),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Default.PictureAsPdf, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Exportar comparativa a PDF", fontWeight = FontWeight.Bold)
         }
     }
 }
