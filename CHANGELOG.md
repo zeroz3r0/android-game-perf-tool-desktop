@@ -1,170 +1,154 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.1.7] — 2026-04-06
+Each release uses three sections:
 
-### Que hay de nuevo
-- Arreglamos la alineacion de los puntos del resumen de actualizacion
-- El texto del resumen ahora se lee mas claro y no se corta raro
-- Las notas de version se pueden escribir en lenguaje normal, sin tanto tecnicismo
-
-### Arreglos
-- Solucionado un problema que hacia que nunca apareciera el cartel amarillo cuando habia una version nueva
-- La app ahora detecta correctamente las actualizaciones aunque las notas sean largas
-
-### Technical changes (for devs)
-- No functional changes vs v3.1.6 — this release exists so v3.1.6 users can validate the bullet alignment + priority-section parser end-to-end via a live update flow
+- **Que hay de nuevo** — user-facing changes in plain Spanish, no jargon. This is what the
+  in-app update banner shows in the mini-changelog (parsed automatically from the GitHub
+  release body).
+- **Arreglos** — bug fixes also in plain language.
+- **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
+  changes, root causes). The in-app banner ignores this section.
 
 ## [3.1.6] — 2026-04-06
 
+Consolidated release covering everything done since v3.0.1. The intermediate versions
+(v3.1.0-beta.1 through v3.1.5) were development iterations that have been superseded.
+v3.1.1, v3.1.2 and v3.1.4 are still in the GitHub releases page for historical context but
+all users should install v3.1.6.
+
 ### Que hay de nuevo
-- El cartel de actualizacion ahora muestra los puntos alineados correctamente
-- Mejoramos el estilo del resumen para que sea mas facil de leer
-- Ahora podes escribir las notas de version pensando directamente en los usuarios
 
-### Arreglado
-- Los puntos del resumen ya no se ven desalineados cuando el texto ocupa varias lineas
-- El color de los puntos es mas visible sobre el fondo oscuro del cartel
+- Limite de 5 sesiones en el historial: cuando capturas la sexta, la mas vieja se borra automaticamente para no llenar el disco
+- Exportar a PDF: nuevo boton en el historial, en la pantalla de resultados y en la comparativa para guardar el informe en cualquier carpeta de tu PC
+- Limpieza automatica al iniciar la app: borra archivos huerfanos (videos sueltos sin entrada en el historial, informes sin video) que se acumulaban desde versiones anteriores
+- Cartel de actualizacion mejorado: ahora muestra un resumen con los cambios principales de la version nueva
+- Las graficas de los informes funcionan sin internet: Chart.js viene embebido en el HTML
+- Instalador mucho mas liviano: 69 MB en vez de 250 MB que pesaba en las betas anteriores
 
-### Technical changes (for devs)
-- HomeScreen.kt: bullet rendering unified into a single Text with inline prefix to guarantee baseline alignment regardless of wrap
-- summarizeReleaseBody: new priority tier for human-friendly sections ("Que hay de nuevo", "Novedades", "Highlights", "What's new") that ranks above "Added"/"Fixed"
-- Sort stability: bullets now sort by (priority, original order) to preserve author-intended reading order within a section
-- Section matching accepts Spanish variants ("Nuevo", "Arreglado", "Correcciones", "Cambios") alongside English
+### Arreglos
 
-## [3.1.5] — 2026-04-06
+- El cartel amarillo de "actualizacion disponible" ahora aparece correctamente cuando hay una version nueva (antes no aparecia con notas de version largas)
+- El boton de actualizar ahora reabre la app sola en la version nueva (antes la cerraba pero no la volvia a abrir en bundles .app de macOS)
+- El boton de borrar entrada del historial ahora elimina tambien el video y el informe HTML (antes dejaba archivos huerfanos)
+- La eliminacion de videos en multiples segmentos ahora limpia todos los archivos del set, no solo el primero
+- Los puntos del resumen de actualizacion se ven alineados y con buen contraste sobre el fondo oscuro
 
-### Added
-- Release de prueba para validar end-to-end el mini-changelog en el banner de actualizacion
-- Este release existe para que usuarios en v3.1.4 vean el banner amarillo con bullets
-- Cada bullet se trunca a 140 caracteres para mantener el banner compacto
+### Detalles tecnicos
 
-### Fixed
-- Confirmacion de que el fix del regex StackOverflow funciona contra bodies largos en produccion
-- El parser lineal de extractJsonString maneja correctamente unicode, escapes y newlines
+#### Auto-updater
+- Nuevo `enum InstallationType` (FAT_JAR_STANDALONE, MACOS_APP_BUNDLE, WINDOWS_APP_BUNDLE, LINUX_NATIVE_PACKAGE, DEV_MODE) con detection en runtime via `protectionDomain.codeSource.location` + walking del path tree
+- `applyUpdate` hace branching segun el tipo: bundles macOS se relanzan con `open -n`, Windows con su `.exe` nativo, Linux con `xdg-open` o el script wrapper. Solo el caso `FAT_JAR_STANDALONE` usa `nohup java -jar`
+- Bash y bat scripts hardenados con `set -e`, validacion de tamano del JAR descargado (>= 50 MB para bundles, >= 1 KB para fat JAR), logging estructurado a `~/GamePerf Reports/updates/last-update.log`, `trap EXIT` para self-cleanup
+- `AppVersion.kt` es ahora auto-generado por una task de Gradle (`generateAppVersion`) que lee `gradle.properties` — antes estaba hardcoded y nunca se sincronizaba, lo que hacia que todas las versiones desde v3.0.0 reportaran `NAME = "3.0.0"` al runtime aunque el tag git fuera otro. Esto era el root cause del bug "el auto-updater nunca actualiza visualmente"
+- `extractJsonString` reemplazado por un parser lineal sin regex despues de descubrir que el regex original (`"$key"\s*:\s*"((?:[^"\\]|\\.)*)"`) tiraba `StackOverflowError` con bodies largos por catastrophic backtracking en alternaciones con cuantificador `*`. El catch original solo atrapaba `Exception`, no `Error`, asi que el fallo era silencioso: `_updateAvailable.value` quedaba en `null` y el banner nunca aparecia con notas de version > 1500 chars
+- `checkForUpdate` ahora atrapa `Throwable` en vez de `Exception` para cubrir errores de JVM como `StackOverflowError`
+- Nuevo `AutoUpdater.lastDownloadError` y `AutoUpdater.lastCheckError` (ambos `@Volatile`) para capturar el motivo exacto del ultimo fallo y mostrarlo en la UI
 
-## [3.1.4] — 2026-04-06
+#### PDF export
+- Reemplazado `com.microsoft.playwright:playwright:1.45.0` (que arrastraba `driver-bundle:1.45.0` con 163 MB de binarios de Node.js para 5 plataformas) por `ProcessBuilder` + `chrome --headless --print-to-pdf` invocando un browser Chromium-based instalado en el sistema
+- Nuevo `BrowserDetector` cross-platform con paths candidatos por OS (Chrome, Chromium, Edge, Brave, Vivaldi, Arc) y fallback `command -v` para Linux. Cachea el resultado con sentinel para tolerar el caso "ningun browser instalado"
+- 11 flags de Chrome validados experimentalmente para que Chart.js renderice antes del print: `--virtual-time-budget=10000`, `--run-all-compositor-stages-before-draw`, `--no-pdf-header-footer`, `--hide-scrollbars`, `--user-data-dir=<tmp>`, etc.
+- Resultado del cambio: JAR de 252 MB → 69 MB
+- Nuevo error UX: cuando no hay browser detectado, el banner rojo de error muestra un boton "Descargar Chrome" inline que abre `https://www.google.com/chrome/` via `Desktop.getDesktop().browse(URI(...))`
 
-### Fixed
-- CRITICAL: el banner de actualizacion disponible nunca aparecia para releases con release notes largas (mas de ~1500 caracteres mezclando unicode, comillas escapadas y saltos de linea). El parser de JSON del auto-updater usaba un regex con catastrophic backtracking que explotaba con StackOverflowError al procesar el body del release. El catch de checkForUpdate solo atrapaba Exception, no Error, asi que el fallo era silencioso — el update check se mataba sin notificar al ViewModel y _updateAvailable quedaba en null. Reemplazado por un parser JSON manual en AutoUpdater.kt sin regex ni recursion: scan lineal, zero backtracking, imposible de romper con bodies de cualquier tamano.
-- El catch de checkForUpdate ahora atrapa Throwable en vez de Exception, para cubrir tambien errores de la JVM como StackOverflowError que antes escapaban silenciosamente.
+#### Session retention
+- Nuevo `FileCleanup` object: `pruneOrphans` bidireccional, segment-aware delete con regex `video_(\d{8}_\d{6})_\d+\.mp4`, whitelist de prefijos para proteger `updates/` del cleanup
+- `SessionHistory.MAX_ENTRIES` bajado a 5, `addEntry` devuelve `List<HistoryEntry>` con las pruneadas para cleanup, `deleteEntry` devuelve `HistoryEntry?` con la removida para cleanup, todas las escrituras `@Synchronized`
+- Comparativas se generan en `java.io.tmpdir` y se limpian en `cleanup()` + scan inicial al startup borra leftovers
+- Nuevo "Historial: 5/5" passive hint en el HomeScreen cuando se llega al limite
 
-### Added
-- `AutoUpdater.lastCheckError`: nuevo campo volatile que captura el motivo del ultimo fallo de checkForUpdate (HTTP code, excepcion, error). Util para debugging post-mortem y para mostrar mensajes especificos en el UI en el futuro.
+#### Mini-changelog UI
+- Nueva funcion `summarizeReleaseBody` en `HomeScreen.kt` que parsea el markdown del release body y extrae hasta 5 bullets priorizados por seccion
+- Prioridad de secciones (de mayor a menor): "Que hay de nuevo" / "Highlights" / "Novedades" / "What's new" > "Added" / "Nuevo" > "Fixed" / "Arreglado" > "Changed" / "Cambios" > "Critical" / "Importante"
+- Bullets renderizados con un unico `Text` con prefijo inline (`"•  $line"`) para garantizar baseline alignment cuando wrappean. Color `Color.White.copy(alpha=0.82f)` sobre fondo `Color.Black.copy(alpha=0.25f)` para contraste legible
+- Sort estable: bullets dentro de la misma prioridad preservan su orden original
 
-### Verified empirically
-- Parser JSON portado a Java puro y testeado contra el body real de v3.1.3 (1827 caracteres con unicode, escapes y mixed content) — extraccion completa sin StackOverflow.
-- Bundle local actualizado a v3.1.4 y launch verificado — corre 6+ segundos sin crash.
+#### Tests
+- 68 unit tests pasando
+- 9 nuevos en `AutoUpdaterDetectionTest` cubriendo todos los `InstallationType` + fallbacks
+- 16 en `FileCleanupTest`, 7 en `SessionHistoryTest`
 
-## [3.1.3] — 2026-04-06
+#### Stats
+- 21 archivos modificados desde v3.0.1
+- ~1800 LOC netas (incluyendo Chart.js inlineado de ~250 KB)
+- 0 warnings on clean compile
+- Build time CI: ~3 min matrix Linux + macOS arm64 + Windows + macOS x64 (este ultimo subido manualmente porque `macos-13` esta deprecated en GitHub Actions)
 
-### Added
-- Release de prueba para validar el mini-changelog inline en el banner de update
-- Ahora ves este texto dentro del banner amarillo cuando hay actualizacion disponible
-- Cada bullet se trunca a 140 caracteres para mantener el banner compacto
+## [3.1.4] — 2026-04-06 — superseded by 3.1.6
 
-### Fixed
-- Verificacion end-to-end del flujo completo: download, rename, relaunch, reapertura automatica
-- Confirmacion empirica de que open -n reabre el .app bundle sin intervencion del usuario
+Critical hotfix for the auto-updater banner that never appeared on releases with long
+notes. Replaced by v3.1.6 which adds the bullet alignment fix and the human-friendly
+section priority on top.
 
-## [3.1.2] — 2026-04-06
+### Arreglos
+- Critical: el banner amarillo de actualizacion volvio a aparecer despues de no funcionar con notas largas
 
-### Added
-- **Mini changelog inline en el dialog de update**: el banner de "Nueva versión disponible" en HomeScreen ahora muestra hasta 5 bullets resumen con lo nuevo y los fixes principales de la versión, parseados automáticamente de las release notes de GitHub. Prioriza secciones "Added", "Fixed", "Changed", "Critical" y trunca cada bullet a 140 caracteres para mantener la UI compacta.
-- **`AutoUpdater.lastDownloadError`**: nuevo campo `@Volatile` que captura el motivo exacto del último fallo de descarga (HTTP 404, timeout, IOException con detalle, descarga truncada, etc). El UI ahora muestra "Error al descargar: {motivo}" en vez del genérico "Error al descargar la actualización" que ocultaba el motivo real.
+### Detalles tecnicos
+- `extractJsonString` reescrito como linear scan parser. Root cause: catastrophic backtracking del regex original causaba `StackOverflowError` que el catch comia silenciosamente
 
-### Fixed
-- **Descarga truncada silenciosa**: si GitHub devolvía un body de < 1 KB (puede pasar bajo carga), el AutoUpdater anterior aceptaba el archivo como válido y luego rompía durante el rename. Ahora valida el tamaño mínimo del JAR descargado y reporta error con mensaje claro al usuario.
+## [3.1.2] — 2026-04-06 — superseded by 3.1.6
 
-### Verified empirically
-- End-to-end test del relauncher de bundles macOS: scripted bash + `open -n` con un fake `.app` bundle confirma que el rename, el log a `~/GamePerf Reports/updates/last-update.log`, y el relanzamiento del native launcher funcionan correctamente cuando el padre Java muere via `System.exit(0)`. El `trap EXIT` self-borra el script al final.
+First introduction of the mini-changelog feature in the update banner. Superseded by
+v3.1.4 (regex fix) and v3.1.6 (UI alignment + priority sections).
 
-## [3.1.1-beta.1] — 2026-04-06
+### Que hay de nuevo
+- Nuevo cartel de actualizacion con resumen de cambios
+- Mensajes de error de descarga mas especificos
 
-### Fixed
-- **Auto-updater for jpackage app bundles**: previously, updating from a `.app` bundle (macOS) or native installer (Windows/Linux) would silently fail because the relauncher used `java -jar` which bypasses the bundle's native launcher and JVM options (`-Dskiko.library.path`, `-Dcompose.application.resources.dir`, `-Xdock:name`). The new auto-updater detects the installation type (`FAT_JAR_STANDALONE` / `MACOS_APP_BUNDLE` / `WINDOWS_APP_BUNDLE` / `LINUX_NATIVE_PACKAGE` / `DEV_MODE`) and uses the appropriate relaunch command (`open -n` for macOS bundles, native launcher for Windows/Linux, `nohup java -jar` only for the standalone fat JAR case). Also added defensive bash script with `set -e` for fast failures, size validation of the downloaded JAR (≥ 50 MB to avoid replacing a bundle JAR with a thin JAR that would crash on next launch), and `trap EXIT` for safer self-cleanup.
-- **Auto-updater diagnostic logging**: every update attempt now writes detailed logs to `~/GamePerf Reports/updates/last-update.log` for post-mortem debugging — script start, JAR sizes, mv operations, relaunch command, and final status are all timestamped.
+### Detalles tecnicos
+- Nueva `summarizeReleaseBody` en HomeScreen.kt
+- Nuevo `AutoUpdater.lastDownloadError` `@Volatile` field
 
-### Added
-- **Unit tests**: `AutoUpdaterDetectionTest` with 9 tests covering all installation types and defensive fallbacks (missing launcher, non-executable launcher, missing sibling `.exe`, etc.). Uses isolated temp directories and the new `internal fun detectInstallation(jarPathOverride: File?)` seam — no real installation required to run them.
-- **Integration test guide**: `docs/IntegrationManualTest.md` with reproducible bash recipes for verifying the generated update script in isolation, plus a real-installation smoke test for the macOS bundle relaunch path. Test total: 68 (+9 new detection tests).
+## [3.1.1] — 2026-04-06 — superseded by 3.1.6 (marked prerelease)
 
-## [3.1.0] - 2026-04-06
+Initial fix for the auto-updater bundle relauncher and replacement of Playwright with
+ProcessBuilder. Superseded by v3.1.4 which fixes the AppVersion sync bug that prevented
+this release from being visibly applied.
 
-### Added
-- **Session retention policy**: hard maximum of 5 recent sessions enforced. When capturing a new session beyond the limit, the oldest one (JSON entry + video segments + HTML report) is silently removed. A passive hint appears in the history header at 5/5 capacity (`Historial: 5/5 - la próxima captura reemplazará la más antigua`).
-- **PDF export**: new "Exportar PDF" buttons on HomeScreen (per history entry), ResultsScreen (post-capture), and ComparisonScreen. Exports open a native file picker (macOS NSSavePanel / Windows IFileDialog / GTK) and let the user save the report anywhere on their machine. The exported PDF is fully decoupled from the app — it lives in the user's filesystem and is never touched by the retention policy.
-- **Startup filesystem cleanup (`pruneOrphans`)**: on launch, the app scans `~/GamePerf Reports/` and cleans up orphaned HTML/video files that are no longer referenced in `history.json`, and repairs entries whose paths point to missing files. Never touches the `updates/` subdirectory, `history.json`, or files outside the whitelist prefixes (`informe_`, `video_`, `recording_`, `comparativa_`).
-- **Chart.js is now embedded inline** in every generated HTML report (instead of loading from CDN). Reports work 100% offline after generation and can be moved/emailed anywhere.
-- **Comparison reports moved to tmpdir**: comparison HTML files no longer pollute `~/GamePerf Reports/`. They live in the system temp directory and are cleaned up when the app closes or on next launch.
-- **Unit tests**: `FileCleanupTest` (16 tests covering segment-aware deletion, bidirectional prune, subdir protection, whitelist), `SessionHistoryTest` (7 tests covering retention, delete return value, updateEntry, concurrent access). New total: 61 tests.
+### Detalles tecnicos
+- Nuevo `InstallationType` enum + branching en `applyUpdate`
+- `BrowserDetector` cross-platform replacing Playwright
+- Bash/bat scripts defensivos con logging
 
-### Fixed
-- **Manual delete bug**: the trash button in HomeScreen now correctly deletes the JSON entry, all video segments, and the HTML report together. Previously it only removed the JSON entry, leaving orphaned files behind. The AlertDialog text is updated to reflect the new behavior.
-- **Multi-segment video deletion**: fixed a latent bug where videos recorded in multiple segments (`video_${sessionId}_0.mp4`, `_1.mp4`, ...) were only partially deleted because the JSON only persisted the first segment path. Deletion now matches all segments for a session by regex.
+## [3.1.1-beta.1] / [3.1.0-beta.1] — 2026-04-06 — prereleases
 
-### Changed
-- `SessionHistory.MAX_ENTRIES` reduced from 20 to 5.
-- `SessionHistory.addEntry` now returns the list of evicted entries for cleanup.
-- `SessionHistory.deleteEntry` now returns the removed entry for cleanup.
-- `SessionHistory` JSON writes are now `@Synchronized` to prevent concurrent corruption.
-- `ReportGenerator.generateComparison` accepts an optional `outputDir` parameter (defaults to `java.io.tmpdir`).
+Beta releases shipped during development. Both have the bundle size issue (250 MB JARs)
+that was fixed in v3.1.1+. Marked as prereleases in GitHub.
 
-### Dependencies
-- Added `com.microsoft.playwright:playwright:1.45.0` (Apache-2.0) for HTML-to-PDF conversion via headless Chromium. First-run downloads Chromium (~180 MB) to `~/.cache/ms-playwright/`. Subsequent runs are fully offline.
+## [3.0.1] — 2026-03-31
 
-### Migration notes
-- **No data loss on first run**: `pruneOrphans` only removes orphaned files and repairs broken references. Existing sessions remain intact. The 5-session limit applies organically starting from the next capture.
-- To preserve a session permanently, use the new "Exportar PDF" button. The PDF is saved to the user's filesystem and is never touched by the retention policy.
-- First PDF export requires internet to download Chromium (shown via "Preparando motor PDF" dialog). Subsequent exports are offline.
+- Auto-updater hotfix: use exact `java.home`, handle dev mode
+- macOS x64 CI build added (later reverted due to macos-13 deprecation, eventually
+  re-enabled and worked around with manual upload in v3.1.x)
+- Video FPS calculation: use `avg_frame_rate` instead of `r_frame_rate`
 
-## [3.0.0] - 2026-03-31
+## [3.0.0] — 2026-03-31
 
-### Added
-- Embedded video player with native FPS frame-by-frame playback
-- Interactive timeline with FPS overlay, draggable playhead, and color zones
-- Session markers (Interstitial, Video Reward, Loading, Scene Change, Custom notes)
-- Color picker for markers (10 preset colors)
-- Competition comparison mode with session tagging
-- ComparisonScreen with side-by-side metrics and radar charts
-- Auto-updater via GitHub Releases (checks on startup)
-- CI/CD pipeline for multi-platform builds (macOS, Linux, Windows)
-- Custom app icon
-- Stop capture confirmation dialog
-- Delete history entries with confirmation
-- Keyboard shortcuts: Space (play/pause), arrows (seek ±5s), Escape (stop capture)
-- Pulsing recording indicator animation
-- Unit tests for HardwareScoring, AutoUpdater, and Formatting utilities
-- Version single-source via gradle.properties
+Production-quality polish release. Fix of 40+ issues:
 
-### Fixed
-- Video player locale bug (Spanish decimal comma broke ffmpeg)
-- CPU measurement now uses delta between reads (not cumulative)
-- Color classification for reverse metrics (P1 FPS)
-- Capture timer independent of ADB command latency
-- Device disconnect detection during capture
-- All String.format calls now use Locale.US
+- 23 `String.format` calls with locale-unsafe formatting (broke reports in es_AR locale)
+- Memory leak in ViewModel `CoroutineScope` (now `cleanup()` on window close)
+- Video player OOM (sliding window cache of 200 frames max, ~20 MB)
+- Device disconnection detection during capture (3 consecutive ADB failures → auto-stop with red banner)
+- `AdbBridge` singleton state reset between captures (CPU delta, SurfaceFlinger cache)
+- UX: stop confirmation, delete history confirmation, keyboard shortcuts (Space / ← / → / Esc), pulsing capture dot
+- 0 compiler warnings, 0 deprecated APIs, 36 unit tests
+- New competition comparison mode: tag sessions as OUR_GAME or COMPETITION, side-by-side comparison screen with bar charts and color-coded table, comparative HTML report with Chart.js radar chart
+- Embedded video player with custom frame renderer using ffmpeg + Skia (JPEG → Skia.makeFromEncoded direct, ~0.1 ms/frame vs 46 ms/frame with the previous JPEG → PNG → Skia path)
 
-### Changed
-- Video player uses ffmpeg batch extraction + Skia direct JPEG decode
-- HTML report redesigned with dark theme and Chart.js 4
-- Timeline pauses playback when user scrubs
-- History now stores up to 20 sessions (was 5)
+## [2.2.0] — 2026-03-31
 
-## [1.0.0] - 2026-03-30
+- Embedded video player using JavaFX MediaView
+- Interactive timeline with custom markers (Interstitial, VideoReward, Loading, SceneChange)
 
-### Added
-- Initial release
-- ADB device detection and connection
-- Live FPS, frame time, memory, CPU, temperature capture
-- HTML report generation with Chart.js
-- Session history with persistence
-- WiFi ADB mode
-- Hardware scoring and device grading
-- Dual grading system (general + hardware-adjusted)
-- Video recording during capture sessions
-- FPS-timestamped correlation table in HTML report
+## [2.1.0] / [2.0.0] — 2026-03-31
+
+- Initial Compose Desktop standalone version
+- Auto-updater via GitHub Releases
+- Comparison report
+- Version management
