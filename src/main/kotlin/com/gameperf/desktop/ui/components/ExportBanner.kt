@@ -5,11 +5,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Error
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -18,20 +18,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.DialogProperties
 import com.gameperf.desktop.viewmodel.AppViewModel
 import kotlinx.coroutines.delay
+import java.awt.Desktop
+import java.net.URI
 
 /**
  * Inline status banner consumed by HomeScreen, ResultsScreen and ComparisonScreen to
  * provide unobtrusive feedback for the PDF export pipeline.
  *
- * Visible only for [AppViewModel.ExportStatus.InProgress], [Success] and [Error].
- * Auto-dismisses after 3 seconds for terminal states (Success / Error) by calling
- * [onDismiss], which the screen wires to `vm.resetExportStatus()`.
+ * Visible only for [AppViewModel.ExportStatus.InProgress], [AppViewModel.ExportStatus.Success]
+ * and [AppViewModel.ExportStatus.Error]. Auto-dismisses after 3 seconds for terminal
+ * states (Success / Error) by calling [onDismiss], which the screen wires to
+ * `vm.resetExportStatus()`.
  *
- * Idle and PreparingEngine render nothing — PreparingEngine is handled by
- * [PreparingEngineDialog] as a separate modal.
+ * The Error branch renders an inline action button when both `actionUrl` and
+ * `actionLabel` are non-null (used for the "Descargar Chrome" CTA when no
+ * Chromium-based browser is detected).
  */
 @Composable
 fun ExportBanner(
@@ -119,47 +122,32 @@ fun ExportBanner(
                         color = Color.White,
                         fontSize = 13.sp,
                         maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
+                    if (status.actionUrl != null && status.actionLabel != null) {
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(
+                            onClick = {
+                                runCatching {
+                                    if (Desktop.isDesktopSupported() &&
+                                        Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)
+                                    ) {
+                                        Desktop.getDesktop().browse(URI(status.actionUrl))
+                                    }
+                                }.onFailure {
+                                    System.err.println("ExportBanner: Desktop.browse falló: ${it.message}")
+                                }
+                            }
+                        ) {
+                            Text(status.actionLabel, color = Color.White)
+                        }
+                    }
                 }
             }
         }
         else -> {
-            // Idle, PreparingEngine: render nothing here. PreparingEngine has its
-            // own modal dialog (see [PreparingEngineDialog]).
+            // Idle: render nothing.
         }
     }
-}
-
-/**
- * Modal "Preparando motor PDF (primera vez solamente)..." dialog. Shown only when
- * `status is PreparingEngine`. Not user-dismissable: aborting the Chromium download
- * mid-flight leaves Playwright in an inconsistent state.
- *
- * The dialog disappears automatically when the ViewModel transitions out of
- * PreparingEngine (Success / Error / Idle), since the entire composable just
- * `return`s in that branch.
- */
-@Composable
-fun PreparingEngineDialog(
-    status: AppViewModel.ExportStatus,
-    @Suppress("UNUSED_PARAMETER") onDismiss: () -> Unit = {}
-) {
-    if (status !is AppViewModel.ExportStatus.PreparingEngine) return
-    AlertDialog(
-        onDismissRequest = { /* no-op: not dismissable */ },
-        confirmButton = { /* none */ },
-        title = null,
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                Spacer(Modifier.width(16.dp))
-                Text("Preparando motor PDF (primera vez solamente)...")
-            }
-        },
-        properties = DialogProperties(
-            dismissOnBackPress = false,
-            dismissOnClickOutside = false
-        )
-    )
 }

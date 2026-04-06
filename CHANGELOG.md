@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1-beta.1] — 2026-04-06
+
+### Fixed
+- **Auto-updater for jpackage app bundles**: previously, updating from a `.app` bundle (macOS) or native installer (Windows/Linux) would silently fail because the relauncher used `java -jar` which bypasses the bundle's native launcher and JVM options (`-Dskiko.library.path`, `-Dcompose.application.resources.dir`, `-Xdock:name`). The new auto-updater detects the installation type (`FAT_JAR_STANDALONE` / `MACOS_APP_BUNDLE` / `WINDOWS_APP_BUNDLE` / `LINUX_NATIVE_PACKAGE` / `DEV_MODE`) and uses the appropriate relaunch command (`open -n` for macOS bundles, native launcher for Windows/Linux, `nohup java -jar` only for the standalone fat JAR case). Also added defensive bash script with `set -e` for fast failures, size validation of the downloaded JAR (≥ 50 MB to avoid replacing a bundle JAR with a thin JAR that would crash on next launch), and `trap EXIT` for safer self-cleanup.
+- **Auto-updater diagnostic logging**: every update attempt now writes detailed logs to `~/GamePerf Reports/updates/last-update.log` for post-mortem debugging — script start, JAR sizes, mv operations, relaunch command, and final status are all timestamped.
+
+### Added
+- **Unit tests**: `AutoUpdaterDetectionTest` with 9 tests covering all installation types and defensive fallbacks (missing launcher, non-executable launcher, missing sibling `.exe`, etc.). Uses isolated temp directories and the new `internal fun detectInstallation(jarPathOverride: File?)` seam — no real installation required to run them.
+- **Integration test guide**: `docs/IntegrationManualTest.md` with reproducible bash recipes for verifying the generated update script in isolation, plus a real-installation smoke test for the macOS bundle relaunch path. Test total: 68 (+9 new detection tests).
+
 ## [3.1.0] - 2026-04-06
 
 ### Added

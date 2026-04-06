@@ -27,7 +27,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.components.*
 import com.gameperf.desktop.ui.components.ExportBanner
-import com.gameperf.desktop.ui.components.PreparingEngineDialog
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.ui.util.formatDurationHuman
 import com.gameperf.desktop.ui.util.formatTimeMs
@@ -45,8 +44,6 @@ fun ResultsScreen(vm: AppViewModel) {
     val playbackSpeed by vm.playbackSpeed.collectAsState()
     val exportStatus by vm.exportStatus.collectAsState()
 
-    // Modal "Preparando motor PDF..." dialog. Outside the Column to overlay the screen.
-    PreparingEngineDialog(exportStatus)
     // Marker dialog state
     var showMarkerDialog by remember { mutableStateOf(false) }
     var markerDialogTimestamp by remember { mutableStateOf(0L) }
@@ -519,9 +516,8 @@ fun ResultsScreen(vm: AppViewModel) {
                 }
 
                 // Export to PDF — disabled while a previous export is still running
-                // (we only allow one Playwright pipeline at a time per design (l)).
-                val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress ||
-                    exportStatus is AppViewModel.ExportStatus.PreparingEngine
+                // (we only allow one PDF export pipeline at a time).
+                val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress
                 Button(
                     onClick = { vm.exportCurrentReportToPdf() },
                     enabled = !exportingNow,

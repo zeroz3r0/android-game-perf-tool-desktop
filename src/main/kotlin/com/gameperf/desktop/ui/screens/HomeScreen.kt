@@ -25,7 +25,6 @@ import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.ui.components.ExportBanner
-import com.gameperf.desktop.ui.components.PreparingEngineDialog
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.viewmodel.AppViewModel
@@ -45,10 +44,6 @@ fun HomeScreen(vm: AppViewModel) {
     val updateError by vm.updateError.collectAsState()
 
     val exportStatus by vm.exportStatus.collectAsState()
-
-    // First-run modal for Playwright Chromium download. Outside the Column so it
-    // overlays the entire screen as a proper dialog.
-    PreparingEngineDialog(exportStatus)
 
     Column(
         modifier = Modifier
@@ -604,8 +599,7 @@ fun HomeScreen(vm: AppViewModel) {
                                 // Export to PDF — only enabled when the source HTML still exists
                                 // and there is no PDF export already running.
                                 if (entry.reportPath.isNotEmpty()) {
-                                    val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress ||
-                                        exportStatus is AppViewModel.ExportStatus.PreparingEngine
+                                    val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress
                                     IconButton(
                                         onClick = { vm.exportHistoryEntryToPdf(entry) },
                                         enabled = !exportingNow,

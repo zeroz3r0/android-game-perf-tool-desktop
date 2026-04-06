@@ -22,7 +22,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.ui.components.ExportBanner
-import com.gameperf.desktop.ui.components.PreparingEngineDialog
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.ui.util.fmtUS
 import com.gameperf.desktop.viewmodel.AppViewModel
@@ -42,9 +41,6 @@ fun ComparisonScreen(vm: AppViewModel) {
     // "Exportar comparativa a PDF" button can hand it to the ViewModel, and so that
     // multiple PDF exports of the same comparison reuse the same source.
     var lastComparisonPath by remember { mutableStateOf("") }
-
-    // Modal "Preparando motor PDF..." dialog. Outside the Column to overlay the screen.
-    PreparingEngineDialog(exportStatus)
 
     Column(
         modifier = Modifier
@@ -454,8 +450,7 @@ fun ComparisonScreen(vm: AppViewModel) {
         // PDF export action — separate row so it does not visually compete with
         // the primary "generate" button. Generates the HTML on demand if the user
         // hasn't done so yet, then forwards the path to the ViewModel.
-        val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress ||
-            exportStatus is AppViewModel.ExportStatus.PreparingEngine
+        val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress
         Button(
             onClick = {
                 // If the user clicks PDF without having generated the HTML first,

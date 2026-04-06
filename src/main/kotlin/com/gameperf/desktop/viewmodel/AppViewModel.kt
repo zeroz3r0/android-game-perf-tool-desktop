@@ -7,7 +7,6 @@ import com.gameperf.desktop.core.CURRENT_VERSION
 import com.gameperf.desktop.core.FileCleanup
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.report.PdfExporter
-import com.gameperf.desktop.report.PlaywrightManager
 import com.gameperf.desktop.report.ReportGenerator
 import com.gameperf.desktop.ui.util.PickerUtils
 import kotlinx.coroutines.*
@@ -130,8 +129,6 @@ class AppViewModel {
             }
             _tempComparisons.clear()
         }
-        // Release the shared Playwright Browser + Playwright instance.
-        runCatching { PlaywrightManager.shutdown() }
         scope.cancel()
     }
 
@@ -217,17 +214,23 @@ class AppViewModel {
 
     // ===== PDF Export =====
     /**
-     * Lifecycle of a single PDF export attempt. Drives the [ExportBanner] composable
-     * and the modal [PreparingEngineDialog] when Playwright launches Chromium for the
-     * first time. The flow is always Idle -> InProgress -> (PreparingEngine?) ->
-     * Success | Error -> auto-reset to Idle by the banner after 3s.
+     * Lifecycle of a single PDF export attempt. Drives the [ExportBanner] composable.
+     * The flow is always Idle -> InProgress -> Success | Error -> auto-reset to Idle
+     * by the banner after 3s.
+     *
+     * [Error.actionUrl] / [Error.actionLabel] are optional and used by the banner to
+     * render an inline action button (e.g. "Descargar Chrome" when no browser is
+     * detected). Both must be non-null for the button to appear.
      */
     sealed class ExportStatus {
         object Idle : ExportStatus()
         object InProgress : ExportStatus()
-        object PreparingEngine : ExportStatus()
         data class Success(val path: String) : ExportStatus()
-        data class Error(val message: String) : ExportStatus()
+        data class Error(
+            val message: String,
+            val actionUrl: String? = null,
+            val actionLabel: String? = null,
+        ) : ExportStatus()
     }
 
     private val _exportStatus = MutableStateFlow<ExportStatus>(ExportStatus.Idle)
@@ -940,8 +943,13 @@ class AppViewModel {
 
     /**
      * Shared export pipeline used by all three exportXxxToPdf entry points.
-     * Handles: status transitions, file picker, optional PreparingEngine state,
-     * blocking PdfExporter call on Dispatchers.IO, and exhaustive error wrapping.
+     * Handles: status transitions, file picker, blocking PdfExporter call on
+     * Dispatchers.IO, and exhaustive error wrapping. The pipeline goes directly
+     * from Idle -> InProgress -> Success | Error (no intermediate state).
+     *
+     * The "no browser detected" branch maps to an [ExportStatus.Error] with an
+     * inline action button payload so the banner can offer a "Descargar Chrome"
+     * link.
      */
     private fun runExportPipeline(htmlPath: String, defaultFileName: String) {
         scope.launch {
@@ -960,18 +968,19 @@ class AppViewModel {
                 _exportStatus.value = ExportStatus.Idle
                 return@launch
             }
-            // Show the modal "Preparando motor PDF..." dialog only if Chromium has
-            // not been launched yet in this process.
-            if (!PlaywrightManager.isReady) {
-                _exportStatus.value = ExportStatus.PreparingEngine
-            }
             try {
                 withContext(Dispatchers.IO) {
                     PdfExporter.exportHtmlToPdf(htmlPath, target)
                 }
                 _exportStatus.value = ExportStatus.Success(target.absolutePath)
             } catch (e: PdfExporter.PdfExportException) {
-                _exportStatus.value = ExportStatus.Error(e.message ?: "Error desconocido al exportar PDF")
+                val msg = e.message ?: "Error desconocido al exportar PDF"
+                val isNoBrowser = msg.startsWith("No se encontró")
+                _exportStatus.value = ExportStatus.Error(
+                    message = msg,
+                    actionUrl = if (isNoBrowser) "https://www.google.com/chrome/" else null,
+                    actionLabel = if (isNoBrowser) "Descargar Chrome" else null,
+                )
             } catch (e: Throwable) {
                 _exportStatus.value = ExportStatus.Error("Error inesperado: ${e.message}")
             }
