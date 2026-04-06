@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.3] — 2026-04-06
+
+### Added
+- Release de prueba para validar el mini-changelog inline en el banner de update
+- Ahora ves este texto dentro del banner amarillo cuando hay actualizacion disponible
+- Cada bullet se trunca a 140 caracteres para mantener el banner compacto
+
+### Fixed
+- Verificacion end-to-end del flujo completo: download, rename, relaunch, reapertura automatica
+- Confirmacion empirica de que open -n reabre el .app bundle sin intervencion del usuario
+
 ## [3.1.2] — 2026-04-06
 
 ### Added
