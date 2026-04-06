@@ -116,8 +116,17 @@ object AutoUpdater {
      * Download JAR from GitHub release assets to a temp file.
      * Calls [onProgress] with values from 0.0 to 1.0.
      * Returns the downloaded File or null on error.
+     *
+     * On failure, the reason is recorded in [lastDownloadError] so the UI can surface it
+     * instead of the generic "Error al descargar la actualizacion" message that hid every
+     * real cause (timeout, 404, redirect to login, disk full, etc.).
      */
+    @Volatile
+    var lastDownloadError: String? = null
+        private set
+
     fun downloadUpdate(url: String, onProgress: (Float) -> Unit): File? {
+        lastDownloadError = null
         return try {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.setRequestProperty("User-Agent", "GamePerfDesktop/${AppVersion.NAME}")
@@ -127,6 +136,7 @@ object AutoUpdater {
             conn.instanceFollowRedirects = true
 
             if (conn.responseCode != 200) {
+                lastDownloadError = "HTTP ${conn.responseCode} desde GitHub al descargar el JAR"
                 conn.disconnect()
                 return null
             }
@@ -151,8 +161,17 @@ object AutoUpdater {
             }
             conn.disconnect()
             onProgress(1f)
+
+            // Sanity check: if the file is suspiciously small, treat as failed download.
+            // GitHub sometimes serves a 0-byte response under heavy load.
+            if (tempFile.length() < 1024) {
+                lastDownloadError = "Descarga truncada (${tempFile.length()} bytes). Reintenta en unos segundos."
+                tempFile.delete()
+                return null
+            }
             tempFile
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastDownloadError = "${e.javaClass.simpleName}: ${e.message ?: "sin detalle"}"
             null
         }
     }

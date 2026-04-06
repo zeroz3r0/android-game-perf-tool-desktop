@@ -116,6 +116,45 @@ fun HomeScreen(vm: AppViewModel) {
                         }
                     }
 
+                    // ===== Mini changelog =====
+                    val miniChangelog = remember(info.body) { summarizeReleaseBody(info.body) }
+                    if (miniChangelog.isNotEmpty() && updateProgress == null) {
+                        Spacer(Modifier.height(10.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color.Black.copy(alpha = 0.25f))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                "Que hay de nuevo",
+                                color = Yellow.copy(alpha = 0.85f),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            miniChangelog.forEach { line ->
+                                Row(verticalAlignment = Alignment.Top) {
+                                    Text(
+                                        "•  ",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp,
+                                        modifier = Modifier.padding(top = 1.dp)
+                                    )
+                                    Text(
+                                        line,
+                                        color = TextSecondary,
+                                        fontSize = 11.sp,
+                                        lineHeight = 15.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                Spacer(Modifier.height(2.dp))
+                            }
+                        }
+                    }
+
                     // Download progress
                     if (updateProgress != null) {
                         Spacer(Modifier.height(10.dp))
@@ -683,4 +722,63 @@ fun HomeScreen(vm: AppViewModel) {
             }
         }
     }
+}
+
+/**
+ * Extract the most relevant bullet points from a GitHub release body (markdown).
+ *
+ * Strategy: prefer lines under "### Added", "### Fixed", "### Changed" sections (in that order)
+ * but fall back to ANY top-level bullet if no sections match. Strips markdown formatting
+ * (bold, code, links) and truncates each line to a readable length. Returns at most 5 bullets.
+ *
+ * Empty list means: nothing useful was extracted (very short body, no bullets, etc.) — caller
+ * should hide the changelog block in that case.
+ */
+private fun summarizeReleaseBody(body: String?): List<String> {
+    if (body.isNullOrBlank()) return emptyList()
+
+    // Section priority: anything under these gets surfaced first.
+    val priority = listOf("added", "fixed", "changed", "critical", "feature", "bug")
+
+    data class Bullet(val priority: Int, val text: String)
+    val bullets = mutableListOf<Bullet>()
+    var currentPriority = priority.size // default = lowest priority
+
+    body.lineSequence().forEach { rawLine ->
+        val line = rawLine.trim()
+
+        // Section header detection: ##, ###, or **Section** style
+        val headerMatch = Regex("""^#{1,6}\s+(.+)$""").find(line)
+            ?: Regex("""^\*\*(.+?)\*\*\s*:?$""").find(line)
+        if (headerMatch != null) {
+            val name = headerMatch.groupValues[1].lowercase()
+            currentPriority = priority.indexOfFirst { name.contains(it) }
+                .takeIf { it >= 0 } ?: priority.size
+            return@forEach
+        }
+
+        // Bullet detection: -, *, +, or numbered
+        val bulletMatch = Regex("""^[-*+]\s+(.+)$""").find(line)
+            ?: Regex("""^\d+\.\s+(.+)$""").find(line)
+            ?: return@forEach
+
+        var text = bulletMatch.groupValues[1]
+        // Strip markdown noise (bold, italic, code, links)
+        text = text.replace(Regex("""\*\*(.+?)\*\*"""), "$1")
+            .replace(Regex("""\*(.+?)\*"""), "$1")
+            .replace(Regex("""`(.+?)`"""), "$1")
+            .replace(Regex("""\[(.+?)\]\((.+?)\)"""), "$1")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        if (text.length < 3) return@forEach
+        // Truncate very long lines so the banner stays compact
+        val truncated = if (text.length > 140) text.substring(0, 137).trimEnd() + "..." else text
+        bullets.add(Bullet(currentPriority, truncated))
+    }
+
+    return bullets
+        .sortedBy { it.priority }
+        .take(5)
+        .map { it.text }
 }

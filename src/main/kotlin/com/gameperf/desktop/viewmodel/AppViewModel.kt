@@ -321,7 +321,12 @@ class AppViewModel {
                     }
                     // If auto-restart succeeded, we'll never reach here (System.exit called)
                 } else {
-                    _updateError.value = "Error al descargar la actualizacion."
+                    val reason = AutoUpdater.lastDownloadError
+                    _updateError.value = if (reason.isNullOrBlank()) {
+                        "Error al descargar la actualizacion."
+                    } else {
+                        "Error al descargar: $reason"
+                    }
                     _updateProgress.value = null
                 }
             } catch (e: Exception) {

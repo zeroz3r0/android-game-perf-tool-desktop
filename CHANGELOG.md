@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] — 2026-04-06
+
+### Added
+- **Mini changelog inline en el dialog de update**: el banner de "Nueva versión disponible" en HomeScreen ahora muestra hasta 5 bullets resumen con lo nuevo y los fixes principales de la versión, parseados automáticamente de las release notes de GitHub. Prioriza secciones "Added", "Fixed", "Changed", "Critical" y trunca cada bullet a 140 caracteres para mantener la UI compacta.
+- **`AutoUpdater.lastDownloadError`**: nuevo campo `@Volatile` que captura el motivo exacto del último fallo de descarga (HTTP 404, timeout, IOException con detalle, descarga truncada, etc). El UI ahora muestra "Error al descargar: {motivo}" en vez del genérico "Error al descargar la actualización" que ocultaba el motivo real.
+
+### Fixed
+- **Descarga truncada silenciosa**: si GitHub devolvía un body de < 1 KB (puede pasar bajo carga), el AutoUpdater anterior aceptaba el archivo como válido y luego rompía durante el rename. Ahora valida el tamaño mínimo del JAR descargado y reporta error con mensaje claro al usuario.
+
+### Verified empirically
+- End-to-end test del relauncher de bundles macOS: scripted bash + `open -n` con un fake `.app` bundle confirma que el rename, el log a `~/GamePerf Reports/updates/last-update.log`, y el relanzamiento del native launcher funcionan correctamente cuando el padre Java muere via `System.exit(0)`. El `trap EXIT` self-borra el script al final.
+
 ## [3.1.1-beta.1] — 2026-04-06
 
 ### Fixed
