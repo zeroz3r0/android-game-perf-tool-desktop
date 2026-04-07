@@ -222,4 +222,84 @@ object FileCleanup {
         val deletedFiles: Int,
         val repairedEntries: List<SessionHistory.HistoryEntry>
     )
+
+    /**
+     * Repair history entries whose `videoPath` points to the first segment (`_0.mp4`)
+     * of a multi-segment recording. Until v3.1.9 the recording loop only exposed the
+     * first segment, so longer-than-3-minute sessions appeared truncated to ~2:56.
+     *
+     * For each such entry:
+     *   1. Find all sibling segments (`video_${sessionId}_*.mp4`) on disk
+     *   2. If 2+ segments exist, run them through ffmpeg concat into `video_${sessionId}.mp4`
+     *   3. If concat succeeds, return a repaired entry pointing at the unified file
+     *
+     * The original `_N.mp4` segments are NOT deleted by this function. They remain on
+     * disk as a backup so a failed concat can be retried, and `pruneOrphans` continues
+     * preserving them via the segment-preservation rule (sessionId match).
+     *
+     * Returns the list of entries that were successfully repaired. Caller is responsible
+     * for persisting them via `SessionHistory.updateEntry`.
+     *
+     * Never throws. Skips entries silently when:
+     *   - videoPath is empty or non-existent
+     *   - filename does not match `video_${sessionId}_${N}.mp4` (legacy or unified already)
+     *   - only 1 segment exists for the session (nothing to concat)
+     *   - the unified file already exists (previous repair run succeeded)
+     *   - ffmpeg is not installed or concat fails
+     */
+    fun repairTruncatedVideos(snapshot: List<SessionHistory.HistoryEntry>): List<SessionHistory.HistoryEntry> {
+        val dir = reportsDir
+        if (!dir.exists() || !dir.isDirectory) return emptyList()
+
+        val repaired = mutableListOf<SessionHistory.HistoryEntry>()
+
+        for (entry in snapshot) {
+            try {
+                val videoPath = entry.videoPath
+                if (videoPath.isEmpty()) continue
+
+                val currentFile = File(videoPath)
+                if (!currentFile.exists()) continue
+
+                // Only consider entries that look like a segment (`_0.mp4`, `_1.mp4`, ...).
+                // The unified path produced by the new flow is `video_${sessionId}.mp4`
+                // (no `_N` suffix) so it does NOT match SEGMENT_REGEX and is skipped here.
+                val sessionId = extractSessionId(videoPath) ?: continue
+
+                // Find all siblings.
+                val segments = matchSegmentsForSession(sessionId)
+                    .sortedBy { f ->
+                        // Sort by the trailing _N before .mp4 to guarantee correct order.
+                        val numStr = f.name
+                            .removePrefix("video_${sessionId}_")
+                            .removeSuffix(".mp4")
+                        numStr.toIntOrNull() ?: Int.MAX_VALUE
+                    }
+
+                if (segments.size < 2) continue // single segment = nothing to repair
+
+                val unified = File(dir, "video_${sessionId}.mp4")
+                if (unified.exists() && unified.length() > 0) {
+                    // Already repaired in a previous run but the entry still points
+                    // at the segment. Just rewrite the path.
+                    repaired.add(entry.copy(videoPath = unified.absolutePath))
+                    continue
+                }
+
+                val result = AdbBridge.concatSegments(segments.toList(), unified)
+                if (result != null && result.exists() && result.length() > 0) {
+                    repaired.add(entry.copy(videoPath = result.absolutePath))
+                    System.err.println(
+                        "FileCleanup.repairTruncatedVideos: ${entry.id} → unified ${segments.size} segments into ${result.name}"
+                    )
+                }
+                // On concat failure: do nothing. Entry stays pointing at _0.mp4.
+                // User keeps the truncated experience but no data is lost.
+            } catch (t: Throwable) {
+                System.err.println("FileCleanup.repairTruncatedVideos: entry ${entry.id}: ${t.message}")
+            }
+        }
+
+        return repaired
+    }
 }

@@ -264,6 +264,19 @@ class AppViewModel {
             } catch (t: Throwable) {
                 System.err.println("AppViewModel.init: pruneOrphans failed: ${t.message}")
             }
+            try {
+                // v3.1.9: legacy entries created before the concat fix point at `_0.mp4`
+                // and effectively cap playback at ~2:56. Concat sibling segments into a
+                // unified file and rewrite the entry path. ffmpeg-gated, never destructive.
+                val snapshot2 = SessionHistory.load()
+                val truncationRepairs = FileCleanup.repairTruncatedVideos(snapshot2)
+                truncationRepairs.forEach { SessionHistory.updateEntry(it) }
+                if (truncationRepairs.isNotEmpty()) {
+                    System.err.println("AppViewModel.init: repaired ${truncationRepairs.size} truncated video entries")
+                }
+            } catch (t: Throwable) {
+                System.err.println("AppViewModel.init: repairTruncatedVideos failed: ${t.message}")
+            }
             _history.value = SessionHistory.load()
             _adbAvailable.value = AdbBridge.isAvailable()
             if (!_adbAvailable.value) {
@@ -596,7 +609,20 @@ class AppViewModel {
             recordProcess = null
             delay(2000) // let last segment finalize on device
             val recordings = AdbBridge.pullRecordings(device.id, sessionId, videoDir)
-            val videoPath = recordings.firstOrNull()?.absolutePath ?: ""
+
+            // Concatenate all segments into a single unified video file. screenrecord
+            // has a hard 3-min/segment limit so longer sessions produce multiple files
+            // (_0.mp4, _1.mp4, ...). Until v3.1.9 only the first segment was exposed,
+            // capping playback at ~2:56 regardless of actual session duration. The
+            // unified file is created next to the segments with the same sessionId
+            // and no _N suffix. Original segments are kept as a backup for now.
+            val videoPath = if (recordings.size > 1) {
+                val unified = java.io.File(videoDir, "video_${sessionId}.mp4")
+                val concatenated = AdbBridge.concatSegments(recordings, unified)
+                concatenated?.absolutePath ?: recordings.first().absolutePath
+            } else {
+                recordings.firstOrNull()?.absolutePath ?: ""
+            }
 
             // === FINALIZE ===
             if (!isWifiMode) AdbBridge.restoreCharging(device.id)

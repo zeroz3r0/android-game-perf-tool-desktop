@@ -276,4 +276,122 @@ class FileCleanupTest {
         assertTrue(seg2.exists(), "seg2 must survive (segment-aware preservation)")
         assertEquals(0, result.deletedFiles)
     }
+
+    // ===== repairTruncatedVideos =====
+    //
+    // These tests do NOT exercise the actual ffmpeg concat path because:
+    //   (a) ffmpeg may not be installed in CI runners
+    //   (b) producing valid synthetic .mp4 files for concat would require ffmpeg anyway
+    //
+    // Instead, we test the SELECTION/SKIPPING logic — which is where the bug-prone
+    // code lives. The actual concat is delegated to AdbBridge.concatSegments which
+    // returns null on any failure (ffmpeg missing, bad files, etc.) and the test
+    // verifies that null result is handled gracefully (entry not repaired, no exception).
+    //
+    // The end-to-end concat is validated manually with real screenrecord output —
+    // see CHANGELOG v3.1.9.
+
+    @Test
+    fun `repairTruncatedVideos skips entries with empty videoPath`() {
+        val snapshot = listOf(entry(id = "a", videoPath = ""))
+        val repaired = FileCleanup.repairTruncatedVideos(snapshot)
+        assertEquals(0, repaired.size)
+    }
+
+    @Test
+    fun `repairTruncatedVideos skips entries pointing at non-existent file`() {
+        val snapshot = listOf(entry(id = "a", videoPath = "/tmp/does-not-exist_20260101_120000_0.mp4"))
+        val repaired = FileCleanup.repairTruncatedVideos(snapshot)
+        assertEquals(0, repaired.size)
+    }
+
+    @Test
+    fun `repairTruncatedVideos skips entries with legacy recording naming`() {
+        val legacy = File(tempDir, "recording_1.mp4").apply { writeText("legacy") }
+        val snapshot = listOf(entry(id = "a", videoPath = legacy.absolutePath))
+        val repaired = FileCleanup.repairTruncatedVideos(snapshot)
+        assertEquals(0, repaired.size, "legacy naming has no _N segment pattern, must be skipped")
+    }
+
+    @Test
+    fun `repairTruncatedVideos skips single-segment sessions`() {
+        // Only _0.mp4 exists for this session — no concat needed, would be a no-op.
+        val sid = "20260101_120000"
+        val seg0 = File(tempDir, "video_${sid}_0.mp4").apply { writeText("0") }
+        val snapshot = listOf(entry(id = "a", videoPath = seg0.absolutePath))
+        val repaired = FileCleanup.repairTruncatedVideos(snapshot)
+        assertEquals(0, repaired.size, "single segment must be skipped")
+    }
+
+    @Test
+    fun `repairTruncatedVideos returns rewritten path when unified file already exists`() {
+        // Previous repair run already produced video_${sid}.mp4. The entry still points
+        // at _0.mp4. The function should detect this and return a repaired entry pointing
+        // at the unified file WITHOUT invoking ffmpeg again (idempotency).
+        val sid = "20260101_120000"
+        val seg0 = File(tempDir, "video_${sid}_0.mp4").apply { writeText("0") }
+        val seg1 = File(tempDir, "video_${sid}_1.mp4").apply { writeText("1") }
+        val unified = File(tempDir, "video_${sid}.mp4").apply { writeText("already-unified") }
+
+        val snapshot = listOf(entry(id = "a", videoPath = seg0.absolutePath))
+        val repaired = FileCleanup.repairTruncatedVideos(snapshot)
+
+        assertEquals(1, repaired.size)
+        assertEquals(unified.absolutePath, repaired.first().videoPath)
+        assertTrue(seg0.exists(), "original segments must NOT be deleted")
+        assertTrue(seg1.exists(), "original segments must NOT be deleted")
+        assertTrue(unified.exists())
+    }
+
+    @Test
+    fun `repairTruncatedVideos handles multi-segment when ffmpeg fails or output invalid`() {
+        // Two segments exist on disk, both contain garbage so the (real or absent) ffmpeg
+        // call inside concatSegments will fail. The repair function must handle that
+        // gracefully: return an empty list, leave the original segments untouched, and
+        // NOT throw.
+        val sid = "20260101_120000"
+        val seg0 = File(tempDir, "video_${sid}_0.mp4").apply { writeText("not a real mp4") }
+        val seg1 = File(tempDir, "video_${sid}_1.mp4").apply { writeText("not a real mp4 either") }
+
+        val snapshot = listOf(entry(id = "a", videoPath = seg0.absolutePath))
+
+        // Must not throw.
+        val repaired = FileCleanup.repairTruncatedVideos(snapshot)
+
+        // Either ffmpeg is absent (size==0 repaired list) or ffmpeg ran and failed
+        // because the inputs are garbage (also size==0 repaired list, plus the unified
+        // file may exist but with size 0 → we filter it out via the length check).
+        // Either way the entry is NOT repaired and the originals remain.
+        assertEquals(0, repaired.size)
+        assertTrue(seg0.exists(), "original segments must survive a failed concat")
+        assertTrue(seg1.exists(), "original segments must survive a failed concat")
+    }
+
+    @Test
+    fun `repairTruncatedVideos returns multiple repairs in one call`() {
+        // Two independent sessions, both already with unified files (idempotent path).
+        val sid1 = "20260101_120000"
+        val sid2 = "20260102_140000"
+
+        File(tempDir, "video_${sid1}_0.mp4").writeText("0")
+        File(tempDir, "video_${sid1}_1.mp4").writeText("1")
+        val unified1 = File(tempDir, "video_${sid1}.mp4").apply { writeText("u1") }
+
+        File(tempDir, "video_${sid2}_0.mp4").writeText("0")
+        File(tempDir, "video_${sid2}_1.mp4").writeText("1")
+        File(tempDir, "video_${sid2}_2.mp4").writeText("2")
+        val unified2 = File(tempDir, "video_${sid2}.mp4").apply { writeText("u2") }
+
+        val snapshot = listOf(
+            entry(id = "a", videoPath = File(tempDir, "video_${sid1}_0.mp4").absolutePath),
+            entry(id = "b", videoPath = File(tempDir, "video_${sid2}_0.mp4").absolutePath)
+        )
+
+        val repaired = FileCleanup.repairTruncatedVideos(snapshot)
+
+        assertEquals(2, repaired.size)
+        val byId = repaired.associateBy { it.id }
+        assertEquals(unified1.absolutePath, byId["a"]?.videoPath)
+        assertEquals(unified2.absolutePath, byId["b"]?.videoPath)
+    }
 }

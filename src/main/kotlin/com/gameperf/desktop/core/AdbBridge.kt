@@ -309,4 +309,108 @@ object AdbBridge {
     fun cleanRecordings(deviceId: String) {
         shell(deviceId, "rm -f /sdcard/gp_*.mp4")
     }
+
+    // ===== Video Segment Concatenation =====
+
+    /**
+     * Resolve ffmpeg path. Same lookup as EmbeddedVideoPlayer.findFfmpeg, duplicated here
+     * to avoid coupling core/ to ui/components/. ffmpeg is a soft dependency: if absent,
+     * concat falls back to leaving segments as separate files.
+     */
+    private fun findFfmpeg(): String? {
+        try {
+            val p = ProcessBuilder("which", "ffmpeg").start()
+            val result = p.inputStream.bufferedReader().readText().trim()
+            p.waitFor()
+            if (result.isNotEmpty() && java.io.File(result).exists()) return result
+        } catch (_: Exception) {}
+
+        val candidates = listOf(
+            "/usr/local/bin/ffmpeg",
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+            "C:\\ffmpeg\\bin\\ffmpeg.exe"
+        )
+        return candidates.firstOrNull { java.io.File(it).exists() }
+    }
+
+    /**
+     * Concatenate multiple .mp4 segments produced by `screenrecord` into a single
+     * unified .mp4 file using ffmpeg's concat demuxer with `-c copy` (lossless,
+     * no re-encoding, ~1-2 seconds even for 15+ minutes of footage).
+     *
+     * Why this exists: `adb screenrecord` has a hard 3-minute limit per file. The
+     * recording loop in `AppViewModel` chains multiple segments (`_0.mp4`, `_1.mp4`,
+     * ...) but until v3.1.9 only the first segment was exposed to the user, capping
+     * effective playback at ~2:56 regardless of how long the actual session was.
+     *
+     * Returns the path to the concatenated file on success, or null if:
+     *   - ffmpeg is not installed
+     *   - segments list is empty
+     *   - the concat process fails or produces an empty/missing file
+     *
+     * Callers should fall back to `segments.firstOrNull()` on null so we never
+     * leave the user with no video at all (degraded > broken).
+     *
+     * The original segments are NOT deleted by this function. Cleanup is the
+     * caller's responsibility (and currently we keep them as a backup until v3.1.10).
+     */
+    fun concatSegments(segments: List<java.io.File>, output: java.io.File): java.io.File? {
+        if (segments.isEmpty()) return null
+        if (segments.size == 1) return segments.first() // nothing to concat
+
+        val ffmpeg = findFfmpeg() ?: run {
+            System.err.println("AdbBridge.concatSegments: ffmpeg not found, returning first segment only")
+            return null
+        }
+
+        // ffmpeg concat demuxer requires a manifest file with `file '<path>'` lines.
+        // Single quotes inside paths must be escaped as `'\''` per ffmpeg docs.
+        val manifest = java.io.File.createTempFile("gameperf-concat-", ".txt")
+        try {
+            manifest.bufferedWriter().use { w ->
+                for (seg in segments) {
+                    val escapedPath = seg.absolutePath.replace("'", "'\\''")
+                    w.write("file '$escapedPath'\n")
+                }
+            }
+
+            // -y: overwrite output if exists
+            // -f concat: use concat demuxer
+            // -safe 0: allow absolute paths in manifest
+            // -i: manifest file
+            // -c copy: stream copy (no re-encoding, lossless, fast)
+            // -movflags +faststart: relocate moov atom to the start so progressive playback works
+            val pb = ProcessBuilder(
+                ffmpeg, "-y", "-f", "concat", "-safe", "0",
+                "-i", manifest.absolutePath,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                output.absolutePath
+            )
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val log = proc.inputStream.bufferedReader().readText()
+            val finished = proc.waitFor(120, TimeUnit.SECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                System.err.println("AdbBridge.concatSegments: ffmpeg timed out after 120s")
+                return null
+            }
+            if (proc.exitValue() != 0) {
+                System.err.println("AdbBridge.concatSegments: ffmpeg exit ${proc.exitValue()}\n$log")
+                return null
+            }
+            if (!output.exists() || output.length() == 0L) {
+                System.err.println("AdbBridge.concatSegments: output file missing or empty")
+                return null
+            }
+            return output
+        } catch (e: Exception) {
+            System.err.println("AdbBridge.concatSegments: ${e.message}")
+            return null
+        } finally {
+            manifest.delete()
+        }
+    }
 }
