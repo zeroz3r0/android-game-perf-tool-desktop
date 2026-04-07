@@ -471,7 +471,21 @@ class AppViewModel {
             val sessionId = java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(java.util.Date())
             AdbBridge.cleanRecordings(device.id)
             recordSegment = 0
-            recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment)
+            // v3.1.10: Pick screenrecord profile based on device tier. LOW and LOWER_MID
+            // devices (like the Pixel XL with Adreno 530) get the compact profile to
+            // minimize the SurfaceFlinger virtual-display downscale cost. Everyone else
+            // keeps the standard 720p profile.
+            val recordProfile = run {
+                val gpu = _deviceInfo.value?.gpu ?: ""
+                val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
+                when (tier) {
+                    com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
+                    com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
+                        AdbBridge.ScreenRecordProfile.COMPACT
+                    else -> AdbBridge.ScreenRecordProfile.STANDARD
+                }
+            }
+            recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, recordProfile)
             // screenrecord needs ~1s to actually start capturing frames
             delay(1500)
 
@@ -487,7 +501,7 @@ class AppViewModel {
                     AdbBridge.stopScreenRecord(recordProcess)
                     delay(1000)
                     recordSegment++
-                    recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment)
+                    recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, recordProfile)
                 }
             }
 
@@ -516,30 +530,74 @@ class AppViewModel {
             var totalStutter = 0
             var consecutiveAdbFailures = 0
 
+            // v3.1.10: Tiered cadence to reduce capture overhead on the game.
+            //
+            // Rationale: `dumpsys meminfo <pkg>` blocks the game's main looper for 50-200ms
+            // per call, and `dumpsys thermalservice` / sysfs thermal are medium cost. The
+            // only truly cheap fast-tier metrics are FPS (via `dumpsys SurfaceFlinger
+            // --latency` which is 5-20ms) and CPU (via `cat /proc/stat` which is 5-10ms).
+            //
+            // We still run the loop every 500ms but guard the expensive calls with counters
+            // so they only fire on the slower cadence. Memory every 5s, thermal every 2s.
+            // Battery is cheap so it stays on the fast tier.
+            //
+            // `getMissedFrames` (which does a full `dumpsys SurfaceFlinger` costing 150-500ms
+            // and grabs the global compositor lock) is REMOVED from the live loop entirely.
+            // It's now only called at session boundaries (start + end) for the final delta
+            // that lands in the report. The live UI counter for frameDrops is updated using
+            // `totalJank` which we already track per sample for free.
+            //
+            // Last-known-value pattern: the LiveMetrics update always receives something for
+            // each field, even on iterations where a slow-tier metric didn't fire. We hold
+            // the last observed mem/thermal values in locals and re-emit them.
+            var iterCount = 0
+            var lastMem: AdbBridge.MemSnapshot? = null
+            var lastThermal = AdbBridge.ThermalSnapshot(-1.0, -1.0, -1.0, -1.0)
+
             while (!shouldStop) {
                 val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 if (durationSeconds > 0 && elapsed >= durationSeconds) break
                 if (shouldStop) break
 
-                // Small delay between sampling cycles — ADB commands already take ~2-3s
-                // so this just prevents tight-looping if commands return instantly
+                // Small delay between sampling cycles — the fast tier (FPS + CPU + battery)
+                // takes ~30-50ms on a mid-range device, so real cadence is ~0.5-0.6s.
                 delay(500)
                 if (shouldStop) break
 
-                // Run ADB commands with early-exit checks between each
+                // === FAST TIER (every iteration ~= every 500ms) ===
+                // FPS via --latency (5-20ms), CPU via /proc/stat (5-10ms), battery (5-15ms)
                 val frame = AdbBridge.captureFrames(device.id, pkg)
-                if (shouldStop) break
-                val mem = AdbBridge.captureMemory(device.id, pkg)
                 if (shouldStop) break
                 val cpu = AdbBridge.captureCpuPercent(device.id)
                 if (shouldStop) break
-                val thermal = AdbBridge.captureTemperature(device.id)
-                if (shouldStop) break
                 val battery = AdbBridge.getBatteryLevel(device.id)
+                if (shouldStop) break
 
-                // Device disconnect detection: if ALL ADB commands returned null/0/empty,
-                // the device is likely disconnected
-                val allFailed = frame == null && mem == null && cpu == 0 && battery == 0
+                // === MEDIUM TIER (every ~2s, i.e. every 4th iteration) ===
+                // Thermal sensors — sysfs is fast-ish (~30-80ms) but multi-cat adds up.
+                val runThermal = iterCount % 4 == 0
+                if (runThermal) {
+                    val t = AdbBridge.captureTemperature(device.id)
+                    if (shouldStop) break
+                    lastThermal = t
+                }
+
+                // === SLOW TIER (every ~5s, i.e. every 10th iteration) ===
+                // `dumpsys meminfo <pkg>` is the worst offender: 200-800ms AND blocks the
+                // game's main thread. Memory is a slow-changing signal, 5s is plenty.
+                val runMem = iterCount % 10 == 0
+                if (runMem) {
+                    val m = AdbBridge.captureMemory(device.id, pkg)
+                    if (shouldStop) break
+                    if (m != null) lastMem = m
+                }
+
+                iterCount++
+
+                // Device disconnect detection: if the fast tier returned all null/0/empty
+                // the device is likely disconnected. We only need the fast-tier results
+                // for this heuristic — the slow tiers may legitimately be idle.
+                val allFailed = frame == null && cpu == 0 && battery == 0
                 if (allFailed) {
                     consecutiveAdbFailures++
                     if (consecutiveAdbFailures >= 3) {
@@ -557,11 +615,18 @@ class AppViewModel {
                     fpsHistory.add(fps)
                     fpsTimed.add(TimedSample(sampleSecond, fps.toDouble()))
                 }
-                if (mem != null) { memHistory.add(mem.totalMb); nativeHistory.add(mem.nativeMb); javaHistory.add(mem.javaMb) }
+                val memNow = lastMem
+                if (runMem && memNow != null) {
+                    memHistory.add(memNow.totalMb)
+                    nativeHistory.add(memNow.nativeMb)
+                    javaHistory.add(memNow.javaMb)
+                }
                 if (cpu > 0) cpuHistory.add(cpu)
-                if (thermal.cpu > 0) tempCpuHistory.add(thermal.cpu)
-                if (thermal.gpu > 0) tempGpuHistory.add(thermal.gpu)
-                if (thermal.skin > 0) tempSkinHistory.add(thermal.skin)
+                if (runThermal) {
+                    if (lastThermal.cpu > 0) tempCpuHistory.add(lastThermal.cpu)
+                    if (lastThermal.gpu > 0) tempGpuHistory.add(lastThermal.gpu)
+                    if (lastThermal.skin > 0) tempSkinHistory.add(lastThermal.skin)
+                }
                 if (frame != null && frame.avgFrameTime > 0) {
                     frameTimeAvgHistory.add(frame.avgFrameTime)
                     allFrameTimes.add(frame.avgFrameTime)
@@ -575,12 +640,20 @@ class AppViewModel {
                     avgFps = if (fpsHistory.isNotEmpty()) fpsHistory.average() else 0.0,
                     frameTime = frame?.avgFrameTime ?: 0.0,
                     cpu = cpu,
-                    memMb = mem?.totalMb ?: 0, nativeMb = mem?.nativeMb ?: 0, javaMb = mem?.javaMb ?: 0,
-                    tempCpu = thermal.cpu, tempGpu = thermal.gpu,
-                    tempBattery = thermal.battery, tempSkin = thermal.skin,
+                    memMb = lastMem?.totalMb ?: 0,
+                    nativeMb = lastMem?.nativeMb ?: 0,
+                    javaMb = lastMem?.javaMb ?: 0,
+                    tempCpu = lastThermal.cpu,
+                    tempGpu = lastThermal.gpu,
+                    tempBattery = lastThermal.battery,
+                    tempSkin = lastThermal.skin,
                     jankCount = totalJank, stutterCount = totalStutter,
                     battery = battery,
-                    frameDrops = AdbBridge.getMissedFrames(device.id) - missedStart,
+                    // v3.1.10: frameDrops live counter replaced by totalJank. The final
+                    // report number is computed post-loop from missedEnd - missedStart so
+                    // precision is preserved; the live counter is now "jank count" which
+                    // comes for free from the per-frame analysis in captureFrames.
+                    frameDrops = totalJank,
                     fpsHistory = fpsHistory.toList(),
                     fpsTimed = fpsTimed.toList(),
                     memHistory = memHistory.toList(),

@@ -25,9 +25,30 @@ class HardwareScoringTest {
     }
 
     @Test
-    fun `detectTier returns UNKNOWN for Adreno with TM suffix`() {
-        // "Adreno (TM) 619" does NOT contain "adreno 619" as substring
-        assertEquals(DeviceTier.UNKNOWN, HardwareScoring.detectTier("Adreno (TM) 619"))
+    fun `detectTier strips TM suffix and matches correctly`() {
+        // v3.1.10: real Android devices report `Adreno (TM) 530`, `Adreno (TM) 619`, etc.
+        // The pre-3.1.10 code did a naive lowercase + contains() check and the TM suffix
+        // broke every match, sending real devices to UNKNOWN tier (Pixel XL Adreno 530 →
+        // UNKNOWN → score 20/100 instead of the correct LOWER_MID). Fixed by normalizing
+        // the GPU string before the lookup.
+        assertEquals(DeviceTier.MID, HardwareScoring.detectTier("Adreno (TM) 619"))
+    }
+
+    @Test
+    fun `detectTier matches Pixel XL real GPU string`() {
+        // Verbatim from a Pixel XL (Snapdragon 821) session report.
+        val real = "Qualcomm, Adreno (TM) 530, OpenGL ES 3.2 V@384.0 (GIT@4a00b6"
+        assertEquals(DeviceTier.LOWER_MID, HardwareScoring.detectTier(real))
+    }
+
+    @Test
+    fun `detectTier handles R trademark suffix`() {
+        assertEquals(DeviceTier.HIGH, HardwareScoring.detectTier("Adreno(R) 740"))
+    }
+
+    @Test
+    fun `detectTier normalizes multiple commas and whitespace`() {
+        assertEquals(DeviceTier.HIGH, HardwareScoring.detectTier("ARM,  Mali-G710  ,  MC10"))
     }
 
     @Test

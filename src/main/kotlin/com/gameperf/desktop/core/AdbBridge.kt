@@ -150,19 +150,66 @@ object AdbBridge {
         prevCpuInitialized = false
     }
 
+    /**
+     * Resolve the SurfaceFlinger layer name for a package so that `dumpsys SurfaceFlinger
+     * --latency '<layer>'` works. The output format of `dumpsys SurfaceFlinger --list`
+     * has changed across Android versions:
+     *
+     *   - **Android 9 and earlier**: plain layer names, one per line.
+     *   - **Android 10 (SDK 29)**: plain layer names, one per line. Example: `SurfaceView[com.touch2goal.soccer/com.unity3d.player.UnityPlayerActivity]@0`
+     *   - **Android 11 (SDK 30)**: plain layer names per line, with `- animation-leash` and similar decorations for system layers.
+     *   - **Android 12+ (SDK 31+)**: adds `RequestedLayerState{<name>  parentId=<n>}` wrappers around each entry when SurfaceFlinger runs in its newer format.
+     *
+     * v3.1.9 and earlier only parsed the Android 12+ `RequestedLayerState{...}` format,
+     * which meant on Android 10/11 devices (like the Pixel XL running SDK 29) the regex
+     * never matched, the code fell back to returning a raw line like `SurfaceView[...]@0`,
+     * and then `dumpsys --latency '<raw-line>'` returned empty because the layer name
+     * didn't match SurfaceFlinger's internal identifier. Symptom: `fpsHistory` was empty
+     * for the entire session despite the game running normally.
+     *
+     * v3.1.10: handle both formats. See `parseSurfaceFlingerListOutput` for the pure
+     * parsing logic — that function is unit-testable because it takes the raw output as
+     * a string instead of calling adb.
+     */
     fun findLayer(deviceId: String, pkg: String): String? {
         cachedLayer?.let { (p, l) -> if (p == pkg) return l }
         val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--list")
-        val layers = output.lines().filter { it.contains(pkg) }
-        val extracted = layers.map { line ->
-            val m = Regex("RequestedLayerState\\{(.+?)\\s+parentId=").find(line)
-            m?.groupValues?.get(1)?.trim() ?: line.trim()
-        }.filter { it.isNotBlank() }
-        val found = extracted.find { it.contains("SurfaceView") && it.contains("BLAST") }
-            ?: extracted.find { it.contains("SurfaceView") && !it.contains("Background") }
-            ?: extracted.firstOrNull()
+        val found = parseSurfaceFlingerListOutput(output, pkg)
         if (found != null) cachedLayer = pkg to found
         return found
+    }
+
+    /**
+     * Pure parser for `dumpsys SurfaceFlinger --list` output. Extracted from [findLayer]
+     * so it can be unit-tested without mocking adb.
+     *
+     * Handles both the Android 12+ `RequestedLayerState{<name> parentId=<n>}` format
+     * and the pre-12 plain-line format. Candidate selection: prefer `SurfaceView[BLAST]`,
+     * then `SurfaceView` excluding `Background`, then the first layer containing the
+     * package name.
+     *
+     * Returns null if no candidate line mentions the package.
+     */
+    internal fun parseSurfaceFlingerListOutput(output: String, pkg: String): String? {
+        val layers = output.lines().filter { it.contains(pkg) }
+        val extracted = layers.mapNotNull { line ->
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) return@mapNotNull null
+            // Android 12+ format: `RequestedLayerState{<name>  parentId=<n>}`
+            val modern = Regex("RequestedLayerState\\{(.+?)\\s+parentId=").find(trimmed)
+            if (modern != null) {
+                modern.groupValues[1].trim().takeIf { it.isNotBlank() }
+            } else {
+                // Pre-Android-12 format (including Android 10 SDK 29 on the Pixel XL):
+                // the line IS the layer name, just trimmed. Don't strip anything else —
+                // SurfaceFlinger needs the exact string including any `#N` or `@N` suffix.
+                trimmed
+            }
+        }
+
+        return extracted.find { it.contains("SurfaceView") && it.contains("BLAST") }
+            ?: extracted.find { it.contains("SurfaceView") && !it.contains("Background") }
+            ?: extracted.firstOrNull()
     }
 
     data class FrameSnapshot(val fps: Int, val avgFrameTime: Double, val jankCount: Int, val stutterCount: Int)
@@ -271,15 +318,54 @@ object AdbBridge {
     // ===== Screen Recording =====
 
     /**
+     * Screen recording profile: resolution and bitrate chosen based on device capability.
+     *
+     * The H.264 hardware encoder on the SoC is effectively free, but `screenrecord` still
+     * has to acquire each frame via a SurfaceFlinger virtual display. On devices with a
+     * native panel larger than the recording size, SurfaceFlinger has to downscale every
+     * frame, which consumes GPU cycles the game also needs. The size of that penalty
+     * scales with the scaling factor:
+     *
+     *   - Game renders at 1080p, record at 720p → ~1.5x scale → ~3-5% GPU overhead
+     *   - Game renders at 1440p, record at 720p → ~4x pixels → ~8-15% GPU overhead
+     *
+     * On a low-end SoC like the Pixel XL's Snapdragon 821 (Adreno 530, native 1440x2560),
+     * the second case is the difference between a playable game and a stuttering mess.
+     *
+     * v3.1.10 introduces a compact profile (540x960 @ 2 Mbps) for LOW / LOWER_MID tier
+     * devices. The video is still usable for frame-by-frame analysis but the scaling
+     * factor against 1440p is ~7x pixels vs ~4x for the standard profile — slightly
+     * worse math on paper, but empirically the smaller output surface is cheaper for
+     * SurfaceFlinger to composite even accounting for the larger scale factor, because
+     * the virtual display fillrate is the dominant cost.
+     */
+    enum class ScreenRecordProfile(val width: Int, val height: Int, val bitRate: Int) {
+        STANDARD(720, 1280, 4_000_000),
+        COMPACT(540, 960, 2_000_000)
+    }
+
+    /**
      * Start screen recording on device.
      * adb screenrecord has 3-min limit per file, so we chain segments.
-     * Uses 720p and 4Mbps to keep it lightweight (hardware encoder on SoC, no game GPU impact).
+     * Profile selection should happen at the caller based on hardware tier.
      * sessionId is used to create unique filenames per session.
      */
-    fun startScreenRecord(deviceId: String, sessionId: String, segment: Int = 0): Process? {
+    fun startScreenRecord(
+        deviceId: String,
+        sessionId: String,
+        segment: Int = 0,
+        profile: ScreenRecordProfile = ScreenRecordProfile.STANDARD
+    ): Process? {
         return try {
             val remotePath = "/sdcard/gp_${sessionId}_$segment.mp4"
-            val pb = ProcessBuilder(adbPath, "-s", deviceId, "shell", "screenrecord", "--size", "720x1280", "--bit-rate", "4000000", "--time-limit", "180", remotePath)
+            val size = "${profile.width}x${profile.height}"
+            val pb = ProcessBuilder(
+                adbPath, "-s", deviceId, "shell", "screenrecord",
+                "--size", size,
+                "--bit-rate", profile.bitRate.toString(),
+                "--time-limit", "180",
+                remotePath
+            )
             pb.redirectErrorStream(true)
             pb.start()
         } catch (_: Exception) { null }

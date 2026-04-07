@@ -127,9 +127,23 @@ object HardwareScoring {
 
     /**
      * Detect device tier from GPU string reported by SurfaceFlinger/getprop.
+     *
+     * v3.1.10: normalize the GPU string before matching. Real Android devices report
+     * strings like `Qualcomm, Adreno (TM) 530, OpenGL ES 3.2 V@384.0` (note the `(TM)`
+     * trademark suffix) and `ARM Mali-G710 MC10`. Our gpuTierMap keys are plain tokens
+     * like `adreno 530` and `mali-g710`, so we strip `(tm)`, `(r)`, extra whitespace,
+     * and commas before matching. Before this fix, the Pixel XL (Adreno 530) fell
+     * through to `UNKNOWN` even though there was a valid entry for it, resulting in
+     * reports that said "GPU Tier: Unknown" and "Hardware Score: 20/100" instead of
+     * the real LOWER_MID tier.
      */
     fun detectTier(gpuString: String): DeviceTier {
-        val gpu = gpuString.lowercase().trim()
+        val gpu = gpuString.lowercase()
+            .replace(Regex("\\(tm\\)"), "")
+            .replace(Regex("\\(r\\)"), "")
+            .replace(Regex("[,;]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
         for ((key, tier) in gpuTierMap) {
             if (gpu.contains(key)) return tier
         }

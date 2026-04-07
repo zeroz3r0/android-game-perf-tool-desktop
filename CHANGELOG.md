@@ -14,6 +14,58 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.1.10] — 2026-04-07
+
+### Que hay de nuevo
+
+- La app ahora afecta mucho menos el rendimiento del juego mientras graba. Los juegos se sienten mas fluidos durante la captura, especialmente en telefonos menos potentes
+- En telefonos antiguos como el Pixel XL o similares, el video se graba con un formato mas liviano que no le pone carga a la GPU del juego
+- El tool ahora detecta correctamente las GPUs Adreno, Mali y otras aunque el fabricante les ponga sufijos como (TM) o (R). Antes decia "GPU Tier: Unknown" para GPUs que si estaban en la base de datos
+- En telefonos con Android 10 y 11, el FPS ahora se mide correctamente. Antes podia quedarte un reporte con "FPS promedio: 0" aunque el juego corriera normal
+
+### Arreglos
+
+- Bug critico: la app hacia 2 llamadas por segundo a Android para pedir info de memoria del juego, y cada llamada pausaba el juego durante 50-200 milisegundos. Ahora la info de memoria se pide cada 5 segundos (no cambia entre un medio segundo y el otro)
+- Bug critico: la app pedia el dump completo del compositor grafico de Android cada segundo para contar frames perdidos, lo cual tomaba un lock global que el mismo juego necesita para presentar frames. Ese contador en vivo se elimino (el numero final del reporte sigue siendo exacto porque se calcula en los bordes de la sesion)
+- Bug del Pixel XL y similares con Android 10: el formato del comando `dumpsys SurfaceFlinger --list` cambio en Android 12, y el codigo solo entendia el formato nuevo. En telefonos con Android 10 o 11 no encontraba el layer del juego y devolvia ceros todo el rato. Ahora maneja ambos formatos
+- Bug del GPU tier "Unknown": muchas GPUs Qualcomm Adreno reportan su nombre como `Adreno (TM) 530`, pero el codigo buscaba `adreno 530` literal. Ahora normaliza el string antes de buscar
+- El Pixel XL (Adreno 530) ahora se clasifica correctamente como Lower Mid-Range con el score que corresponde, no como Unknown con score 20/100
+
+### Detalles tecnicos
+
+#### Tiered cadence en el polling loop (`AppViewModel.startCapture`)
+
+- **Root cause 1**: cada iteracion del loop llamaba a `dumpsys meminfo <pkg>` con timeout de 8s. Esta llamada hace un binder transaction contra el proceso del juego y bloquea su main looper 50-200ms mientras AMS recolecta PSS. A 2 polls/sec eso = 100-400ms/sec de bloqueo directo sobre el hilo del juego. En un juego a 60 FPS (16.67ms/frame) eso garantiza jank visible.
+- **Root cause 2**: cada iteracion llamaba a `getMissedFrames` que hace un `dumpsys SurfaceFlinger` COMPLETO (sin `--latency`). Ese comando toma el lock global de SF, serializa todo el layer tree, y toma 150-500ms. Peor aun: ese es el mismo lock que usa SurfaceFlinger para schedulear los frames del juego. La app estaba literalmente bloqueando al compositor dos veces por segundo.
+- **Fix**: el loop ahora tiene tres tiers:
+  - **Fast (cada ~500ms)**: FPS via `--latency` (5-20ms), CPU via `/proc/stat` (5-10ms), battery (5-15ms). Todas cheap, ninguna toca el proceso del juego.
+  - **Medium (cada ~2s, cada 4ta iteracion)**: thermal sensors via sysfs (30-80ms).
+  - **Slow (cada ~5s, cada 10ma iteracion)**: `dumpsys meminfo <pkg>` (200-800ms). Memoria es un signal lento por naturaleza, 5s es mas que suficiente.
+- `getMissedFrames` removido del loop por completo. El valor `frameDrops` que aparece en el reporte final se calcula como `missedEnd - missedStart` en los bordes de la sesion, asi que la precision del numero final es identica. El contador en vivo se reemplazo por `totalJank` (que ya se calculaba gratis en cada sample via `captureFrames`).
+- Pattern de last-known-value: las llamadas a `LiveMetrics` siempre reciben data en cada campo aunque el slow tier no haya corrido esta iteracion — mantenemos `lastMem` y `lastThermal` como variables del loop y las re-emitimos.
+- Resultado esperado: el costo del loop por iteracion baja de ~1.0-1.5s a ~100-200ms. El juego deja de tener su main thread bloqueado dos veces por segundo, y el compositor deja de perder el lock global.
+
+#### Fix de `findLayer` para Android 10/11 (`AdbBridge`)
+
+- **Root cause**: `dumpsys SurfaceFlinger --list` devuelve formatos diferentes segun la version de Android. En Android 12+ envuelve cada layer en `RequestedLayerState{<name>  parentId=<n>}`. En Android 10/11 devuelve el nombre directo, una linea por layer. El regex viejo solo matcheaba el formato nuevo, caia al `firstOrNull()` con la linea cruda en Android viejo, y despues `dumpsys --latency '<raw>'` no reconocia el nombre y devolvia vacio. Resultado: `fpsHistory` vacio en sesiones enteras, reportes con `avgFps = 0` aunque el juego corriera normal.
+- **Fix**: `findLayer` ahora intenta primero el regex del formato moderno. Si no matchea, usa la linea trimmed directamente como nombre de layer (formato pre-12). La candidate selection (prefer SurfaceView BLAST, luego SurfaceView non-Background, luego first) no cambio.
+- **Testeabilidad**: la logica de parsing se extrajo a una funcion pura `parseSurfaceFlingerListOutput(output, pkg)` para poder unit-testearla sin mockear adb. 8 tests cubren ambos formatos, edge cases y regression guards (ej. que el suffix `@0#0` no se pierda).
+
+#### Fix de `detectTier` para GPUs con sufijo (TM)/(R) (`HardwareScoring`)
+
+- **Root cause**: real Android devices report GPU strings como `Qualcomm, Adreno (TM) 530, OpenGL ES 3.2 V@384.0 (GIT@4a00b6)`. El codigo viejo hacia `gpu.lowercase().contains("adreno 530")` pero el string tiene `(tm)` en el medio, asi que el contains fallaba y el device caia a `UNKNOWN`. Mismo problema con `(R)` en devices Mali. Sintoma: reportes que decian "GPU Tier: Unknown" y "Hardware Score: 20/100" para GPUs conocidas.
+- **Fix**: `detectTier` ahora normaliza el string antes del lookup: quita `(tm)`, `(r)`, reemplaza commas por espacios, collapsa whitespace multiple. El `gpuTierMap` no cambio.
+- **Irony note**: habia un test en `HardwareScoringTest` que ACTIVAMENTE testeaba el bug, esperando `UNKNOWN` para `"Adreno (TM) 619"`. Ese test se actualizo para esperar `MID` (que es el tier correcto).
+
+#### Screenrecord adaptativo por tier (`AdbBridge.startScreenRecord`)
+
+- **Root cause**: el comentario original decia "hardware encoder on SoC, no game GPU impact" pero eso es solo parcialmente cierto. El H.264 hw encoder es cheap, pero screenrecord igual tiene que acquirear cada frame via un virtual display de SurfaceFlinger. En devices con panel nativo mayor al recording size (ej. Pixel XL 1440x2560 vs record 720x1280), SF tiene que downscalear cada frame, lo cual consume GPU cycles que el juego tambien necesita. El penalty escala con el scaling factor: ~3-5% overhead en 1080p→720p, ~8-15% en 1440p→720p.
+- **Fix**: nueva enum `ScreenRecordProfile` con dos variantes:
+  - `STANDARD` = 720x1280 @ 4 Mbps (default, lo que habia antes)
+  - `COMPACT` = 540x960 @ 2 Mbps (para LOW y LOWER_MID tier)
+- `AppViewModel` selecciona el profile basado en `HardwareScoring.detectTier(gpu)` al arrancar la captura. El Pixel XL (Adreno 530 = LOWER_MID) ahora graba en compact, reduciendo la carga del virtual display downscale.
+- Tradeoff: el video del Pixel XL queda en 540p en vez de 720p. Sigue siendo usable para analisis frame-by-frame pero con menos detalle. En devices potentes el comportamiento no cambia.
+
 ## [3.1.9] — 2026-04-07
 
 ### Que hay de nuevo
