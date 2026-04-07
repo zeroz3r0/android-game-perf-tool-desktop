@@ -35,6 +35,7 @@ fun CaptureScreen(vm: AppViewModel) {
     val deviceInfo by vm.deviceInfo.collectAsState()
     val markers by vm.markers.collectAsState()
     val captureError by vm.captureError.collectAsState()
+    val captureWarning by vm.captureWarning.collectAsState()
 
     var showNoteField by remember { mutableStateOf(false) }
     var noteText by remember { mutableStateOf("") }
@@ -247,6 +248,25 @@ fun CaptureScreen(vm: AppViewModel) {
                     modifier = Modifier.weight(1f))
                 TextButton(onClick = { vm.clearCaptureError() }) {
                     Text("Cerrar", color = Red, fontSize = 12.sp)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        // v3.1.11: capture warning banner (yellow, non-fatal — capture continues).
+        // Shows when video recording failed but metrics are still being collected.
+        if (captureWarning != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .background(Yellow.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(Icons.Default.Warning, null, tint = Yellow, modifier = Modifier.size(24.dp))
+                Text(captureWarning!!, color = Yellow, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f))
+                TextButton(onClick = { vm.clearCaptureWarning() }) {
+                    Text("Cerrar", color = Yellow, fontSize = 12.sp)
                 }
             }
             Spacer(Modifier.height(8.dp))

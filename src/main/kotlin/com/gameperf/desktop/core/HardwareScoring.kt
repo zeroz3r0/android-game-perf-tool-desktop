@@ -16,7 +16,13 @@ object HardwareScoring {
         MID("Mid-Range", 45, 35),
         LOWER_MID("Lower Mid-Range", 35, 25),
         LOW("Low-End", 30, 20),
-        UNKNOWN("Unknown", 60, 30)
+        // v3.1.11: UNKNOWN was 60/30 — same as ULTRA_HIGH, which made unrecognized
+        // GPUs get penalized as if they were flagship chips. A Huawei Y5 Lite at 28 FPS
+        // ended up with grade D because the GE8300 wasn't recognized and fell here.
+        // New defaults assume "average mid-range device" — neither a flagship nor a
+        // calculator. If the user reports an UNKNOWN tier on a real device, the right
+        // fix is to ADD it to the gpuTierMap below, not to change these defaults.
+        UNKNOWN("Unknown", 45, 30)
     }
 
     /**
@@ -94,7 +100,9 @@ object HardwareScoring {
         "mali-t830" to DeviceTier.LOWER_MID,
         "mali-t760" to DeviceTier.LOWER_MID,
         "powervr ge8320" to DeviceTier.LOWER_MID,
-        "powervr ge8300" to DeviceTier.LOWER_MID,
+        // v3.1.11: GE8300 was here. It belongs to LOW (it's the GPU of MT6739 / Helio A22
+        // / Cortex-A53 quad-core 1.5GHz devices like the Huawei Y5 Lite and Nokia 1 Plus).
+        // Going to a sub-30 fps threshold matches reality.
         "powervr gm9446" to DeviceTier.LOWER_MID,
 
         // Low
@@ -117,30 +125,58 @@ object HardwareScoring {
         "mali-450" to DeviceTier.LOW,
         "mali-t720" to DeviceTier.LOW,
         "mali-t628" to DeviceTier.LOW,
-        "powervr ge8100" to DeviceTier.LOW,
+        "powervr ge8300" to DeviceTier.LOW,    // MT6739 (Y5 Lite, Nokia 1 Plus, etc.)
+        "powervr ge8100" to DeviceTier.LOW,    // MT6737 / older MTK low-end
+        "powervr ge8200" to DeviceTier.LOW,
         "powervr gx6" to DeviceTier.LOW,
+        "powervr g6200" to DeviceTier.LOW,
+        "powervr g6400" to DeviceTier.LOW,
+        "powervr 540" to DeviceTier.LOW,       // PowerVR SGX 540 (very old)
         "sgx" to DeviceTier.LOW,
         "tegra" to DeviceTier.LOW,
         "gc800" to DeviceTier.LOW,
-        "gc nano" to DeviceTier.LOW
+        "gc nano" to DeviceTier.LOW,
+        "videocore" to DeviceTier.LOW          // Broadcom VideoCore (Pi-class, very old MTKs)
     )
 
     /**
      * Detect device tier from GPU string reported by SurfaceFlinger/getprop.
      *
      * v3.1.10: normalize the GPU string before matching. Real Android devices report
-     * strings like `Qualcomm, Adreno (TM) 530, OpenGL ES 3.2 V@384.0` (note the `(TM)`
-     * trademark suffix) and `ARM Mali-G710 MC10`. Our gpuTierMap keys are plain tokens
-     * like `adreno 530` and `mali-g710`, so we strip `(tm)`, `(r)`, extra whitespace,
-     * and commas before matching. Before this fix, the Pixel XL (Adreno 530) fell
-     * through to `UNKNOWN` even though there was a valid entry for it, resulting in
-     * reports that said "GPU Tier: Unknown" and "Hardware Score: 20/100" instead of
-     * the real LOWER_MID tier.
+     * strings like `Qualcomm, Adreno (TM) 530, OpenGL ES 3.2 V@384.0` and
+     * `ARM Mali-G710 MC10`. Our gpuTierMap keys are plain tokens like `adreno 530`
+     * and `mali-g710`, so we strip `(tm)`, `(r)`, extra whitespace, and commas before
+     * matching.
+     *
+     * v3.1.11: also strip series/family qualifiers that vendors put between the brand
+     * and the model number. The Huawei Y5 Lite reports
+     * `Imagination Technologies, PowerVR Rogue GE8300, OpenGL ES 3.2` — after v3.1.10
+     * normalization that becomes `imagination technologies powervr rogue ge8300` which
+     * does NOT contain `powervr ge8300` (the map key) because of the `rogue ` in the
+     * middle. v3.1.11 strips known qualifier tokens (`rogue`, `series`, `family`,
+     * `bxe`, `ge`-prefixed prefixes when they're part of brand names) so the literal
+     * matches work.
+     *
+     * Also strips brand names (`qualcomm`, `arm`, `imagination technologies`) since
+     * the map keys never include them — this lets us be more aggressive about
+     * substring matching without false positives from brand-name overlap.
      */
     fun detectTier(gpuString: String): DeviceTier {
         val gpu = gpuString.lowercase()
             .replace(Regex("\\(tm\\)"), "")
             .replace(Regex("\\(r\\)"), "")
+            .replace(Regex("[,;]"), " ")
+            // v3.1.11: strip vendor brand prefixes that never appear in the map
+            .replace(Regex("\\bqualcomm\\b"), "")
+            .replace(Regex("\\bimagination technologies\\b"), "")
+            .replace(Regex("\\bimagination\\b"), "")
+            .replace(Regex("\\barm\\b"), "")
+            // v3.1.11: strip family/series qualifiers that vendors insert between
+            // brand and model number. These are NEVER part of the map keys.
+            .replace(Regex("\\brogue\\b"), "")
+            .replace(Regex("\\bseries\\b"), "")
+            .replace(Regex("\\bfamily\\b"), "")
+            .replace(Regex("\\bopengl es \\d+(\\.\\d+)?\\b"), "")  // strip OpenGL version suffix
             .replace(Regex("[,;]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
@@ -155,28 +191,50 @@ object HardwareScoring {
      *
      * A Snapdragon 450 running at 45 FPS = grade A (impressive for that hardware).
      * A Snapdragon 8 Gen 3 running at 45 FPS = grade D (poor for that hardware).
+     *
+     * v3.1.11: rebalanced thresholds. The previous version was too strict on the
+     * "between fpsFloor and expectedFps" range — a Y5 Lite (LOW tier, expected=30,
+     * floor=20) running at 28 FPS got -15 just for "not hitting expected" even though
+     * 28 is 93% of expected and well above floor. New brackets are gentler in the
+     * "between expected and floor" zone (where good-enough performance lives) and
+     * still strict below floor (where actually broken performance lives).
+     *
+     * Sentinel: avgFps == 0 means the tool failed to read FPS at all (capture-side
+     * bug, not user fault). Returns the previous behavior of grade F + score 0 so
+     * the report makes it obvious something went wrong on capture, not on the device.
      */
     fun calculateDeviceGrade(avgFps: Int, p1Fps: Int, tier: DeviceTier, problems: List<String>): Pair<Char, Int> {
+        // v3.1.11: capture-side failure (tool couldn't measure) — distinct from
+        // device performance. Don't reward an unmeasured session with a real grade.
+        if (avgFps <= 0) return 'F' to 0
+
         var score = 100
 
         val expectedFps = tier.expectedFps
         val fpsFloor = tier.fpsFloor
 
         // FPS penalty relative to device tier expectations
+        // v3.1.11: softened middle brackets. A device hitting 90% of its expected
+        // is doing GREAT for its class (-3 instead of -15) and hitting expected itself
+        // is the platonic ideal of performance for that hardware (no penalty).
         when {
-            avgFps >= expectedFps -> score -= 0
-            avgFps >= (expectedFps * 0.85).toInt() -> score -= 5
-            avgFps >= fpsFloor -> score -= 15
-            avgFps >= (fpsFloor * 0.7).toInt() -> score -= 30
-            else -> score -= 45
+            avgFps >= expectedFps -> score -= 0                          // at or above expected → A territory
+            avgFps >= (expectedFps * 0.9).toInt() -> score -= 3          // 90% of expected → still A
+            avgFps >= (expectedFps * 0.8).toInt() -> score -= 7          // 80% of expected → A or high B
+            avgFps >= fpsFloor -> score -= 12                            // between floor and 80% → B/C
+            avgFps >= (fpsFloor * 0.7).toInt() -> score -= 25            // below floor → D
+            else -> score -= 40                                          // way below floor → F
         }
 
         // P1 penalty relative to floor
+        // v3.1.11: also softened — p1 == floor (occasional dip to floor) is normal,
+        // not penalty-worthy. Only when p1 dips well below floor do we count it as a
+        // real problem.
         when {
-            p1Fps >= fpsFloor -> score -= 0
-            p1Fps >= (fpsFloor * 0.7).toInt() -> score -= 8
-            p1Fps >= (fpsFloor * 0.5).toInt() -> score -= 15
-            else -> score -= 25
+            p1Fps >= fpsFloor -> score -= 0                              // p1 above floor → no penalty
+            p1Fps >= (fpsFloor * 0.7).toInt() -> score -= 5              // small dip → small penalty
+            p1Fps >= (fpsFloor * 0.5).toInt() -> score -= 12             // moderate dip
+            else -> score -= 22                                          // severe dip
         }
 
         // Problem penalties (slightly reduced vs general grade)

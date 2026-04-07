@@ -14,6 +14,70 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.1.11] — 2026-04-07
+
+### Que hay de nuevo
+
+- **Zoom en la timeline del reporte**: ahora podes hacer Ctrl + rueda del raton sobre la timeline para ampliar la zona donde se producen las caidas de FPS. Doble clic para resetear al ver toda la sesion. Especialmente util en grabaciones largas (10+ minutos)
+- Cuando el video no se puede grabar (algunos dispositivos rechazan screenrecord), ahora ves un aviso amarillo claro durante la captura en vez de descubrir al final que el video estaba vacio. Las metricas siguen registrandose normal
+- Las notas de los reportes son menos estrictas: un Huawei Y5 Lite a 28-30 FPS estables ahora se evalua como A o B (que es lo justo para ese hardware), no como D
+- Mejor deteccion de GPUs PowerVR de gama baja (Y5 Lite y similares) y otras GPUs con prefijos del fabricante
+
+### Arreglos
+
+- **Bug critico de scoring**: el GPU PowerVR Rogue GE8300 del Huawei Y5 Lite no se reconocia porque vendors reportan `Imagination Technologies, PowerVR Rogue GE8300` y el codigo solo buscaba `powervr ge8300` literal. La palabra `Rogue` en el medio rompia el match. Resultado: el device caia a tier UNKNOWN y le aplicaba expectativas de telefono flagship (60 FPS), penalizandolo brutalmente
+- **Bug critico de scoring**: el tier UNKNOWN tenia los mismos `expectedFps=60, fpsFloor=30` que los telefonos flagship. Cualquier device no reconocido se evaluaba con expectativas de Snapdragon 8 Gen 3. Cambiado a `45/30` (mid-range razonable)
+- **Bug critico de scoring**: los penalties intermedios eran demasiado agresivos. Un device corriendo al 90% de su expectativa se castigaba con -15 puntos. Suavizado a -3 / -7 segun cuan cerca este del esperado
+- **Bug critico de captura**: cuando elegias un tiempo predefinido de captura (10 min, 5 min, etc.), a veces el video no se grababa en absoluto y el sistema lo tapaba sin mostrarte error. Detras: `screenrecord` puede morir en ~100ms con exit code != 0 (resolucion no soportada por el encoder, falta de permisos, codec rechazado) sin lanzar excepcion. Ahora el codigo verifica que el proceso siga vivo despues del warm-up de 1.5s y, si murio, intenta automaticamente con el perfil estandar (720p) y muestra un aviso amarillo claro al usuario si los dos intentos fallan
+- Sentinel `avgFps == 0` ahora se interpreta como "el tool no pudo medir el FPS" en vez de "el device es horrible". Devuelve grade F + score 0 distinguible de un device real con problemas
+
+### Como probar
+
+1. Abrir la app actualizada
+2. **Para el zoom de timeline**: abrir cualquier reporte de session anterior, scrollear hasta la timeline grande del reporte. Hacer Ctrl + rueda del raton hacia adelante (zoom in) sobre una zona donde haya caidas de FPS. Verificar que (a) la timeline se amplifica anchored al cursor, (b) los ticks de tiempo se vuelven mas densos automaticamente, (c) el hint de abajo cambia a "Zoom: X visible". Doble click resetea.
+3. **Para el video predefinido**: capturar una sesion con tiempo predefinido (ej. 5 o 10 minutos). Si tu device tiene problemas con screenrecord, ahora vas a ver un banner amarillo durante la captura. Las metricas siguen funcionando.
+4. **Para el scoring**: capturar una sesion en un Huawei Y5 Lite (o cualquier device de gama baja con PowerVR). Verificar que el tier detectado en el reporte ya no diga "Unknown" y que el grade sea coherente con la performance real del device.
+
+### Detalles tecnicos
+
+#### Bug #1 — Zoom de timeline (`InteractiveTimeline.kt`)
+
+- Rediseñado con viewport state local (`viewStartMs`, `viewEndMs`) que reemplaza los calculos hardcoded de `(0, durationMs)`. Todos los calculos de coordenadas (X de marker, X de playhead, X de tick, X del path del FPS line, X del seek por drag, X del long-press para marker) ahora usan el viewport.
+- Mouse scroll handler con `awaitPointerEvent()` + `event.keyboardModifiers.isCtrlPressed`. Sin Ctrl el scroll se forwarda al ancestor. Con Ctrl, zoom factor 0.85x por tick (in) o 1.18x por tick (out) — simetrico para que entrar y salir del zoom usen el mismo total de scrolls.
+- **Anchored zoom**: el cursor X define el time-pivot que queda estacionario durante el zoom. La fraccion del cursor a lo largo del viewport se mantiene constante antes y despues del zoom, asi que la time-bajo-el-cursor no se mueve.
+- Tick interval auto-adaptativo via `chooseTickInterval(viewDurationSec)` con breakpoints hand-picked: 1s para <10s view, 2s para <30s, 5s/10s/20s/30s/60s/120s segun escala. Garantiza ~6-12 ticks visibles a cualquier zoom.
+- Doble click resetea el viewport (`onDoubleTap` en `detectTapGestures`).
+- Hint del bottom cambia de "Clic para posicionar..." a "Zoom: X visible..." cuando el viewport esta zoomed.
+- `drawFpsLineWithFill` filtra `fpsData` a `[viewStart - 1s, viewEnd + 1s]` para optimizacion + correctness en los bordes.
+- Min viewport 1 second (no se puede zoomear a sub-frame), max viewport = full duration.
+
+#### Bug #2 — Tiempo predefinido no graba video (`AppViewModel.kt`)
+
+- **Root cause**: `AdbBridge.startScreenRecord` retorna `Process?` con un `try { pb.start() } catch (_: Exception) { null }`. Pero el caso real del bug no es una excepcion en `start()` — es que `screenrecord` arranca correctamente, exita en ~100ms con un exit code != 0 (resolucion rechazada por encoder, etc.), y el `Process` queda en estado terminated pero con la referencia valida. El codigo viejo no detectaba esto.
+- **Fix**: nueva helper local `tryStart(profile)` en `AppViewModel.startCapture` que (a) llama a `startScreenRecord`, (b) hace el `delay(1500)` warm-up, (c) verifica `process.isAlive()`, (d) si el proceso murio, lee el stderr (via `redirectErrorStream`) para diagnostico, (e) retorna null. El caller intenta primero el profile elegido por hardware tier; si falla y no era STANDARD, retry con STANDARD; si los dos fallan, surface a `_captureWarning` (nuevo StateFlow) que se renderiza como banner amarillo en `CaptureScreen`. La captura continua con metricas — el video es nice-to-have, no critical.
+- **Chain segments**: el `recordJob` ahora tambien null-checkea cada segmento. Si el chain falla a mitad de sesion, rompe el loop pero NO mata la captura (los segmentos previos se preservan, las metricas siguen). Stderr se loggea para diagnostico.
+- **Diagnostico**: cuando el bug se reproduce, ahora hay un mensaje en el log de la app con el exit code y el primer 500 chars del stderr de `screenrecord`.
+
+#### Bug #3 — Scoring demasiado estricto (`HardwareScoring.kt`)
+
+- **Root cause #1**: GPU detection. La normalizacion de v3.1.10 manejaba `(tm)`, `(r)`, commas y whitespace, pero NO manejaba "family qualifiers" como `Rogue` (PowerVR), `Series` (Mali). El Huawei Y5 Lite reporta `Imagination Technologies, PowerVR Rogue GE8300` que despues de v3.1.10 normalization queda `imagination technologies powervr rogue ge8300`. La key del map es `powervr ge8300` literal. El `rogue ` en el medio rompia el `contains()`.
+- **Root cause #2**: tier UNKNOWN tenia `expectedFps = 60, fpsFloor = 30` — los mismos defaults que `ULTRA_HIGH`.
+- **Root cause #3**: los thresholds del scoring tenian un bracket -15 entre `expectedFps` y `fpsFloor` — demasiado agresivo.
+- **Fixes**:
+  - **Normalizacion mejorada**: `detectTier` ahora strippea `\bqualcomm\b`, `\bimagination technologies\b`, `\bimagination\b`, `\barm\b` (vendor prefixes), y `\brogue\b`, `\bseries\b`, `\bfamily\b`, `\bopengl es \d+(\.\d+)?\b` (family qualifiers + OpenGL version suffix).
+  - **gpuTierMap rebalanceado**: PowerVR GE8300 movido de LOWER_MID a LOW (es un GPU de 2017 para MT6739, claramente low-end). Agregadas entries para PowerVR GE8200, G6200, G6400, SGX 540, VideoCore.
+  - **UNKNOWN tier rebajado**: `expectedFps = 60, fpsFloor = 30` → `45, 30`.
+  - **Brackets de scoring suavizados**: nuevo bracket "90% del expected" (-3) entre "above expected" (-0) y "above 80%" (-7). El bracket entre `fpsFloor` y `expectedFps * 0.8` ahora es -12 (era -15). El bracket "below floor pero arriba del 70%" es -25 (era -30).
+  - **Sentinel `avgFps <= 0`**: nuevo guard en `calculateDeviceGrade` que devuelve `'F' to 0` directamente cuando avgFps es 0 o negativo.
+- **Validacion**: 8 nuevos unit tests en `HardwareScoringTest` que cubren Y5 Lite GPU string completo, Y5 Lite a 28 fps con problemas, Pixel XL Adreno 530 a 43 fps, Galaxy S7 a 32 fps, flagship a 30 fps (sigue siendo D — el softening no afecta al lado fuerte), avgFps == 0 sentinel, PowerVR variants con brand prefix.
+
+### Pendiente para futuras versiones
+
+- v3.1.12: investigar el por que exacto del rechazo de `screenrecord` en algunos devices ahora que el logging de stderr esta agregado
+- v3.1.12: pan horizontal de la timeline cuando esta zoomed (con shift+drag o middle-click drag) — actualmente solo hay zoom anchored al cursor
+- v3.1.12: tooltip con FPS exacto al hacer hover sobre un punto de la timeline
+- Validacion empirica del Bug #3 en el Huawei Y5 Lite real
+
 ## [3.1.10] — 2026-04-07
 
 ### Que hay de nuevo

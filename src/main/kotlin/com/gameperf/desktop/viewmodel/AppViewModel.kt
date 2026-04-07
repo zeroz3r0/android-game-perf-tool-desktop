@@ -211,6 +211,10 @@ class AppViewModel {
     // ===== Capture Error (device disconnect, etc.) =====
     private val _captureError = MutableStateFlow<String?>(null)
     val captureError: StateFlow<String?> = _captureError
+    // v3.1.11: non-fatal warnings (capture continues, but the user should know).
+    // Used for cases like "video recording failed but metrics succeeded".
+    private val _captureWarning = MutableStateFlow<String?>(null)
+    val captureWarning: StateFlow<String?> = _captureWarning
 
     // ===== PDF Export =====
     /**
@@ -456,6 +460,7 @@ class AppViewModel {
         _liveMetrics.value = LiveMetrics()
         _markers.value = emptyList()
         _captureError.value = null
+        _captureWarning.value = null
         shouldStop = false
         AdbBridge.resetSessionState()
 
@@ -485,15 +490,61 @@ class AppViewModel {
                     else -> AdbBridge.ScreenRecordProfile.STANDARD
                 }
             }
-            recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, recordProfile)
-            // screenrecord needs ~1s to actually start capturing frames
-            delay(1500)
+            // v3.1.11: startScreenRecord has TWO failure modes that the v3.1.10 code
+            // didn't distinguish:
+            //   (a) ProcessBuilder.start() throws → returns null immediately
+            //   (b) start() succeeds but `screenrecord` exits within 100ms with non-zero
+            //       (unsupported codec, "ERROR: --size <WxH>: width/height must be a
+            //        multiple of 16", missing /sdcard permission, etc.). In this case
+            //       start() returns a Process object but it's already dead. v3.1.10 had
+            //       no detection for this — the chain timer fired, pullRecordings found
+            //       no files, the user got a session with empty videoPath and no error.
+            //
+            // Detection strategy: after the 1500ms warm-up delay (which screenrecord
+            // needs to actually start capturing frames), check `process.isAlive()`. If
+            // it died during warm-up, read its stderr to diagnose, retry with a safer
+            // profile if applicable, and surface a non-fatal warning to the user if
+            // BOTH attempts fail.
+            //
+            // We use a small helper because the same logic runs in the chain segment
+            // path inside recordJob too.
+            suspend fun tryStart(p: AdbBridge.ScreenRecordProfile): Process? {
+                val proc = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, p) ?: return null
+                delay(1500)  // warm-up
+                if (proc.isAlive) return proc
+                // Process died during warm-up. Read its stderr (redirected via redirectErrorStream)
+                // for diagnosis, then return null so the caller can retry or warn.
+                val stderr = try {
+                    proc.inputStream.bufferedReader().readText().trim().take(500)
+                } catch (_: Exception) { "(no stderr)" }
+                System.err.println("AppViewModel: screenrecord with profile=$p died during warm-up (exit=${proc.exitValue()}): $stderr")
+                return null
+            }
+
+            recordProcess = tryStart(recordProfile)
+            if (recordProcess == null && recordProfile != AdbBridge.ScreenRecordProfile.STANDARD) {
+                // Profile-specific failure: retry with the safe default profile.
+                System.err.println("AppViewModel: retrying screenrecord with STANDARD profile")
+                recordProcess = tryStart(AdbBridge.ScreenRecordProfile.STANDARD)
+            }
+            if (recordProcess == null) {
+                // Both attempts failed. Surface a non-fatal warning so the user knows
+                // why the report has no video. Capture continues with metrics only.
+                _captureWarning.value = "El video no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las metricas si se estan registrando."
+                System.err.println("AppViewModel: screenrecord failed for both COMPACT and STANDARD profiles on device ${device.id}")
+            }
+            // Note: tryStart already includes the 1500ms warm-up delay, no need to delay again here.
 
             // NOW start the clock - video and metrics are synced from this point
             val startTime = System.currentTimeMillis()
             captureStartTime = startTime
 
             // Chain recordings every ~175s (before 180s limit)
+            // v3.1.11: only chain if the initial segment actually started. If recordProcess
+            // is null at the time of chaining, the next startScreenRecord will likely fail
+            // for the same reason — but we still try once because some failures are
+            // transient. If the chain segment ALSO returns null, log it and stop chaining
+            // (no infinite retry loop) to avoid spam.
             recordJob = scope.launch {
                 while (!shouldStop) {
                     delay(175_000)
@@ -501,7 +552,13 @@ class AppViewModel {
                     AdbBridge.stopScreenRecord(recordProcess)
                     delay(1000)
                     recordSegment++
-                    recordProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, recordProfile)
+                    val nextProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, recordProfile)
+                    if (nextProcess == null) {
+                        System.err.println("AppViewModel: chain segment $recordSegment failed to start, stopping chain (existing segments preserved)")
+                        recordProcess = null
+                        break  // exit the chain loop, but do NOT stop the metrics capture
+                    }
+                    recordProcess = nextProcess
                 }
             }
 
@@ -826,6 +883,10 @@ class AppViewModel {
 
     fun clearCaptureError() {
         _captureError.value = null
+    }
+
+    fun clearCaptureWarning() {
+        _captureWarning.value = null
     }
 
     /** Place a marker at the current capture second (used during live capture). */
