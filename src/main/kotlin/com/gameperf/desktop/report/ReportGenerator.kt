@@ -1117,77 +1117,156 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 @media(max-width:480px){.metrics-grid{grid-template-columns:1fr}.summary-stats{grid-template-columns:1fr 1fr}.nav-link{font-size:11px;padding:5px 8px}}
 @media print {
   @page { size: A4; margin: 10mm 10mm 12mm 10mm }
+  /* PAGE BACKGROUND IS WHITE — every container needs a contrasting fill or border to be visible */
   html, body { background: #fff !important; color: #0f172a !important; font-size: 10.5px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact }
   .container { max-width: 100%; padding: 0 }
   /* Hide interactive-only chrome */
   .fab-group, .topnav, .expand-btn { display: none !important }
   .expand-content { display: block !important }
-  /* Header — compact, NOT forcing page-break-after:avoid (caused blank page 1 in v3.1.6) */
-  .report-header { border-radius: 0; padding: 18px 16px 16px; margin-bottom: 14px }
-  .header-bg { background: linear-gradient(135deg, #f1f5f9, #e2e8f0) !important }
+
+  /* === HEADER === Solid mid-gray block, sits clearly above the white page */
+  .report-header { border-radius: 0; padding: 20px 18px 18px; margin-bottom: 14px; border: 1px solid #64748b !important }
+  .header-bg { background: linear-gradient(135deg, #cbd5e1, #94a3b8) !important }
   .header-bg::after { display: none }
-  .header-title { -webkit-text-fill-color: #0f172a !important; background: none !important; font-size: 1.4rem !important; margin-bottom: 4px }
-  .header-badge { color: #1e40af !important; border-color: #93c5fd !important; background: #eff6ff !important; font-size: 9px !important; padding: 4px 12px !important; margin-bottom: 8px !important }
-  .header-pkg { color: #475569 !important; font-size: 12px !important; margin-bottom: 6px }
-  .header-meta, .header-session { color: #64748b !important; font-size: 10px !important }
-  /* Cards — allow them to break across pages so we never end up with a blank header page */
-  .card, .card-summary { background: #fff !important; border: 1px solid #cbd5e1 !important; box-shadow: none !important; padding: 14px !important; margin-bottom: 12px !important; page-break-inside: auto }
-  .card h2, .card-header h2, .section-title { color: #0f172a !important; font-size: 0.95rem !important; margin-bottom: 10px !important }
-  .card-desc, .hint, .verdict { color: #64748b !important; font-size: 10px !important }
-  /* Metric cards row */
-  .metric-card { background: #f8fafc !important; border: 1px solid #e2e8f0 !important; padding: 10px !important }
-  .metric-card .metric-value { color: #0f172a !important }
-  .metrics-grid { gap: 8px !important }
-  /* Summary card — keep grade ring readable on white */
-  .summary-grade { background: #f8fafc !important; padding: 18px !important; border-right: 1px solid #e2e8f0 !important }
-  .grade-ring { background: none !important; border: 4px solid var(--grade-color); width: 110px !important; height: 110px !important }
+  .header-title { -webkit-text-fill-color: #0f172a !important; background: none !important; font-size: 1.5rem !important; margin-bottom: 4px; font-weight: 800 !important }
+  .header-badge { color: #1e3a8a !important; border: 1px solid #1e3a8a !important; background: #ffffff !important; font-size: 9px !important; padding: 4px 12px !important; margin-bottom: 8px !important; font-weight: 700 !important }
+  .header-pkg { color: #1e293b !important; font-size: 12px !important; margin-bottom: 6px; font-weight: 600 !important }
+  .header-meta, .header-session { color: #334155 !important; font-size: 10px !important }
+
+  /* === CARDS LEVEL 1 === Light gray fill (#f1f5f9, delta ~30) with strong border (#94a3b8, delta ~80) */
+  .card, .card-summary {
+    background: #f1f5f9 !important;
+    border: 1px solid #94a3b8 !important;
+    box-shadow: none !important;
+    padding: 16px !important;
+    margin-bottom: 14px !important;
+    page-break-inside: auto;
+    border-radius: 8px !important
+  }
+  .card h2, .card-header h2, .section-title { color: #0f172a !important; font-size: 1rem !important; margin-bottom: 10px !important; font-weight: 700 !important }
+  .card-desc, .hint, .verdict { color: #475569 !important; font-size: 10px !important }
+
+  /* === METRIC CARDS (level 2) === White on top of the gray level-1 card to invert contrast */
+  .metric-card {
+    background: #ffffff !important;
+    border: 1px solid #94a3b8 !important;
+    padding: 12px !important;
+    border-radius: 6px !important
+  }
+  .metric-card .metric-value { color: #0f172a !important; font-weight: 800 !important }
+  .metrics-grid { gap: 10px !important }
+
+  /* === SUMMARY CARD === Slightly darker (#e2e8f0) to stand out as the hero element */
+  .summary-grade {
+    background: #e2e8f0 !important;
+    padding: 20px !important;
+    border-right: 1px solid #94a3b8 !important
+  }
+  .grade-ring { background: #fff !important; border: 5px solid var(--grade-color); width: 116px !important; height: 116px !important }
   .grade-ring-inner { background: #fff !important }
-  .grade-letter { font-size: 2.6rem !important }
-  .grade-score { color: #475569 !important }
-  .device-grade-pill { background: #fff !important; border-color: #e2e8f0 !important; margin-top: 12px !important }
-  .device-grade-label, .device-grade-score { color: #64748b !important }
-  .summary-info { padding: 18px !important }
+  .grade-letter { font-size: 2.8rem !important; font-weight: 900 !important }
+  .grade-score { color: #1e293b !important; font-weight: 600 !important }
+  .device-grade-pill {
+    background: #ffffff !important;
+    border: 1px solid #64748b !important;
+    margin-top: 14px !important;
+    padding: 10px 16px !important
+  }
+  .device-grade-label { color: #475569 !important; font-weight: 600 !important }
+  .device-grade-score { color: #475569 !important }
+  .summary-info { padding: 20px !important; background: transparent !important }
   .summary-info h2 { color: #0f172a !important }
-  /* Stats pills */
-  .stat-pill { background: #f1f5f9 !important; border: 1px solid #e2e8f0 !important; padding: 6px 10px !important }
-  .stat-pill-value, .summary-stat-value { color: #0f172a !important; font-size: 13px !important }
-  .stat-pill-label, .summary-stat-label { color: #64748b !important; font-size: 9px !important }
-  .stats-row { gap: 6px !important }
-  /* Hardware grid */
-  .hw-item { background: #f8fafc !important; border-color: #e2e8f0 !important; padding: 8px 10px !important }
-  .hw-label { color: #64748b !important; font-size: 9px !important }
-  .hw-value { color: #0f172a !important; font-size: 11px !important }
-  /* Tables */
-  .data-table { font-size: 10px !important }
-  .data-table th { background: #f1f5f9 !important; color: #1e293b !important; font-size: 9px !important; padding: 6px 8px !important }
-  .data-table td { color: #0f172a !important; border-color: #e2e8f0 !important; padding: 5px 8px !important }
-  .good { color: #15803d !important; font-weight: 600 }
-  .warn { color: #b45309 !important; font-weight: 600 }
-  .bad { color: #b91c1c !important; font-weight: 700 }
-  /* Charts — explicit white background, fixed height to avoid layout overflow */
-  .chart-container { background: #fff !important; border: 1px solid #e2e8f0 !important; height: 220px !important; padding: 12px !important; margin-top: 8px !important }
-  /* Grade bar */
-  .grade-bar { background: #e2e8f0 !important }
+
+  /* === STAT PILLS === Solid contrasting fill (#e2e8f0, delta ~30) + visible border */
+  .stat-pill {
+    background: #e2e8f0 !important;
+    border: 1px solid #94a3b8 !important;
+    padding: 8px 12px !important;
+    border-radius: 6px !important
+  }
+  .stat-pill-value, .summary-stat-value { color: #0f172a !important; font-size: 14px !important; font-weight: 800 !important }
+  .stat-pill-label, .summary-stat-label { color: #475569 !important; font-size: 9px !important; font-weight: 700 !important }
+  .stats-row { gap: 8px !important }
+
+  /* === HARDWARE GRID === White cells inside gray level-1 card */
+  .hw-item {
+    background: #ffffff !important;
+    border: 1px solid #94a3b8 !important;
+    padding: 10px 12px !important
+  }
+  .hw-label { color: #475569 !important; font-size: 9px !important; font-weight: 700 !important }
+  .hw-value { color: #0f172a !important; font-size: 11px !important; font-weight: 700 !important }
+
+  /* === DATA TABLES === Dark header + alternating row stripes for real-table look */
+  .data-table { font-size: 10px !important; border: 1px solid #94a3b8 !important; border-collapse: collapse !important }
+  .data-table th {
+    background: #475569 !important;
+    color: #ffffff !important;
+    font-size: 9px !important;
+    padding: 8px 10px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.5px !important
+  }
+  .data-table td {
+    color: #0f172a !important;
+    border-bottom: 1px solid #cbd5e1 !important;
+    padding: 7px 10px !important
+  }
+  .data-table tr:nth-child(even) td { background: #f1f5f9 !important }
+  .data-table tr:nth-child(odd) td { background: #ffffff !important }
+  .good { color: #15803d !important; font-weight: 700 }
+  .warn { color: #b45309 !important; font-weight: 700 }
+  .bad { color: #b91c1c !important; font-weight: 800 }
+
+  /* === CHARTS === White canvas with strong border so the chart area is clearly delimited */
+  .chart-container {
+    background: #ffffff !important;
+    border: 1px solid #94a3b8 !important;
+    height: 220px !important;
+    padding: 12px !important;
+    margin-top: 10px !important;
+    border-radius: 6px !important
+  }
+
+  /* === GRADE BAR (the F-D-C-B-A scale at the bottom) === */
+  .grade-bar { background: #cbd5e1 !important; border: 1px solid #94a3b8 !important }
   .grade-fill { background: var(--grade-color) !important }
-  /* Final score */
-  .final-score-num, .final-score-grade { color: #0f172a !important }
-  .final-score-sep { color: #94a3b8 !important }
-  /* Footer */
-  .report-footer { border-top: 1px solid #e2e8f0 !important; padding: 14px 0 !important; margin-top: 16px !important }
-  .footer-logo { -webkit-text-fill-color: #475569 !important; background: none !important; font-size: 11px !important }
-  .report-footer p { color: #94a3b8 !important; font-size: 9px !important }
-  .footer-session { color: #cbd5e1 !important }
-  /* Problem cards — colored backgrounds with strong borders for paper readability */
-  .problem-critical { background: #fef2f2 !important; border: 1px solid #fecaca !important; color: #991b1b !important }
-  .problem-warning { background: #fffbeb !important; border: 1px solid #fde68a !important; color: #92400e !important }
-  .problem-info { background: #eff6ff !important; border: 1px solid #bfdbfe !important; color: #1e40af !important }
-  .status-ok { background: #f0fdf4 !important; border: 1px solid #86efac !important; color: #166534 !important }
-  /* Method/details items */
-  .method-item { background: #f8fafc !important; border-color: #e2e8f0 !important }
-  .method-label { color: #475569 !important }
+
+  /* === FINAL SCORE === Big, bold, centered */
+  .final-score-num, .final-score-grade { color: #0f172a !important; font-weight: 900 !important }
+  .final-score-sep { color: #64748b !important }
+
+  /* === FOOTER === Visible separator above + readable session ID */
+  .report-footer {
+    border-top: 2px solid #94a3b8 !important;
+    padding: 16px 0 !important;
+    margin-top: 18px !important
+  }
+  .footer-logo {
+    -webkit-text-fill-color: #1e293b !important;
+    background: none !important;
+    font-size: 12px !important;
+    font-weight: 800 !important
+  }
+  .report-footer p { color: #475569 !important; font-size: 9px !important }
+  .footer-session { color: #64748b !important; font-weight: 600 !important }
+
+  /* === PROBLEM CARDS === Colored fills already had OK contrast, just stronger borders */
+  .problem-critical { background: #fef2f2 !important; border: 2px solid #dc2626 !important; color: #7f1d1d !important; font-weight: 600 !important }
+  .problem-warning { background: #fffbeb !important; border: 2px solid #d97706 !important; color: #78350f !important; font-weight: 600 !important }
+  .problem-info { background: #eff6ff !important; border: 2px solid #2563eb !important; color: #1e3a8a !important; font-weight: 600 !important }
+  .status-ok { background: #f0fdf4 !important; border: 2px solid #16a34a !important; color: #14532d !important; font-weight: 600 !important }
+
+  /* === METHOD ITEMS === White cells inside gray card */
+  .method-item {
+    background: #ffffff !important;
+    border: 1px solid #94a3b8 !important
+  }
+  .method-label { color: #475569 !important; font-weight: 700 !important }
   .method-value { color: #0f172a !important }
-  /* Misc backgrounds that need to disappear */
-  .summary-info, .summary-stat { background: transparent !important }
+
+  /* === MISC === */
+  .summary-stat { background: transparent !important }
 }
 """.trimIndent()
 }

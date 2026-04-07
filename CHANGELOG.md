@@ -14,6 +14,32 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.1.8] — 2026-04-06
+
+### Que hay de nuevo
+- El PDF exportado ahora se ve como un informe corporativo profesional, con buen contraste entre cards y fondo
+- Las cards de las metricas se distinguen claramente del fondo de la pagina (antes parecia "blanco sobre blanco")
+- Las stat pills (FPS, P1, Frame Time, etc.) ahora son capsulas con cuerpo visible, no texto flotando
+- Las tablas tienen header oscuro con texto blanco y alternancia de filas, como un dashboard real
+- El header del documento ahora se ve como un bloque solido con borde, no un fantasma gris
+
+### Arreglos
+- Los recuadros, cards y pills tenian fondos casi identicos al blanco de la pagina (delta de 8 sobre 255), por eso parecia que todo flotaba. Ahora los fondos tienen contraste real (delta 30+) y los bordes son visibles
+- El card grande del Resumen Ejecutivo ahora es claramente diferente del fondo de la pagina
+- Las metric cards (FPS, FRAME TIME, MEMORIA, CPU) tienen bordes fuertes que las delimitan
+- Los problem cards (warnings, criticals) tienen bordes de 2px en sus colores semanticos
+- El footer ahora tiene una separacion clara del contenido principal
+
+### Detalles tecnicos
+- Reescrita la `@media print` rule completa de `ReportGenerator.kt` con foco en contraste sobre papel blanco
+- Sistema de doble nivel de cards: cards padre en gris claro `#f1f5f9` (delta 30 del blanco) con borde `#94a3b8` (delta 80), cards hijas en blanco puro con el mismo borde fuerte. Esto crea jerarquia visual sin necesidad de sombras o gradientes
+- Stat pills cambiadas de `#ffffff` (invisible) a `#e2e8f0` (delta 30) con borde `#94a3b8` para que tengan cuerpo
+- Header background gradient cambiado de `#f1f5f9 → #e2e8f0` (deltas 18-30) a `#cbd5e1 → #94a3b8` (deltas 50-100) para que el header sea visible como bloque solido
+- Tabla `.data-table` ahora tiene `tr:nth-child(even)` con fondo `#f1f5f9` y `tr:nth-child(odd)` blanco para alternancia de filas
+- Headers de tablas con fondo `#475569` y texto `#ffffff` (antes eran `#f1f5f9` con texto `#1e293b` casi imperceptibles)
+- Problem cards con bordes de 2px en lugar de 1px y colores semanticos mas saturados
+- Validacion empirica via muestreo de pixeles con PIL: confirmado que los deltas del blanco subieron de 8-18 a 30-80
+
 ## [3.1.7] — 2026-04-06
 
 ### Que hay de nuevo
