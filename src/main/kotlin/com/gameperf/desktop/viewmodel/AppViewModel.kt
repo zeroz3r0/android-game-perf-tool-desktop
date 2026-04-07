@@ -539,18 +539,30 @@ class AppViewModel {
             val startTime = System.currentTimeMillis()
             captureStartTime = startTime
 
-            // Chain recordings every ~175s (before 180s limit)
-            // v3.1.11: only chain if the initial segment actually started. If recordProcess
-            // is null at the time of chaining, the next startScreenRecord will likely fail
-            // for the same reason — but we still try once because some failures are
-            // transient. If the chain segment ALSO returns null, log it and stop chaining
-            // (no infinite retry loop) to avoid spam.
+            // Chain recordings every ~175s (before the 180s screenrecord hard limit).
+            //
+            // v3.1.12 — moov atom corruption fix:
+            //   The previous version used `delay(1000)` between stop and next start.
+            //   That was insufficient: when `stopScreenRecord` calls `destroyForcibly()`,
+            //   the adb shell process dies but the `screenrecord` binary running on the
+            //   device needs time to flush the MP4 moov atom to /sdcard. 1 second was
+            //   not enough on the Pixel XL (Android 10) and similar devices — the
+            //   resulting `_0.mp4` ended up with no moov atom, was unplayable, and the
+            //   pull+concat path produced a broken videoPath that the player couldn't
+            //   read ("No se pudo leer la duración del video" error).
+            //   Increased to 3 seconds. The chain interval is still ~175s overall so
+            //   the extra 2 seconds per chain step is negligible (~2% overhead at 10 min).
+            //
+            // v3.1.11: only chain if the initial segment actually started.
             recordJob = scope.launch {
                 while (!shouldStop) {
                     delay(175_000)
                     if (shouldStop) break
                     AdbBridge.stopScreenRecord(recordProcess)
-                    delay(1000)
+                    // v3.1.12: 3-second wait to let the device-side screenrecord binary
+                    // flush its moov atom. This prevents the segment-zero corruption that
+                    // produced 7MB partial files instead of full 80MB segments.
+                    delay(3000)
                     recordSegment++
                     val nextProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, recordProfile)
                     if (nextProcess == null) {
@@ -737,21 +749,47 @@ class AppViewModel {
             recordJob?.cancel()
             AdbBridge.stopScreenRecord(recordProcess)
             recordProcess = null
-            delay(2000) // let last segment finalize on device
+            // v3.1.12: increased from 2000ms to 3000ms. The screenrecord binary on the
+            // device needs time to flush the moov atom to /sdcard after receiving SIGTERM.
+            // 2 seconds was insufficient on some devices (the Pixel XL produced corrupt
+            // segments because the chain timer was killing screenrecord after only 1s of
+            // post-stop wait — see recordJob delay below).
+            delay(3000) // let last segment finalize on device
             val recordings = AdbBridge.pullRecordings(device.id, sessionId, videoDir)
 
             // Concatenate all segments into a single unified video file. screenrecord
             // has a hard 3-min/segment limit so longer sessions produce multiple files
-            // (_0.mp4, _1.mp4, ...). Until v3.1.9 only the first segment was exposed,
-            // capping playback at ~2:56 regardless of actual session duration. The
-            // unified file is created next to the segments with the same sessionId
-            // and no _N suffix. Original segments are kept as a backup for now.
-            val videoPath = if (recordings.size > 1) {
+            // (_0.mp4, _1.mp4, ...). v3.1.9 introduced concat to fix the 2:56 truncation;
+            // v3.1.12 makes the concat resilient to corrupt segments (filters them out
+            // before invoking ffmpeg) and the fallback uses `firstValidSegment` instead
+            // of `first()` so the user never gets a path pointing at a corrupt _0.mp4.
+            val videoPath: String = if (recordings.isNotEmpty()) {
                 val unified = java.io.File(videoDir, "video_${sessionId}.mp4")
-                val concatenated = AdbBridge.concatSegments(recordings, unified)
-                concatenated?.absolutePath ?: recordings.first().absolutePath
+                val result = if (recordings.size > 1) {
+                    AdbBridge.concatSegments(recordings, unified)
+                } else {
+                    // Single segment — validate it's playable, return null if corrupt
+                    if (AdbBridge.isValidVideoFile(recordings.first())) recordings.first() else null
+                }
+                if (result != null) {
+                    result.absolutePath
+                } else {
+                    // Concat failed AND no single valid segment. Surface a warning so the
+                    // user knows the video is missing (not just empty), and try to find
+                    // ANY valid segment in the original list as a last resort.
+                    val anyValid = recordings.firstOrNull { AdbBridge.isValidVideoFile(it) }
+                    if (anyValid != null) {
+                        System.err.println("AppViewModel: concat failed, falling back to first valid segment: ${anyValid.name}")
+                        _captureWarning.value = "El video se grabo solo parcialmente. Algunos segmentos estaban corruptos y se descartaron."
+                        anyValid.absolutePath
+                    } else {
+                        System.err.println("AppViewModel: NO valid video segments produced (all ${recordings.size} corrupt)")
+                        _captureWarning.value = "Los segmentos de video estan corruptos y no se pudieron unir. Las metricas si estan completas."
+                        ""
+                    }
+                }
             } else {
-                recordings.firstOrNull()?.absolutePath ?: ""
+                ""
             }
 
             // === FINALIZE ===

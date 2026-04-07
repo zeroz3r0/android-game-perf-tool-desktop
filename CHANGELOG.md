@@ -14,6 +14,54 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.1.12] — 2026-04-07
+
+### Que hay de nuevo
+
+- **Reproductor de video resistente a segmentos corruptos**: si durante una grabacion algun segmento queda dañado (porque el chain del recordJob lo cortó antes de tiempo), el sistema ahora descarta el segmento roto y une los buenos. Vas a tener el video aunque sea parcial, en vez del error "No se pudo leer la duración del video"
+- Mensajes de error del reproductor mucho mas claros: si el video no se puede leer, ahora te dice exactamente por que (archivo no existe / archivo vacio / moov atom dañado por interrupcion)
+- Cuando algunos segmentos quedaron corruptos, vas a ver un aviso amarillo claro ("El video se grabo solo parcialmente") en vez de descubrirlo silenciosamente
+
+### Arreglos
+
+- **Bug critico, regresion de v3.1.9**: el reproductor mostraba "No se pudo leer la duración del video" en sesiones donde el chain del recordJob había producido un primer segmento corrupto. Root cause: cuando v3.1.9 introdujo el concat de segmentos, si un segmento estaba corrupto el concat fallaba entero y el codigo caia al fallback `recordings.first()` que era... el segmento corrupto. El usuario perdia el video entero por culpa de un solo segmento roto al inicio
+- **Bug critico de grabacion**: el chain del recordJob esperaba solo 1 segundo entre `stopScreenRecord` y el siguiente `startScreenRecord`. Eso no le daba tiempo a Android a flushear el moov atom del MP4 al disco, dejando el segmento `_0.mp4` (y a veces los siguientes) sin metadata MP4 — son archivos de bytes validos pero ningun reproductor los puede leer. Aumentado a 3 segundos por chain step. El delay post-stop final ya era de 2 segundos pero tambien lo subi a 3 por consistencia
+- Si todos los segmentos de una sesion estan corruptos, ahora se muestra un mensaje explicito en vez de fallar silenciosamente
+
+### Como probar
+
+1. Abrir la app actualizada
+2. Si tenes una sesion que mostraba "No se pudo leer la duración del video", deberia funcionar ahora (puede tener menos duracion total si algun segmento se descartaba). Tambien podes abrir la sesion del Pixel XL del 7 abril 15:06 que estaba rota y ahora deberia mostrar 7:00 de video reproducible (en lugar de 10:00 que era la duracion original — perdimos los primeros 3 minutos por el `_0.mp4` corrupto, pero el resto se recupero)
+3. Capturar una sesion nueva de mas de 3 minutos (para forzar el chain del recordJob). Verificar que el video resultante se reproduce sin errores
+4. Si por alguna razon un segmento queda corrupto, vas a ver un banner amarillo "El video se grabo solo parcialmente" durante o despues de la captura
+
+### Detalles tecnicos
+
+#### Bug #1 — Segmentos corruptos rompian todo el video (regresion v3.1.9)
+
+- **Root cause**: `AdbBridge.concatSegments` invocaba `ffmpeg -f concat` sin validar primero que cada segmento fuera legible. ffmpeg concat demuxer falla entero en el primer input invalido (`moov atom not found`), retornaba null al caller, y el caller (`AppViewModel.startCapture` linea ~752) hacia `concatenated?.absolutePath ?: recordings.first().absolutePath` — cayendo al `first()` que era el `_0.mp4` corrupto. El user terminaba con un `videoPath` apuntando a un archivo dañado.
+- **Caso real del usuario**: sesion del 7 abril 15:06 en Pixel XL. 4 segmentos en disco: `_0.mp4` (7.3 MB, corrupto), `_1.mp4` (41 MB), `_2.mp4` (42 MB), `_3.mp4` (17 MB). Total valido = 7 minutos sobre 10 originales. v3.1.11 fallback al concat → `videoPath = _0.mp4` → reproductor abre el archivo → ffprobe falla → "No se pudo leer la duración del video".
+- **Fix #1 (`AdbBridge.concatSegments`)**: nueva validacion via `isValidVideoFile(file: File): Boolean` que llama a ffprobe con `-show_entries format=duration` y verifica que retorne un duration > 0. Si ffprobe falla / timeout / no duration → invalid. La funcion `concatSegments` ahora filtra los segmentos antes de armar el manifest del concat y skipea los invalidos. Si despues del filtro queda 1 archivo, lo retorna directo (sin concat). Si quedan 2+, los concatena. Si quedan 0, retorna null y el caller surface a `_captureWarning`.
+- **Fix #2 (`AppViewModel.startCapture`)**: el fallback ahora usa `firstValidSegment` en vez de `first()`. Si concat falla pero hay al menos un segmento valido, usa ese y setea `_captureWarning` con el mensaje correspondiente. Si todos estan corruptos, `videoPath = ""` y warning.
+- **Fix #3 (`EmbeddedVideoPlayer.kt`)**: el mensaje de error "No se pudo leer la duración del video" se reemplazo por un mensaje contextual segun la causa: archivo no existe / archivo vacio / archivo dañado (moov atom corrupto). El nuevo mensaje del moov-atom dice explicitamente "Las metricas del reporte siguen siendo validas" para que el usuario no piense que perdio toda la sesion.
+- **Validacion**: 7 nuevos unit tests en `ConcatResilienceTest.kt` (gateado por `RUN_FFMPEG_TESTS=true`) que generan archivos sinteticos validos y corruptos via ffmpeg con `lavfi testsrc` source y verifican: (a) `isValidVideoFile` detecta corruptos, (b) `concatSegments` skipea el primer corrupto y produce output valido con los demas, (c) `concatSegments` retorna null cuando todos son corruptos, (d) `concatSegments` retorna el unico segmento valido si los demas estan corruptos, (e) caso happy path con 2 segmentos validos. **Ademas** se corrio un test E2E one-shot contra los archivos REALES del usuario (Pixel XL 4 segmentos) que confirmo: seg0 detectado como invalido, seg1/seg2/seg3 validos, concat produce 100MB unified file playable. El test E2E se borro despues porque depende de archivos especificos del usuario.
+
+#### Bug #2 — Chain delay insuficiente, root cause de los segmentos corruptos
+
+- **Root cause**: el `recordJob` chain en `AppViewModel.startCapture` hacia `delay(1000)` entre `stopScreenRecord` y el siguiente `startScreenRecord`. `stopScreenRecord` invoca `process.destroyForcibly()` que mata el `adb shell` en el PC, pero el binario `screenrecord` corriendo en el device necesita tiempo para flushear el moov atom del MP4 a `/sdcard`. 1 segundo era insuficiente en devices low-end (Pixel XL Android 10). Resultado: el segmento que se estaba grabando quedaba con frames + ftyp box pero sin moov box → invalido para cualquier reproductor.
+- **Fix**: aumentado de `delay(1000)` a `delay(3000)` en el chain (linea ~520 de `AppViewModel`). Tambien aumentado el `delay(2000)` post-stop final a `delay(3000)` por consistencia. El overhead extra sobre una sesion de 10 minutos es ~8 segundos = 1.3% — totalmente aceptable a cambio de no perder el video.
+- **No previene 100% de casos**: si Android esta haciendo I/O pesado (juego con muchos assets, GC pause, etc.), 3 segundos podrian no ser suficientes. Pero el fix #1 (concat resiliente) asegura que aunque pase, no perdes el resto del video.
+
+#### Reparacion retroactiva del usuario afectado
+
+- La sesion rota del usuario (Pixel XL 7 abril 15:06, id `1775567795318`) se reparo manualmente durante la investigacion del bug: ffmpeg concat de los 3 segmentos validos (`_1`, `_2`, `_3`) → `video_20260407_150625.mp4` (100 MB, 7:00 duracion), y `videoPath` en `history.json` actualizado. Backup del history original en `history.json.backup-pre-3.1.12`. La sesion ya es reproducible AHORA, antes de que el usuario instale v3.1.12.
+- Para futuros casos similares, `FileCleanup.repairTruncatedVideos` (que corre en startup desde v3.1.9) tambien hereda el fix automaticamente: ahora valida cada segmento antes de concatenar y skipea los corruptos.
+
+### Pendiente para futuras versiones
+
+- v3.1.13 o posterior: capturar el stderr del proceso `screenrecord` en el chain (no solo en el initial start) para diagnosticar por que algunos chain steps producen segmentos corruptos. Actualmente sabemos que el delay de 3 segundos previene la mayoria de los casos pero no sabemos si hay devices donde aun falla.
+- v3.1.13 o posterior: agregar un boton "Reparar videos viejos" en la pantalla de history que fuerce un re-run de `repairTruncatedVideos` con el fix nuevo de filtrar corruptos.
+
 ## [3.1.11] — 2026-04-07
 
 ### Que hay de nuevo

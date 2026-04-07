@@ -443,11 +443,32 @@ object AdbBridge {
      */
     fun concatSegments(segments: List<java.io.File>, output: java.io.File): java.io.File? {
         if (segments.isEmpty()) return null
-        if (segments.size == 1) return segments.first() // nothing to concat
 
         val ffmpeg = findFfmpeg() ?: run {
-            System.err.println("AdbBridge.concatSegments: ffmpeg not found, returning first segment only")
+            System.err.println("AdbBridge.concatSegments: ffmpeg not found")
+            // Without ffmpeg we can't concat. Return the first VALID segment so the caller
+            // at least gets something playable. Validation requires ffprobe so this is best-effort.
+            return segments.firstValidSegment()
+        }
+
+        // v3.1.12: validate every segment with ffprobe BEFORE concat. screenrecord chains
+        // are vulnerable to having one corrupt segment (typically `_0` when chain stop
+        // didn't give Android time to write the moov atom). Concat demuxer fails entirely
+        // on the first bad input — losing 100% of the video for the cost of one bad chunk.
+        // Filter to valid segments only and concat what's left. If filtering removes
+        // segments, the user loses some footage but keeps the rest. Better than nothing.
+        val validSegments = segments.filter { isValidVideoFile(it) }
+        if (validSegments.isEmpty()) {
+            System.err.println("AdbBridge.concatSegments: no valid segments after validation (all ${segments.size} are corrupt)")
             return null
+        }
+        if (validSegments.size < segments.size) {
+            val corrupt = segments - validSegments.toSet()
+            System.err.println("AdbBridge.concatSegments: skipping ${corrupt.size} corrupt segment(s): ${corrupt.map { it.name }}")
+        }
+        if (validSegments.size == 1) {
+            // Only one valid segment after filtering — no concat needed, just return it.
+            return validSegments.first()
         }
 
         // ffmpeg concat demuxer requires a manifest file with `file '<path>'` lines.
@@ -455,7 +476,7 @@ object AdbBridge {
         val manifest = java.io.File.createTempFile("gameperf-concat-", ".txt")
         try {
             manifest.bufferedWriter().use { w ->
-                for (seg in segments) {
+                for (seg in validSegments) {
                     val escapedPath = seg.absolutePath.replace("'", "'\\''")
                     w.write("file '$escapedPath'\n")
                 }
@@ -481,22 +502,107 @@ object AdbBridge {
             if (!finished) {
                 proc.destroyForcibly()
                 System.err.println("AdbBridge.concatSegments: ffmpeg timed out after 120s")
-                return null
+                return validSegments.first()  // fallback to first valid segment
             }
             if (proc.exitValue() != 0) {
                 System.err.println("AdbBridge.concatSegments: ffmpeg exit ${proc.exitValue()}\n$log")
-                return null
+                return validSegments.first()  // fallback to first valid segment
             }
             if (!output.exists() || output.length() == 0L) {
                 System.err.println("AdbBridge.concatSegments: output file missing or empty")
-                return null
+                return validSegments.first()  // fallback
             }
             return output
         } catch (e: Exception) {
             System.err.println("AdbBridge.concatSegments: ${e.message}")
-            return null
+            return validSegments.firstOrNull()
         } finally {
             manifest.delete()
         }
     }
+
+    /**
+     * Validate that an mp4 file is readable by ffprobe (i.e. has a valid moov atom and
+     * the container can be parsed). screenrecord can produce files that exist on disk
+     * with non-zero size but missing the moov atom (when the process is killed before
+     * Android closes the container). These files are unplayable and concat will fail on
+     * them — better to detect and skip BEFORE attempting concat or playback.
+     *
+     * Validation strategy: try to read the duration via ffprobe. If ffprobe exits 0 with
+     * a parseable positive duration, the file is valid. If ffprobe fails OR returns no
+     * duration OR returns a non-positive value, the file is corrupt.
+     *
+     * Cost: one ffprobe invocation per file (~50-150ms). Cheap enough to do on every
+     * concat call.
+     *
+     * Returns false (and logs the reason) on:
+     *   - File doesn't exist
+     *   - File is empty
+     *   - ffprobe not installed (degraded: assume valid, can't validate)
+     *   - ffprobe exits non-zero
+     *   - ffprobe times out (>5s)
+     *   - duration not parseable or <= 0
+     */
+    fun isValidVideoFile(file: java.io.File): Boolean {
+        if (!file.exists() || file.length() == 0L) {
+            System.err.println("AdbBridge.isValidVideoFile: ${file.name} missing or empty")
+            return false
+        }
+        val ffprobe = findFfprobe() ?: return true  // can't validate, assume valid (degraded)
+        return try {
+            val pb = ProcessBuilder(
+                ffprobe, "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file.absolutePath
+            )
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val out = proc.inputStream.bufferedReader().readText().trim()
+            val finished = proc.waitFor(5, TimeUnit.SECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                System.err.println("AdbBridge.isValidVideoFile: ffprobe timed out on ${file.name}")
+                return false
+            }
+            if (proc.exitValue() != 0) {
+                System.err.println("AdbBridge.isValidVideoFile: ffprobe exit ${proc.exitValue()} on ${file.name}: $out")
+                return false
+            }
+            // Output should be a positive number (seconds). Sometimes ffprobe outputs "N/A"
+            // or empty if the format header is partially parseable but duration is missing.
+            val durationSec = out.lines().firstOrNull()?.toDoubleOrNull()
+            if (durationSec == null || durationSec <= 0.0) {
+                System.err.println("AdbBridge.isValidVideoFile: ${file.name} has no readable duration (got '$out')")
+                return false
+            }
+            true
+        } catch (e: Exception) {
+            System.err.println("AdbBridge.isValidVideoFile: ${file.name}: ${e.message}")
+            false
+        }
+    }
+
+    /** Find the local ffprobe binary. Mirrors EmbeddedVideoPlayer.findFfprobe() so core/
+     *  doesn't depend on ui/components/. */
+    private fun findFfprobe(): String? {
+        try {
+            val p = ProcessBuilder("which", "ffprobe").start()
+            val result = p.inputStream.bufferedReader().readText().trim()
+            p.waitFor()
+            if (result.isNotEmpty() && java.io.File(result).exists()) return result
+        } catch (_: Exception) {}
+
+        val candidates = listOf(
+            "/usr/local/bin/ffprobe",
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/bin/ffprobe",
+            "C:\\ffmpeg\\bin\\ffprobe.exe"
+        )
+        return candidates.firstOrNull { java.io.File(it).exists() }
+    }
+
+    /** Helper extension: find the first valid segment in a list, or null if none. */
+    private fun List<java.io.File>.firstValidSegment(): java.io.File? =
+        this.firstOrNull { isValidVideoFile(it) }
 }

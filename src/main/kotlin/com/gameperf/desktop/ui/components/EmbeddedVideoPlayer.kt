@@ -180,7 +180,21 @@ fun EmbeddedVideoPlayer(
 
             videoFps = getVideoFps(videoPath)
             val duration = getVideoDuration(videoPath)
-            if (duration <= 0) { errorMessage = "No se pudo leer la duración del video"; return@withContext }
+            if (duration <= 0) {
+                // v3.1.12: more informative error. The most common cause is a corrupt
+                // segment from a chain stop that didn't give Android time to flush the
+                // moov atom. The user can't fix this themselves but at least they know
+                // it's a recording-side issue, not a player issue.
+                val file = File(videoPath)
+                errorMessage = if (!file.exists()) {
+                    "El archivo de video no existe en el disco. Es probable que se haya borrado o movido."
+                } else if (file.length() == 0L) {
+                    "El archivo de video esta vacio. La grabacion fallo durante la captura."
+                } else {
+                    "El video esta dañado y no se puede leer (falta el moov atom MP4). Esto pasa cuando la grabacion se interrumpe abruptamente. Las metricas del reporte siguen siendo validas."
+                }
+                return@withContext
+            }
             videoDurationMs = duration
             onDurationReady(duration)
 
