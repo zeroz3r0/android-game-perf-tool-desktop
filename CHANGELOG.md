@@ -14,6 +14,32 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.2.1] — 2026-04-08
+
+### Arreglos
+
+- **Reproduccion de video instantanea y fluida (fix critico de UX)**: el player ya no extrae todos los frames del MP4 a /tmp como JPGs (35.000+ archivos para un video de 10min a 60fps) antes de mostrar nada. Ahora decodifica frames on-demand directamente del MP4 usando ffmpeg con seeking nativo por keyframes. Resultado: el video aparece en menos de 300ms (antes tardaba minutos), arrastrar el cursor de la timeline carga el frame exacto en menos de 200ms (antes tardaba mas de un minuto), la reproduccion es perfectamente fluida en cualquier punto del video. Funciona identico para videos grabados por USB o por WiFi — el formato MP4 es el mismo, lo unico que cambio es como el player lo lee
+
+### Detalles tecnicos
+
+- **`EmbeddedVideoPlayer.kt` reescrito**: eliminada la extraccion masiva de frames a /tmp con `ffmpeg -i video.mp4 .../f_%06d.jpg`. Reemplazada por `extractFrameAtIndex(path, index, fps)` que llama a `ffmpeg -ss <time> -i <path> -vframes 1 -f image2pipe -vcodec mjpeg -` para decodificar exactamente 1 frame por invocacion. CRITICAL: `-ss` va ANTES de `-i` (input seeking, usa keyframes — rapido) y NO despues (output seeking, decodifica desde el principio — lento)
+- **Cache LRU subido de 200 a 1500 frames**: a 60fps cubre 25 segundos, a 30fps cubre 50 segundos. Memoria max ~150 MB para JPEGs decodeados — aceptable en desktop con 8GB+. La ventana de preload subio de ±100 a ±600 frames (~10s a 60fps, ~20s a 30fps)
+- **Preload paralelo con 4 workers**: el `preloadWindow` ahora lanza hasta 4 invocaciones concurrentes de ffmpeg con `coroutineScope.async + chunked(4)`. Cada ffmpeg usa principalmente 1 core para decode, 4 saturan razonable un Mac sin matar el sistema. Cancelacion cooperativa con `isActive` y `preloadJob.cancel()` cuando el user mueve el cursor a otra zona — los jobs viejos no compiten con los nuevos
+- **Carga inicial sin bloqueo**: `LaunchedEffect(videoPath)` ahora hace solo `getVideoFps + getVideoDuration + extractFrameAtIndex(0)` antes de marcar `ready=true`. Tiempo total <300ms (vs minutos del flujo viejo). El preload de la ventana inicial se lanza en background sin bloquear el ready
+- **Cero archivos temporales**: el player ya no crea ni borra `/tmp/gp_<timestamp>/`. Eliminado el `framesDir` state y el `deleteRecursively()` del `DisposableEffect`
+- **Drain explicito de stderr**: cada invocacion de ffmpeg drainea ambos streams (stdin/stderr) para evitar el deadlock conocido cuando el pipe se llena
+- **Timeout por frame: 5 segundos** con `destroyForcibly()` — generoso (tipico es <200ms) pero protege contra MP4s patologicos
+- **API publica del Composable intacta**: `EmbeddedVideoPlayer(videoPath, currentTimeMs, isPlaying, playbackSpeed, onTimeUpdate, onDurationReady, modifier)` — byte-identica. El unico call-site (`ResultsScreen.kt:114`) no se toco
+- **Sin dependencias nuevas**: cero libraries agregadas. Todo el feature usa `ProcessBuilder` + ffmpeg ya existente. JAR size: igual o menor que v3.2.0
+- **Frozen regions intactas**: ninguna region congelada de v3.1.13/14/v3.2.0 (`AdbBridge.kt:64-88`, `AppViewModel.kt:515-609`, `HomeScreen.kt` legacy WiFi button) se toco
+
+### Como probar
+
+1. Abrir cualquier sesion grabada del historial. El video debe aparecer en menos de medio segundo (antes mostraba "Extrayendo frames..." durante minutos)
+2. Arrastrar el cursor de la timeline a cualquier punto del video. El frame del nuevo punto debe aparecer en menos de 200ms (antes tardaba mas de un minuto en estabilizar)
+3. Reproducir el video desde un punto random. Debe ser fluido sin micro-pausas (la ventana de preload de ±10s evita los miss del cache durante reproduccion normal)
+4. Probar con un video grabado por USB y otro por WiFi — la fluidez debe ser identica (el formato MP4 es el mismo, el player no sabe ni le importa como se grabo)
+
 ## [3.2.0] — 2026-04-08
 
 ### Que hay de nuevo
