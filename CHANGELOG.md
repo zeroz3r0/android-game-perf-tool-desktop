@@ -14,6 +14,28 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.1.14] — 2026-04-08
+
+### Que hay de nuevo
+
+- **Boton de tiempo seleccionado mucho mas visible**: en la pantalla principal, cuando elegis un tiempo predefinido (Libre / 30s / 1m / 2m / 5m / 10m / 1h), el boton activo ahora se resalta con fondo cyan solido y texto oscuro en negrita en vez de quedar casi igual que los no seleccionados. Antes el fondo del activo era cyan con 20% de transparencia — practicamente indistinguible del estado inactivo. Ahora se ve de un vistazo cual esta elegido, aun a varios metros de la pantalla
+
+### Arreglos
+
+- (ninguno — esta es una release tecnica centrada en testing)
+
+### Detalles tecnicos
+
+- **`AdbBridge` refactorizado a interface (`AdbBridgeApi`)**: nueva interfaz en `src/main/kotlin/com/gameperf/desktop/core/AdbBridgeApi.kt` que expone unicamente las operaciones que `AppViewModel` consume del bridge (listDevices, getDeviceInfo, startScreenRecord, pullRecordings, concatSegments, isValidVideoFile, captureFrames/Cpu/Memory/Temperature, getBatteryLevel, getMissedFrames, disable/restoreCharging, resetSessionState, switchToWifi, detectGame, cleanRecordings, stopScreenRecord). Los metodos de uso interno de `AdbBridge` (`exec`, `shell`, `findLayer`, `parseSurfaceFlingerListOutput`, `getBatteryTemp`, etc.) NO son parte de la interfaz — siguen siendo metodos del `object AdbBridge` y los usan directamente los tests que ya existian
+- **`RealAdbBridge` como implementacion de produccion**: class (no object) que delega cada metodo 1:1 al `object AdbBridge` existente. Cero cambios en el comportamiento de produccion: el estado global (adbPath lazy, cachedLayer, prevCpuBusy/Total) sigue viviendo en el singleton. La clase es stateless y se puede instanciar multiples veces sin problemas — todas apuntan al mismo AdbBridge subyacente
+- **`AppViewModel` acepta `AdbBridgeApi` por constructor con default**: `class AppViewModel(private val adb: AdbBridgeApi = RealAdbBridge())`. Los call-sites de produccion (`Main.kt`) siguen usando `AppViewModel()` sin cambios — el default aplica. Todos los `AdbBridge.foo(...)` dentro de `AppViewModel` se reemplazaron por `adb.foo(...)`, EXCEPTO las referencias a tipos anidados (`AdbBridge.Device`, `AdbBridge.DeviceInfo`, `AdbBridge.ScreenRecordProfile`, `AdbBridge.MemSnapshot`, `AdbBridge.ThermalSnapshot`) que siguen viniendo del object
+- **Compat shim**: el `object AdbBridge` NO se toco — sigue existiendo con su API publica intacta. Los call-sites que lo usan directamente (`FileCleanup.concatSegments`, `ReportGenerator.DeviceInfo`, `ConcatResilienceTest`, `SurfaceFlingerListParserTest`, `ReportRenderingTest`) no necesitaron cambios. Esto era requisito duro para no romper ninguna otra cosa
+- **`FakeAdbBridge` para tests**: nueva clase en `src/test/kotlin/com/gameperf/desktop/testing/FakeAdbBridge.kt` que implementa `AdbBridgeApi` con defaults razonables y un script de procesos para `startScreenRecord`. Usa `ScriptedStart.Spawn(command)` / `ScriptedStart.Null` para encolar comportamientos por llamada — los procesos "vivos" y "muertos" se spawnean realmente via `ProcessBuilder("sh", "-c", ...)` para que el test ejercite el mismo path que produccion (lectura de stderr, exit code, etc.) en vez de mockear `Process` a mano. Registra cada llamada en `startCalls` para asertar sobre orden y progresion de profiles
+- **`AppViewModelTest.kt` — 3 tests nuevos para `startSegmentWithRetry`**: cierra el gap que el sub-agente de v3.1.13 documento como "no cubrible sin refactor". Ahora cubre: (a) happy path — primer intento vivo → retorna proceso + una sola call a startScreenRecord, (b) retry path — primer intento con `encoder rejected` → retry con STANDARD vivo → retorna el segundo proceso + exactamente dos calls con progresion COMPACT→STANDARD, (c) double failure — primer intento muere Y retry STANDARD tambien muere → retorna null + ambas calls registradas + `recordChainFailures` sigue en 0 (lo incrementa el chain loop, no este helper). `startSegmentWithRetry` cambio de visibilidad de `private` a `internal` para que el test del mismo modulo lo pueda llamar; sigue sin exponerse a callers de produccion
+- **Scope NO cubierto (explicito)**: el test end-to-end del chain loop completo (`recordJob` — segmento mid-chain muere despues de retry, se setea `_captureWarning`, el loop termina limpio) requiere refactorizar `recordJob` en un helper testeable con clock inyectable O mockear el `delay(175_000)`. Ambas cosas escalaban scope mas alla de "hacer testeable startSegmentWithRetry". Se documento explicitamente en el test como TODO con las dos opciones posibles, para que un cambio futuro lo pueda tomar
+- **`HomeScreen.kt`**: el bloque de los 7 botones de tiempo predefinido se modifico para que el boton seleccionado tenga fondo `Cyan` solido (antes `Cyan.copy(alpha = 0.2f)`), borde de 2dp (antes 1dp), texto `DarkBg` (antes `Cyan`) y `FontWeight.Bold` (antes `Normal`). Los botones no seleccionados quedan exactamente igual. Son ~15 lineas tocadas en total, no se agrego ningun color nuevo al tema ni se tocaron animaciones/layout
+- **NO se tocaron**: `AdbBridge.kt` (ni una linea), `Main.kt`, `EmbeddedVideoPlayer.kt`, `ReportGenerator.kt`, `FileCleanup.kt`, ninguno de los tests pre-existentes, el patch revertido `v3.1.11-round2-incomplete.patch`
+
 ## [3.1.13] — 2026-04-08
 
 ### Que hay de nuevo

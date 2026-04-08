@@ -1,34 +1,36 @@
 package com.gameperf.desktop.viewmodel
 
+import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.testing.FakeAdbBridge
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
 
 /**
- * Unit tests for [AppViewModel] internal helpers introduced in v3.1.13.
+ * Unit tests for [AppViewModel] internal helpers introduced in v3.1.13 and
+ * extended in v3.1.14.
  *
- * Scope:
- *   These tests target the screenrecord chain instrumentation logic — specifically
- *   the [AppViewModel.validateScreenRecordProcess] helper that decides whether a
- *   freshly-started Process is alive or died during warm-up. We CAN'T (yet) test
- *   [AppViewModel.startSegmentWithRetry] in isolation because it calls the
- *   `AdbBridge` singleton directly, which would require either:
- *     (a) refactoring AdbBridge into an interface for DI, or
- *     (b) introducing a heavy mocking framework like mockk.
- *   Both options are out of scope for v3.1.13 — see the bottom note for the
- *   tradeoff.
+ * v3.1.13 — validateScreenRecordProcess (pure detection logic, real spawned Process):
+ *   - Fast-fail process → classified as DeadDuringWarmup with captured stderr + exit code.
+ *   - Long-running process → classified as Alive with same Process reference.
+ *   - Null input → classified as NullProcess.
  *
- * What we DO cover here is the pure-ish detection logic, using a real `Process`
- * spawned via `ProcessBuilder("sh", "-c", ...)`:
- *   - A process that immediately exits with code 1 and writes to stderr →
- *     should be classified as `DeadDuringWarmup` with the stderr captured
- *     and the exit code preserved. This is the moral equivalent of the
- *     "encoder rejected" scenario the chain helper has to recover from.
- *   - A process that stays alive past the warm-up window → should be classified
- *     as `Alive` with the same Process reference.
- *   - A null process → should be classified as `NullProcess`.
+ * v3.1.14 — startSegmentWithRetry (end-to-end using [FakeAdbBridge]):
+ *   Before v3.1.14 these couldn't be tested because `startSegmentWithRetry`
+ *   called `AdbBridge.startScreenRecord` on the singleton object. v3.1.14
+ *   refactors `AdbBridge` into an interface (`AdbBridgeApi`) and plumbs it
+ *   through `AppViewModel`'s constructor, so a `FakeAdbBridge` can script
+ *   the exact process-lifecycle scenarios the retry logic has to recover
+ *   from. Scenarios covered:
+ *     - Happy path: first attempt alive → returns that Process, single call.
+ *     - Retry path: first attempt dies (encoder rejected), STANDARD retry
+ *       alive → returns the retry Process, exactly two calls with the
+ *       expected profile progression.
+ *     - Double failure: first attempt dies AND STANDARD retry also dies →
+ *       returns null; caller is responsible for surfacing a warning.
  *
  * The shorter warm-up (200ms instead of the production 1500ms) keeps the test
  * fast without changing the semantics of the assertion.
@@ -130,25 +132,148 @@ class AppViewModelTest {
         }
     }
 
-    // ===== Coverage gap acknowledged =====
+    // ===== v3.1.14 — startSegmentWithRetry end-to-end via FakeAdbBridge =====
+
+    /**
+     * Happy path: first scripted process stays alive past the warm-up → the
+     * helper returns that exact Process without retrying. Verifies that when
+     * everything works we don't waste a second attempt.
+     */
+    @Test
+    fun `startSegmentWithRetry returns process when first attempt succeeds`() {
+        runBlocking {
+            val fake = FakeAdbBridge().queueAlive(seconds = 2)
+            val vm = AppViewModel(adb = fake)
+            try {
+                val result = vm.startSegmentWithRetry(
+                    deviceId = "fake-device",
+                    sessionId = "session-happy",
+                    segment = 0,
+                    profile = AdbBridge.ScreenRecordProfile.COMPACT,
+                )
+                assertNotNull(result, "expected a live Process but got null")
+                assertTrue(result.isAlive, "returned process should still be alive")
+
+                // Exactly one startScreenRecord call — no retry on success.
+                assertEquals(1, fake.startCalls.size, "should not retry when first attempt succeeds")
+                assertEquals(
+                    AdbBridge.ScreenRecordProfile.COMPACT,
+                    fake.startCalls[0].profile,
+                    "first call should use the requested profile"
+                )
+                // Clean up the spawned sleep so it doesn't linger past the test.
+                result.destroyForcibly()
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * Retry path: first scripted process dies fast (encoder rejected), second
+     * scripted process stays alive → helper returns the second Process. Verifies
+     * that the profile progression is COMPACT → STANDARD and that both calls
+     * actually went through.
+     */
+    @Test
+    fun `startSegmentWithRetry retries with STANDARD when first profile fails with encoder rejected`() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+                .queueFastFail("encoder rejected")  // first attempt: COMPACT, dies
+                .queueAlive(seconds = 2)            // retry: STANDARD, alive
+            val vm = AppViewModel(adb = fake)
+            try {
+                val result = vm.startSegmentWithRetry(
+                    deviceId = "fake-device",
+                    sessionId = "session-retry",
+                    segment = 0,
+                    profile = AdbBridge.ScreenRecordProfile.COMPACT,
+                )
+                assertNotNull(result, "expected retry to return a live Process")
+                assertTrue(result.isAlive, "retry process should still be alive")
+
+                // Two calls: COMPACT first, then STANDARD retry.
+                assertEquals(2, fake.startCalls.size, "should retry exactly once after first fails")
+                assertEquals(
+                    AdbBridge.ScreenRecordProfile.COMPACT,
+                    fake.startCalls[0].profile,
+                    "first call should be COMPACT (the requested profile)"
+                )
+                assertEquals(
+                    AdbBridge.ScreenRecordProfile.STANDARD,
+                    fake.startCalls[1].profile,
+                    "retry should escalate to STANDARD profile"
+                )
+                result.destroyForcibly()
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * Double-failure path: first attempt dies AND the STANDARD retry also dies.
+     * This was the test that the v3.1.13 implementation report acknowledged as
+     * uncoverable without the `AdbBridgeApi` refactor. Now it IS coverable.
+     * Verifies that the helper returns null, that both calls were made with
+     * the expected profile progression, and that `recordChainFailures` is NOT
+     * incremented by this helper (that's the caller's responsibility inside
+     * the chain loop).
+     */
+    @Test
+    fun `startSegmentWithRetry returns null when first attempt fails and STANDARD retry also fails`() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+                .queueFastFail("encoder rejected")             // first attempt: COMPACT dies
+                .queueFastFail("STANDARD also unsupported")    // retry: STANDARD also dies
+            val vm = AppViewModel(adb = fake)
+            try {
+                val result = vm.startSegmentWithRetry(
+                    deviceId = "fake-device",
+                    sessionId = "session-double-fail",
+                    segment = 0,
+                    profile = AdbBridge.ScreenRecordProfile.COMPACT,
+                )
+                assertNull(result, "expected null after both attempts failed, got $result")
+
+                // Exactly two calls: the initial COMPACT and the STANDARD retry.
+                assertEquals(2, fake.startCalls.size, "both attempts should have been made")
+                assertEquals(AdbBridge.ScreenRecordProfile.COMPACT, fake.startCalls[0].profile)
+                assertEquals(AdbBridge.ScreenRecordProfile.STANDARD, fake.startCalls[1].profile)
+
+                // recordChainFailures is incremented by the chain loop (inside recordJob),
+                // NOT by startSegmentWithRetry itself. So the counter is still 0 here.
+                // The sanity-check test `recordChainFailures starts at zero` already
+                // guards the initial value; this assertion documents the contract.
+                assertEquals(
+                    0,
+                    vm.recordChainFailures,
+                    "startSegmentWithRetry itself must not touch the chain-failure counter"
+                )
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    // ===== Coverage gap DELIBERATELY not closed in v3.1.14 =====
     //
-    // What's NOT covered here that the v3.1.13 task description asked for:
-    //   "if the first segment fails AND the retry with STANDARD also fails, the
-    //    method returns null and registers the error".
+    // "chain loop stops and sets captureWarning when a mid-chain segment dies
+    //  after retry" — this would require driving the entire `recordJob` loop
+    // inside `startCapture`, which is tangled with `pullRecordings`,
+    // `concatSegments`, `ReportGenerator.generate`, `SessionHistory.addEntry`,
+    // and the 175_000ms `delay` that gates each chain iteration. Covering it
+    // end-to-end means either:
+    //   (a) refactoring `recordJob` into a standalone testable helper that
+    //       takes a time provider + step count — non-trivial scope, affects
+    //       the production happy path,
+    //   (b) injecting a clock/scheduler into the coroutine — big public API
+    //       change,
+    // Both fall outside the v3.1.14 scope ("make startSegmentWithRetry
+    // testable + highlight time button"). Left as a TODO for a later change
+    // if we ever hit a regression in the chain-loop plumbing specifically.
     //
-    // That assertion targets [AppViewModel.startSegmentWithRetry], which depends
-    // on the `AdbBridge` singleton (`object AdbBridge { ... }`). Mocking it would
-    // require either refactoring AdbBridge into an interface (large scope change
-    // for v3.1.13) or pulling in mockk/mockito-inline (new dependency, ~2-3 MB
-    // added to test classpath, decision deserves its own discussion).
-    //
-    // Instead, we cover the highest-value piece — the detection logic in
-    // validateScreenRecordProcess — which is the part that was previously inline
-    // and untested. The retry-fan-out is just a control-flow wrapper around it
-    // and is exercised end-to-end during a real capture session.
-    //
-    // The orchestrator was warned about this in the v3.1.13 implementation report.
-    // If we want full coverage of startSegmentWithRetry, the proposed follow-up
-    // is: extract `AdbBridge` to an interface in a separate change (v3.1.14 or
-    // later) and inject it into AppViewModel via constructor.
+    // The three new tests above cover the CORE logic (the retry decision tree)
+    // so a regression in the retry math would be caught even without driving
+    // the full recordJob.
 }

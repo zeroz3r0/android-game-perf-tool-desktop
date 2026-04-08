@@ -371,17 +371,32 @@ fun HomeScreen(vm: AppViewModel) {
                     ) {
                         durations.forEach { (value, label) ->
                             val selected = duration == value
+                            // v3.1.14: the selected button now uses a SOLID Cyan fill with
+                            // a dark-background text color so the active choice is obvious
+                            // from across the room. Previously both selected and unselected
+                            // states used the same near-transparent `Cyan.copy(alpha=0.2f)`
+                            // background, which left users second-guessing which option
+                            // was actually active. Unselected buttons are unchanged.
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (selected) Cyan.copy(alpha = 0.2f) else Color.Transparent)
-                                    .border(1.dp, if (selected) Cyan else TextDim.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                    .background(if (selected) Cyan else Color.Transparent)
+                                    .border(
+                                        width = if (selected) 2.dp else 1.dp,
+                                        color = if (selected) Cyan else TextDim.copy(alpha = 0.3f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
                                     .clickable { duration = value }
                                     .padding(horizontal = 4.dp, vertical = 8.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(label, color = if (selected) Cyan else TextSecondary, fontSize = 12.sp)
+                                Text(
+                                    label,
+                                    color = if (selected) DarkBg else TextSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                )
                             }
                         }
                     }
