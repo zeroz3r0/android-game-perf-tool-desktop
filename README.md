@@ -139,10 +139,22 @@ No necesitas instalar Gradle - el proyecto incluye Gradle Wrapper (`./gradlew` /
 
 ### Modo WiFi
 
-Permite medir el **consumo real de bateria** sin que el cable USB cargue el dispositivo:
-1. Pulsa "Cambiar a WiFi"
-2. Desconecta el cable USB cuando se indique
-3. La prueba corre via WiFi ADB
+Permite medir el **consumo real de bateria** sin que el cable USB cargue el dispositivo.
+
+**Opcion 1 — Pareo directo sin cable (Android 11+, recomendado desde v3.2.0)**:
+1. Abri la app sin conectar el cable USB
+2. Toca el tab "WiFi (Android 11+)" del panel de dispositivos (o "+ Agregar device WiFi" si ya hay algun device conectado)
+3. En el movil: Opciones de desarrollador → "Depuracion inalambrica" → ON → "Emparejar dispositivo con codigo de emparejamiento"
+4. El dispositivo aparece solo en la lista de la app en menos de 3 segundos. Clickealo y tipea el codigo de 6 digitos que muestra el movil
+5. Listo — a partir de la proxima sesion el dispositivo reconecta solo sin pasos extra (requiere platform-tools 33 o superior para el auto-reconnect). Ver CHANGELOG [3.2.0] para detalles completos y escenarios de fallback manual
+
+**Opcion 2 — Cambio desde USB (legacy, disponible desde v3.0)**:
+1. Conecta el dispositivo por USB primero
+2. Pulsa "Cambiar a WiFi (medir bateria real)"
+3. Desconecta el cable USB cuando se indique
+4. La prueba corre via WiFi ADB
+
+Ambas opciones funcionan en paralelo — el flujo USB original no cambio en ninguna version.
 
 ---
 

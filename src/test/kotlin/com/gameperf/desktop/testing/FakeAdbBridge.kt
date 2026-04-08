@@ -2,6 +2,12 @@ package com.gameperf.desktop.testing
 
 import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AdbBridgeApi
+import com.gameperf.desktop.core.AdbVersion
+import com.gameperf.desktop.core.ConnectFailureReason
+import com.gameperf.desktop.core.ConnectResult
+import com.gameperf.desktop.core.MdnsService
+import com.gameperf.desktop.core.PairFailureReason
+import com.gameperf.desktop.core.PairResult
 import java.io.File
 
 /**
@@ -30,7 +36,7 @@ import java.io.File
  * and the tests exercise the same `validateScreenRecordProcess` code path
  * that production uses.
  */
-class FakeAdbBridge(
+open class FakeAdbBridge(
     private val scriptedStarts: MutableList<ScriptedStart> = mutableListOf(),
 ) : AdbBridgeApi {
 
@@ -84,10 +90,16 @@ class FakeAdbBridge(
     }
 
     // ===== AdbBridgeApi =====
+    //
+    // NOTE: `open` is required on each override that tests may want to
+    // customize via `object : FakeAdbBridge() { override ... }`. In Kotlin,
+    // `override fun` is implicitly final unless you add `open`. We only
+    // unfreeze the seams that are actually used (listDevices for WP-7/WP-8,
+    // switchToWifi for WP-10).
 
     override fun isAvailable(): Boolean = true
 
-    override fun listDevices(): List<AdbBridge.Device> = emptyList()
+    open override fun listDevices(): List<AdbBridge.Device> = emptyList()
 
     override fun getDeviceInfo(deviceId: String): AdbBridge.DeviceInfo =
         AdbBridge.DeviceInfo(
@@ -102,7 +114,7 @@ class FakeAdbBridge(
         )
 
     override fun detectGame(deviceId: String): String? = null
-    override fun switchToWifi(usbDeviceId: String, port: Int): String? = null
+    open override fun switchToWifi(usbDeviceId: String, port: Int): String? = null
 
     override fun getBatteryLevel(deviceId: String): Int = 100
     override fun getMissedFrames(deviceId: String): Int = 0
@@ -159,4 +171,97 @@ class FakeAdbBridge(
 
     override fun concatSegments(segments: List<File>, output: File): File? = null
     override fun isValidVideoFile(file: File): Boolean = false
+
+    // ===== v3.2.0 — Wireless ADB scriptable surface =====
+    //
+    // Design (per sdd design §D-6): queues FIFO for pair / connect / mdns so
+    // tests can drive multi-step scenarios (e.g. "first mdns snapshot is
+    // empty, second has pairing, third has pairing + connect"). Each pop
+    // consumes one entry; when the queue is empty the override falls back to
+    // a defensive default (empty list or UNKNOWN failure) so tests see a
+    // predictable "nothing was scripted" signal instead of an NPE.
+    //
+    // Recorded calls mirror the shape of [startCalls] for the existing
+    // screenrecord fake — tests assert counts and argument progression.
+    //
+    // NONE of the pre-existing fields or methods above were touched. This
+    // section is purely additive so v3.1.14 tests stay byte-stable.
+
+    /** Results popped in order when the VM calls `pair(ip, port, code)`. */
+    val scriptedPair: MutableList<PairResult> = mutableListOf()
+
+    /** Results popped in order when the VM calls `connectWireless(ip, port)`. */
+    val scriptedConnect: MutableList<ConnectResult> = mutableListOf()
+
+    /**
+     * Snapshots popped in order when the VM calls `mdnsServices()`. The LAST
+     * entry sticks: once the queue is down to one snapshot, subsequent calls
+     * keep returning it (simulates a steady-state mDNS cache). Empty queue
+     * → empty list.
+     */
+    val scriptedMdnsSnapshots: MutableList<List<MdnsService>> = mutableListOf()
+
+    /**
+     * Override the mDNS availability flag. When false, VM logic should skip
+     * discovery polls entirely and jump to the manual input form (per
+     * scenario WP-3). Tests flip this BEFORE calling `openWifiPanel()`.
+     *
+     * NOTE: this doesn't gate [mdnsServices] itself — the VM checks this
+     * sensor as a separate signal. The fake exposes it as a public var so
+     * tests can set it and the VM can read it by reflection / cast.
+     */
+    var mdnsAvailableOverride: Boolean = true
+
+    /** Default adb version for the platform-tools capability check in VM init. */
+    var scriptedAdbVersion: AdbVersion? = AdbVersion(34, 0, 0)
+
+    /** Recorded: one entry per `pair` call, in order. */
+    val pairCalls: MutableList<Triple<String, Int, String>> = mutableListOf()
+
+    /** Recorded: one entry per `connectWireless` call, in order. */
+    val connectCalls: MutableList<Pair<String, Int>> = mutableListOf()
+
+    /**
+     * Recorded: count of `mdnsServices()` invocations. Critical for WP-8
+     * regression (must stay at 0 when no WiFi panel is ever opened).
+     */
+    @Volatile
+    var mdnsServiceCalls: Int = 0
+
+    /** Recorded: one entry per `disconnect` call, in order. */
+    val disconnectCalls: MutableList<String> = mutableListOf()
+
+    override fun pair(ip: String, port: Int, code: String): PairResult {
+        pairCalls += Triple(ip, port, code)
+        return if (scriptedPair.isNotEmpty()) {
+            scriptedPair.removeAt(0)
+        } else {
+            PairResult.Failure(PairFailureReason.UNKNOWN, "")
+        }
+    }
+
+    override fun connectWireless(ip: String, port: Int): ConnectResult {
+        connectCalls += ip to port
+        return if (scriptedConnect.isNotEmpty()) {
+            scriptedConnect.removeAt(0)
+        } else {
+            ConnectResult.Failure(ConnectFailureReason.UNKNOWN, "")
+        }
+    }
+
+    override fun mdnsServices(): List<MdnsService> {
+        mdnsServiceCalls++
+        return when {
+            scriptedMdnsSnapshots.isEmpty() -> emptyList()
+            scriptedMdnsSnapshots.size == 1 -> scriptedMdnsSnapshots.first()
+            else -> scriptedMdnsSnapshots.removeAt(0)
+        }
+    }
+
+    override fun disconnect(id: String): Boolean {
+        disconnectCalls += id
+        return true
+    }
+
+    override fun getAdbVersion(): AdbVersion? = scriptedAdbVersion
 }

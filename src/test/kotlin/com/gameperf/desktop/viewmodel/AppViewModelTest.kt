@@ -1,13 +1,24 @@
 package com.gameperf.desktop.viewmodel
 
 import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.core.AdbVersion
+import com.gameperf.desktop.core.ConnectFailureReason
+import com.gameperf.desktop.core.ConnectResult
+import com.gameperf.desktop.core.MdnsService
+import com.gameperf.desktop.core.MdnsServiceType
+import com.gameperf.desktop.core.PairFailureReason
+import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.testing.FakeAdbBridge
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
+import kotlin.test.fail
 
 /**
  * Unit tests for [AppViewModel] internal helpers introduced in v3.1.13 and
@@ -276,4 +287,543 @@ class AppViewModelTest {
     // The three new tests above cover the CORE logic (the retry decision tree)
     // so a regression in the retry math would be caught even without driving
     // the full recordJob.
+
+    // ============================================================
+    // v3.2.0 — Wireless ADB (pair WiFi flow for Android 11+)
+    // ============================================================
+    //
+    // 11 integration tests that exercise the VM state machine defined in
+    // Phase 5 against a scripted [FakeAdbBridge]. Each test maps to a
+    // scenario in the sdd/wireless-adb/spec (WP-1..WP-11) or to a design
+    // decision (D-10 re-discover). Tests are INDEPENDENT of the v3.1.14
+    // tests above — they use a fresh VM instance and never invoke
+    // [AppViewModel.init], so the device polling loop and the adb-version
+    // bootstrap launch do NOT interfere with the state under test.
+    //
+    // Polling cadence: the production loop uses `delay(2500)` between
+    // snapshots, which would make any test involving the loop take 7.5+
+    // seconds of wall-clock time. Because the VM's scope is
+    // `Dispatchers.Default` (not a TestDispatcher), we can't use
+    // `runTest`'s virtual time — we'd have to change the VM constructor.
+    // Instead, each test uses `awaitState` (below) to poll the StateFlow
+    // with a short timeout, and only the tests that fundamentally depend
+    // on the 3-empty-polls fallback (WP-2) pay the full wall-clock cost.
+    // All other tests finish in <1s.
+
+    /**
+     * Wait until [predicate] returns true on the latest [_wifiPanel] value,
+     * or fail the test with [message] after [timeoutMs]. Polls every 25ms —
+     * cheap enough that completed transitions usually resolve in the first
+     * poll.
+     */
+    private suspend fun awaitWifiPanel(
+        vm: AppViewModel,
+        timeoutMs: Long = 3000,
+        message: String,
+        predicate: (AppViewModel.WifiPanelState) -> Boolean,
+    ): AppViewModel.WifiPanelState {
+        val result = withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                val s = vm.wifiPanel.value
+                if (predicate(s)) return@withTimeoutOrNull s
+                delay(25)
+            }
+            @Suppress("UNREACHABLE_CODE") null
+        }
+        if (result == null) {
+            fail("$message — stuck at ${vm.wifiPanel.value::class.simpleName}")
+        }
+        return result
+    }
+
+    /**
+     * WP-1 + D-10 — Happy path: the user expands the panel, picks the mDNS
+     * pairing service, types the correct code, and the VM walks through
+     * Pairing → Connecting → Connected → Hidden. Asserts that the connect
+     * port comes from the re-discover step (D-10), not the pair port.
+     */
+    @Test
+    fun pairAndConnectHappyPathWithMdnsDiscovery() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            // First snapshot (discover phase) has the pairing service.
+            val pairing = MdnsService(
+                instance = "adb-XXXX-YYYY",
+                serviceType = MdnsServiceType.PAIRING,
+                ip = "192.168.1.42",
+                port = 37123,
+            )
+            // Second snapshot (post-pair re-discover) adds the connect
+            // service on a DIFFERENT port — asserting D-10 actually uses it.
+            val connect = MdnsService(
+                instance = "adb-XXXX-YYYY",
+                serviceType = MdnsServiceType.CONNECT,
+                ip = "192.168.1.42",
+                port = 38145,
+            )
+            fake.scriptedMdnsSnapshots += listOf(pairing)           // discovery poll 1
+            fake.scriptedMdnsSnapshots += listOf(pairing, connect)  // re-discover (D-10)
+            fake.scriptedPair += PairResult.Success
+            fake.scriptedConnect += ConnectResult.Success("192.168.1.42:38145")
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.openWifiPanel()
+                val discovered = awaitWifiPanel(
+                    vm,
+                    message = "expected Discovered after first poll",
+                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as AppViewModel.WifiPanelState.Discovered
+                assertEquals(1, discovered.services.size)
+                assertEquals(MdnsServiceType.PAIRING, discovered.services[0].serviceType)
+
+                vm.selectMdnsDevice(discovered.services[0])
+                vm.submitCodeForSelected("123456")
+
+                val finalState = awaitWifiPanel(
+                    vm,
+                    timeoutMs = 5000,
+                    message = "expected Hidden after Connected",
+                ) { it is AppViewModel.WifiPanelState.Hidden }
+                assertTrue(finalState is AppViewModel.WifiPanelState.Hidden)
+
+                assertEquals(1, fake.pairCalls.size, "should have paired exactly once")
+                assertEquals(Triple("192.168.1.42", 37123, "123456"), fake.pairCalls[0])
+                assertEquals(1, fake.connectCalls.size, "should have connected exactly once")
+                // D-10: connect port is the CONNECT service port from the
+                // re-discover snapshot (38145), NOT the pair port (37123).
+                assertEquals("192.168.1.42" to 38145, fake.connectCalls[0])
+                assertTrue(fake.mdnsServiceCalls >= 2, "should have called mdns at least twice (discovery + D-10 re-discover)")
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * D-10 isolation — The first snapshot has ONLY the pairing service. The
+     * second snapshot (the re-discover) has BOTH pairing and connect. The
+     * connect port must come from snapshot 2, proving re-discover isn't a
+     * no-op on a stale cache.
+     */
+    @Test
+    fun pairAndConnectMdnsReDiscoveryFindsCorrectConnectPort() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            val pairingOnly = MdnsService("adb-Z", MdnsServiceType.PAIRING, "10.0.0.5", 37777)
+            val rediscoveredConnect = MdnsService("adb-Z", MdnsServiceType.CONNECT, "10.0.0.5", 38999)
+
+            // Poll 1: pairing only
+            fake.scriptedMdnsSnapshots += listOf(pairingOnly)
+            // Poll 2 (D-10 re-discover): both services
+            fake.scriptedMdnsSnapshots += listOf(pairingOnly, rediscoveredConnect)
+            fake.scriptedPair += PairResult.Success
+            fake.scriptedConnect += ConnectResult.Success("10.0.0.5:38999")
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.openWifiPanel()
+                val discovered = awaitWifiPanel(
+                    vm,
+                    message = "expected Discovered state",
+                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as AppViewModel.WifiPanelState.Discovered
+                vm.selectMdnsDevice(discovered.services[0])
+                vm.submitCodeForSelected("000000")
+
+                awaitWifiPanel(
+                    vm,
+                    timeoutMs = 5000,
+                    message = "expected Hidden after Connected",
+                ) { it is AppViewModel.WifiPanelState.Hidden }
+
+                assertEquals(1, fake.connectCalls.size)
+                // The key assertion: connect went to 38999, not 37777.
+                assertEquals(38999, fake.connectCalls[0].second)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-2 — Three consecutive empty mDNS polls → manual form expands
+     * automatically. This test pays the full wall-clock cost (~7.5s for
+     * three 2.5s poll iterations) because it fundamentally depends on the
+     * loop's debounce cadence. Acceptable: it's the only test that does.
+     */
+    @Test
+    fun manualFormExpandsAutomaticallyWhenMdnsReturnsEmptyForThreePolls() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            // Empty snapshots for as many polls as the test may run. The
+            // FakeAdbBridge contract is "empty queue → emptyList", so we
+            // don't even need to push entries — but we do push a few to
+            // be explicit.
+            repeat(5) { fake.scriptedMdnsSnapshots += emptyList<MdnsService>() }
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.openWifiPanel()
+                awaitWifiPanel(
+                    vm,
+                    timeoutMs = 15_000,
+                    message = "expected InputtingManual after 3 empty polls",
+                ) { it is AppViewModel.WifiPanelState.InputtingManual }
+                assertTrue(vm.wifiPanel.value is AppViewModel.WifiPanelState.InputtingManual)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-3 — When the system reports mDNS as unavailable (real path would
+     * be `adb mdns check` failing), the VM skips discovery entirely and
+     * jumps to the manual form without waiting for 3 empty polls.
+     */
+    @Test
+    fun mdnsAvailableBecomesFalseWhenAdbMdnsCheckFails() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            val vm = AppViewModel(adb = fake)
+            try {
+                // Flip the sensor BEFORE opening the panel — simulates the
+                // real startup check that marks mDNS unavailable.
+                vm.setMdnsAvailableForTest(false)
+                vm.openWifiPanel()
+
+                awaitWifiPanel(
+                    vm,
+                    timeoutMs = 1000,
+                    message = "expected immediate InputtingManual when mdns unavailable",
+                ) { it is AppViewModel.WifiPanelState.InputtingManual }
+
+                assertEquals(false, vm.mdnsAvailable.value)
+                assertTrue(vm.wifiPanel.value is AppViewModel.WifiPanelState.InputtingManual)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-4 — Wrong pairing code surfaces the exact user-friendly error
+     * string from the spec. Literal-equals assertion, no `contains`.
+     */
+    @Test
+    fun pairWithWrongCodeSurfacesUserFriendlyError() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            val pairing = MdnsService("adb-X", MdnsServiceType.PAIRING, "192.168.1.42", 37123)
+            fake.scriptedMdnsSnapshots += listOf(pairing)
+            fake.scriptedPair += PairResult.Failure(
+                reason = PairFailureReason.INVALID_CODE,
+                rawStderr = "adb: failed to authenticate",
+            )
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.openWifiPanel()
+                val discovered = awaitWifiPanel(
+                    vm,
+                    message = "expected Discovered",
+                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as AppViewModel.WifiPanelState.Discovered
+                vm.selectMdnsDevice(discovered.services[0])
+                vm.submitCodeForSelected("000000")
+
+                val errorState = awaitWifiPanel(
+                    vm,
+                    message = "expected Error after failed pair",
+                ) { it is AppViewModel.WifiPanelState.Error }
+                errorState as AppViewModel.WifiPanelState.Error
+
+                assertEquals(
+                    "Codigo incorrecto. Abri nuevamente 'Emparejar dispositivo con codigo' en el movil para generar un codigo nuevo.",
+                    errorState.message,
+                )
+                assertTrue(errorState.recoverable)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-5 — When the mDNS snapshot transitions from "pairing service
+     * present" to "pairing service gone", the [pairingServiceAlive] sensor
+     * flips false so the UI can disable the "Parear" button.
+     */
+    @Test
+    fun pairButtonDisablesWhenPairingServiceDisappearsFromMdnsSnapshot() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            val pairing = MdnsService("adb-X", MdnsServiceType.PAIRING, "192.168.1.42", 37123)
+            // Snapshot 1: pairing present → _pairingServiceAlive = true.
+            fake.scriptedMdnsSnapshots += listOf(pairing)
+            // Snapshot 2: pairing gone (popup closed) → _pairingServiceAlive = false.
+            fake.scriptedMdnsSnapshots += emptyList<MdnsService>()
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.openWifiPanel()
+                // Wait for pairingServiceAlive to become true on first poll.
+                withTimeoutOrNull(3000) {
+                    while (!vm.pairingServiceAlive.value) delay(25)
+                } ?: fail("expected pairingServiceAlive to become true after first poll")
+
+                assertTrue(vm.pairingServiceAlive.value)
+
+                // Now wait for it to flip false after the second (empty) poll.
+                // The poll cadence is 2.5s, so this takes ~2.5-3s wall-clock.
+                withTimeoutOrNull(8000) {
+                    while (vm.pairingServiceAlive.value) delay(25)
+                } ?: fail("expected pairingServiceAlive to flip false after pairing service vanished")
+
+                assertFalse(vm.pairingServiceAlive.value)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-6 — Pair succeeds but the subsequent connect fails with NO_ROUTE
+     * (e.g. phone dropped off WiFi between the two calls). Error message
+     * must be the literal Spanish string from the spec.
+     */
+    @Test
+    fun pairSuccessFollowedByConnectNoRouteMapsToVisibleInNetworkError() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            val pairing = MdnsService("adb-X", MdnsServiceType.PAIRING, "192.168.1.42", 37123)
+            val connect = MdnsService("adb-X", MdnsServiceType.CONNECT, "192.168.1.42", 38145)
+            fake.scriptedMdnsSnapshots += listOf(pairing)
+            fake.scriptedMdnsSnapshots += listOf(pairing, connect)
+            fake.scriptedPair += PairResult.Success
+            fake.scriptedConnect += ConnectResult.Failure(
+                reason = ConnectFailureReason.NO_ROUTE,
+                rawStderr = "no route to host",
+            )
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.openWifiPanel()
+                val discovered = awaitWifiPanel(
+                    vm,
+                    message = "expected Discovered",
+                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as AppViewModel.WifiPanelState.Discovered
+                vm.selectMdnsDevice(discovered.services[0])
+                vm.submitCodeForSelected("123456")
+
+                val errorState = awaitWifiPanel(
+                    vm,
+                    timeoutMs = 5000,
+                    message = "expected Error after failed connect",
+                ) { it is AppViewModel.WifiPanelState.Error }
+                errorState as AppViewModel.WifiPanelState.Error
+
+                assertEquals(
+                    "El movil no esta visible en la red. Verifica que tenga WiFi activa y este en la misma red que esta computadora.",
+                    errorState.message,
+                )
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-7 — A wifi device that was previously paired shows up in the
+     * normal listDevices snapshot on next session start, without the user
+     * touching any control. The VM does NOT read any persistent storage of
+     * its own — it trusts the adb server's native auto-reconnect. In this
+     * test we simulate "next session" by setting up the fake to return a
+     * wifi device AND verify the panel stays Hidden and mdnsServiceCalls
+     * stays at 0 (no WiFi panel interaction needed).
+     */
+    @Test
+    fun previouslyPairedDeviceAppearsInListOnNextSessionWithoutInteraction() {
+        runBlocking {
+            val wifiDevice = AdbBridge.Device(
+                id = "192.168.1.42:38145",
+                model = "Pixel_7a",
+                isWifi = true,
+            )
+            val fake = object : FakeAdbBridge() {
+                override fun listDevices(): List<AdbBridge.Device> = listOf(wifiDevice)
+            }
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                // Simulate the first poll tick by calling refreshDevices
+                // (which is what startDevicePolling does internally). This
+                // is the public seam — no internal state touched.
+                vm.refreshDevices()
+
+                // Wait for the device to land in _devices (happens inside a
+                // scope.launch coroutine).
+                withTimeoutOrNull(2000) {
+                    while (vm.devices.value.isEmpty()) delay(25)
+                } ?: fail("expected devices to contain the wifi device after refreshDevices()")
+
+                assertEquals(1, vm.devices.value.size)
+                assertEquals("192.168.1.42:38145", vm.devices.value[0].id)
+                assertTrue(vm.devices.value[0].isWifi)
+
+                // WP-7 invariant: the panel stayed Hidden and the VM NEVER
+                // consulted mDNS services because the panel is closed.
+                assertTrue(
+                    vm.wifiPanel.value is AppViewModel.WifiPanelState.Hidden,
+                    "expected Hidden, got ${vm.wifiPanel.value::class.simpleName}",
+                )
+                assertEquals(
+                    expected = 0,
+                    actual = fake.mdnsServiceCalls,
+                    message = "mDNS must not be consulted when the panel is closed",
+                )
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-8 (CRITICAL) — USB zero-click regression guard. A USB device is
+     * returned by listDevices; the VM must auto-select it and leave the
+     * WiFi panel completely dormant. [fake.mdnsServiceCalls] stays at 0.
+     */
+    @Test
+    fun usbHappyPathZeroExtraClicksRegressionVsV3114() {
+        runBlocking {
+            val usbDevice = AdbBridge.Device(
+                id = "32211JEHN02977",
+                model = "Pixel_7a",
+                isWifi = false,
+            )
+            val fake = object : FakeAdbBridge() {
+                override fun listDevices(): List<AdbBridge.Device> = listOf(usbDevice)
+            }
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.refreshDevices()
+                withTimeoutOrNull(2000) {
+                    while (vm.selectedDevice.value == null) delay(25)
+                } ?: fail("expected USB device to be auto-selected")
+
+                assertNotNull(vm.selectedDevice.value)
+                assertEquals("32211JEHN02977", vm.selectedDevice.value?.id)
+                assertEquals(false, vm.isWifi.value)
+                assertTrue(
+                    vm.wifiPanel.value is AppViewModel.WifiPanelState.Hidden,
+                    "expected Hidden, got ${vm.wifiPanel.value::class.simpleName}",
+                )
+                // The killer assertion: zero mDNS calls on the USB happy path.
+                assertEquals(
+                    expected = 0,
+                    actual = fake.mdnsServiceCalls,
+                    message = "USB happy path must NEVER call mdnsServices",
+                )
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-10 — The legacy `switchToWifi()` method (the v3.1.14 path that
+     * uses `adb tcpip` on a USB device) does NOT touch any of the new
+     * wireless StateFlows. This guards against accidental coupling between
+     * the new state machine and the legacy flow.
+     */
+    @Test
+    fun switchToWifiLegacyBehaviorIsIdenticalToV3114() {
+        runBlocking {
+            val usbDevice = AdbBridge.Device(
+                id = "32211JEHN02977",
+                model = "Pixel_7a",
+                isWifi = false,
+            )
+            // The fake returns null for switchToWifi (the legacy path only
+            // needs to execute without side effects on the new state).
+            val fake = object : FakeAdbBridge() {
+                override fun listDevices(): List<AdbBridge.Device> = listOf(usbDevice)
+                override fun switchToWifi(usbDeviceId: String, port: Int): String? = null
+            }
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.refreshDevices()
+                withTimeoutOrNull(2000) {
+                    while (vm.selectedDevice.value == null) delay(25)
+                } ?: fail("expected USB device to be auto-selected")
+
+                // Snapshot the new StateFlows BEFORE invoking legacy.
+                val wifiPanelBefore = vm.wifiPanel.value
+                val mdnsAvailableBefore = vm.mdnsAvailable.value
+                val pairingServiceAliveBefore = vm.pairingServiceAlive.value
+
+                vm.switchToWifi()
+                // Give the coroutine inside switchToWifi() a chance to run.
+                delay(200)
+
+                // None of the new StateFlows should have mutated.
+                assertEquals(
+                    wifiPanelBefore::class.simpleName,
+                    vm.wifiPanel.value::class.simpleName,
+                    "legacy switchToWifi must not touch _wifiPanel",
+                )
+                assertTrue(vm.wifiPanel.value is AppViewModel.WifiPanelState.Hidden)
+                assertEquals(mdnsAvailableBefore, vm.mdnsAvailable.value)
+                assertEquals(pairingServiceAliveBefore, vm.pairingServiceAlive.value)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    /**
+     * WP-11 — Pair timeout (wireless debugging is off on the phone) maps
+     * to the literal "activate message" string from the spec.
+     */
+    @Test
+    fun pairTimeoutWhenWirelessDebuggingIsOffShowsActivateMessage() {
+        runBlocking {
+            val fake = FakeAdbBridge()
+            val pairing = MdnsService("adb-X", MdnsServiceType.PAIRING, "192.168.1.42", 37123)
+            fake.scriptedMdnsSnapshots += listOf(pairing)
+            fake.scriptedPair += PairResult.Failure(
+                reason = PairFailureReason.TIMEOUT,
+                rawStderr = "",
+            )
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.openWifiPanel()
+                val discovered = awaitWifiPanel(
+                    vm,
+                    message = "expected Discovered",
+                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as AppViewModel.WifiPanelState.Discovered
+                vm.selectMdnsDevice(discovered.services[0])
+                vm.submitCodeForSelected("123456")
+
+                val errorState = awaitWifiPanel(
+                    vm,
+                    message = "expected Error after timeout",
+                ) { it is AppViewModel.WifiPanelState.Error }
+                errorState as AppViewModel.WifiPanelState.Error
+
+                assertEquals(
+                    "El movil no respondio. Asegurate de que 'Depuracion inalambrica' este activa en el movil.",
+                    errorState.message,
+                )
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
 }

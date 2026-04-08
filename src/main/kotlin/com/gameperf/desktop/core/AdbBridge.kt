@@ -605,4 +605,404 @@ object AdbBridge {
     /** Helper extension: find the first valid segment in a list, or null if none. */
     private fun List<java.io.File>.firstValidSegment(): java.io.File? =
         this.firstOrNull { isValidVideoFile(it) }
+
+    // ===== v3.2.0 — Wireless ADB =====
+    //
+    // Four blocking methods that spawn `adb pair`, `adb connect`, `adb mdns
+    // services`, and `adb disconnect` subprocesses, plus `adb --version` for
+    // the platform-tools capability check. All thread-safe, all never-throws
+    // (errors are mapped to the corresponding sealed Failure variants or
+    // empty/null defaults).
+    //
+    // Timeouts (D-4 in the design):
+    //   pair          → 10s wall-clock, destroyForcibly on overflow
+    //   connectWireless → 5s
+    //   mdnsServices  → 3s
+    //   disconnect    → 3s
+    //   getAdbVersion → 2s
+    //
+    // These stay OUTSIDE the frozen lines 64-88 region (Device data class +
+    // switchToWifi legacy). They're appended after the concat helpers at the
+    // end of the singleton so the frozen region is byte-stable against
+    // `git diff e44bfce`.
+
+    /**
+     * Run `adb pair ip:port` and write [code] to its stdin. Blocks for up to
+     * 10 seconds wall-clock. Never throws.
+     *
+     * Success is detected by exit code == 0 (adb pair writes a confirmation
+     * to stdout, not stderr). Failure stderr is classified via
+     * [parsePairStderr]. The process is `destroyForcibly()`-killed if it
+     * exceeds the timeout.
+     */
+    fun pair(ip: String, port: Int, code: String): PairResult {
+        return try {
+            val pb = ProcessBuilder(adbPath, "pair", "$ip:$port")
+            pb.redirectErrorStream(false) // keep stderr separate for classification
+            val process = pb.start()
+
+            // Feed the pairing code on stdin (adb pair reads a line from stdin).
+            try {
+                process.outputStream.use { os ->
+                    os.write((code + "\n").toByteArray())
+                    os.flush()
+                }
+            } catch (_: Exception) { /* process may have died before we wrote — fall through */ }
+
+            val stderrFuture = CompletableFuture.supplyAsync {
+                try { process.errorStream.bufferedReader().readText() } catch (_: Exception) { "" }
+            }
+
+            val completed = process.waitFor(10, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                val stderr = try { stderrFuture.get(500, TimeUnit.MILLISECONDS) } catch (_: Exception) { "" }
+                return PairResult.Failure(parsePairStderr(stderr, timedOut = true), stderr)
+            }
+
+            val stderr = try { stderrFuture.get(1000, TimeUnit.MILLISECONDS) } catch (_: Exception) { "" }
+            if (process.exitValue() == 0) {
+                PairResult.Success
+            } else {
+                PairResult.Failure(parsePairStderr(stderr, timedOut = false), stderr)
+            }
+        } catch (t: Throwable) {
+            PairResult.Failure(PairFailureReason.UNKNOWN, t.message ?: "")
+        }
+    }
+
+    /**
+     * Run `adb connect ip:port`. Blocks for up to 5 seconds. Never throws.
+     *
+     * adb connect writes both success and failure diagnostics to stdout (not
+     * stderr). Success is detected by the presence of `connected to` in the
+     * combined output. Anything else is classified via [parseConnectStderr]
+     * against the combined output.
+     */
+    fun connectWireless(ip: String, port: Int): ConnectResult {
+        return try {
+            val pb = ProcessBuilder(adbPath, "connect", "$ip:$port")
+            pb.redirectErrorStream(true) // adb connect writes diagnostics to stdout
+            val process = pb.start()
+
+            val outFuture = CompletableFuture.supplyAsync {
+                try { process.inputStream.bufferedReader().readText() } catch (_: Exception) { "" }
+            }
+
+            val completed = process.waitFor(5, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                val out = try { outFuture.get(500, TimeUnit.MILLISECONDS) } catch (_: Exception) { "" }
+                return ConnectResult.Failure(parseConnectStderr(out, timedOut = true), out)
+            }
+
+            val out = try { outFuture.get(1000, TimeUnit.MILLISECONDS) } catch (_: Exception) { "" }
+            if (process.exitValue() == 0 && out.lowercase().contains("connected to")) {
+                ConnectResult.Success("$ip:$port")
+            } else {
+                ConnectResult.Failure(parseConnectStderr(out, timedOut = false), out)
+            }
+        } catch (t: Throwable) {
+            ConnectResult.Failure(ConnectFailureReason.UNKNOWN, t.message ?: "")
+        }
+    }
+
+    /**
+     * Snapshot `adb mdns services`. Blocks for up to 3 seconds. Never throws.
+     * Returns an empty list on timeout, non-zero exit, or unparseable output.
+     * Results are sorted: PAIRING first, then CONNECT, internally by instance
+     * ascending (stable for UI rendering per the wireless spec).
+     */
+    fun mdnsServices(): List<MdnsService> {
+        return try {
+            val pb = ProcessBuilder(adbPath, "mdns", "services")
+            pb.redirectErrorStream(true)
+            val process = pb.start()
+
+            val outFuture = CompletableFuture.supplyAsync {
+                try { process.inputStream.bufferedReader().readText() } catch (_: Exception) { "" }
+            }
+
+            val completed = process.waitFor(3, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                return emptyList()
+            }
+
+            val out = try { outFuture.get(500, TimeUnit.MILLISECONDS) } catch (_: Exception) { "" }
+            if (process.exitValue() != 0) return emptyList()
+
+            parseMdnsServicesOutput(out).sortedWith(
+                compareBy({ it.serviceType.ordinal }, { it.instance }),
+            )
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Run `adb disconnect id`. Blocks for up to 3 seconds. Returns true only
+     * on exit code 0, false otherwise. Never throws.
+     */
+    fun disconnect(id: String): Boolean {
+        return try {
+            val pb = ProcessBuilder(adbPath, "disconnect", id)
+            pb.redirectErrorStream(true)
+            val process = pb.start()
+            val completed = process.waitFor(3, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                return false
+            }
+            process.exitValue() == 0
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Run `adb --version` and parse the result via [parseAdbVersion]. Blocks
+     * for up to 2 seconds. Returns null if the binary is missing, the process
+     * times out, or the output doesn't match the canonical format.
+     */
+    fun getAdbVersion(): AdbVersion? {
+        return try {
+            val pb = ProcessBuilder(adbPath, "--version")
+            pb.redirectErrorStream(true)
+            val process = pb.start()
+
+            val outFuture = CompletableFuture.supplyAsync {
+                try { process.inputStream.bufferedReader().readText() } catch (_: Exception) { "" }
+            }
+
+            val completed = process.waitFor(2, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                return null
+            }
+
+            val out = try { outFuture.get(500, TimeUnit.MILLISECONDS) } catch (_: Exception) { "" }
+            if (process.exitValue() != 0) return null
+            parseAdbVersion(out)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+}
+
+// ===== v3.2.0 — Wireless ADB (adb pair + mDNS discovery) =====
+//
+// Top-level types used by the new pair/connectWireless/mdnsServices/disconnect
+// methods on [AdbBridgeApi]. Kept OUTSIDE the `object AdbBridge` singleton so
+// the frozen region (lines 64-88: Device data class + switchToWifi legacy)
+// stays untouched byte-for-byte. Every type here is a pure value carrier —
+// no state, no methods beyond `compareTo` on AdbVersion.
+
+/**
+ * Result of an `adb pair ip:port` invocation. Never thrown — errors are
+ * always returned as [Failure] so the caller can pattern-match exhaustively.
+ */
+sealed class PairResult {
+    object Success : PairResult()
+    data class Failure(
+        val reason: PairFailureReason,
+        val rawStderr: String,
+    ) : PairResult()
+}
+
+enum class PairFailureReason {
+    /** `adb pair` stderr matched "failed to authenticate" — wrong code. */
+    INVALID_CODE,
+
+    /**
+     * Pairing failed AND the `_adb-tls-pairing._tcp` mDNS service has
+     * disappeared, indicating the pairing popup on the phone was closed
+     * or timed out. Caller maps this to the same user message as
+     * [INVALID_CODE] (action is identical: reopen the popup).
+     */
+    EXPIRED_CODE,
+
+    /** stderr matched "connection refused" / "no route to host" / "network is unreachable". */
+    CONNECTION_REFUSED,
+
+    /** Process exceeded wall-clock timeout (10s) and was destroyed. */
+    TIMEOUT,
+
+    /** Exit code != 0 but stderr matched none of the known patterns. */
+    UNKNOWN,
+}
+
+/**
+ * Result of an `adb connect ip:port` invocation. Never thrown — the
+ * [Success] variant carries the resolved deviceId (`"ip:port"`) so the
+ * caller can cross-reference it against the next `listDevices()` snapshot.
+ */
+sealed class ConnectResult {
+    data class Success(val deviceId: String) : ConnectResult()
+    data class Failure(
+        val reason: ConnectFailureReason,
+        val rawStderr: String,
+    ) : ConnectResult()
+}
+
+enum class ConnectFailureReason {
+    /** "no route to host" / "network is unreachable" / "host is down". */
+    NO_ROUTE,
+
+    /** "connection refused" — the phone is reachable but rejected the socket. */
+    REFUSED,
+
+    /** Process exceeded wall-clock timeout (5s). */
+    TIMEOUT,
+
+    /** Exit code != 0 but stderr matched none of the known patterns. */
+    UNKNOWN,
+}
+
+/**
+ * One entry in the `adb mdns services` snapshot. Parsed from lines like:
+ * ```
+ * adb-XXXXXX-YYYYYY    _adb-tls-pairing._tcp.    192.168.1.42:37123
+ * adb-XXXXXX-YYYYYY    _adb-tls-connect._tcp.    192.168.1.42:38145
+ * ```
+ *
+ * `instance` is the phone-side ADB instance identifier (stable across
+ * pairing/connect services for the same phone — used by the VM to match
+ * the pairing service with its corresponding connect service after a
+ * successful pair, per the D-10 re-discover step).
+ */
+data class MdnsService(
+    val instance: String,
+    val serviceType: MdnsServiceType,
+    val ip: String,
+    val port: Int,
+)
+
+enum class MdnsServiceType {
+    /** `_adb-tls-pairing._tcp` — ephemeral, visible only while the pairing popup is open. */
+    PAIRING,
+
+    /** `_adb-tls-connect._tcp` — stable while Wireless Debugging is ON. */
+    CONNECT,
+
+    /** Any other `_adb-tls-*` service that doesn't match PAIRING or CONNECT. */
+    UNKNOWN,
+}
+
+/**
+ * Parsed `adb --version` output. [Comparable] so callers can gate features on
+ * the platform-tools version (e.g. `adbVersion >= AdbVersion(33,0,0)` for the
+ * mDNS auto-connect feature).
+ */
+data class AdbVersion(
+    val major: Int,
+    val minor: Int,
+    val patch: Int,
+) : Comparable<AdbVersion> {
+    override fun compareTo(other: AdbVersion): Int =
+        compareValuesBy(this, other, { it.major }, { it.minor }, { it.patch })
+}
+
+// ===== Pure parsers (internal — exercised by AdbBridgeMdnsParserTest) =====
+
+/**
+ * Parse the stdout of `adb mdns services`. Format observed on adb 37.0.0
+ * (Darwin and Linux both):
+ * ```
+ * List of discovered mdns services
+ * adb-XXXXXX-YYYYYY	_adb-tls-pairing._tcp.	192.168.1.42:37123
+ * adb-XXXXXX-YYYYYY	_adb-tls-connect._tcp.	192.168.1.42:38145
+ * ```
+ *
+ * Pure: no IO, no state mutation. Malformed lines are silently skipped
+ * (the caller gets only well-formed entries). Empty input → empty list.
+ * Any `_adb-tls-*` service other than PAIRING / CONNECT is filtered out
+ * (mapped to null and dropped in the mapNotNull below).
+ */
+internal fun parseMdnsServicesOutput(text: String): List<MdnsService> {
+    if (text.isBlank()) return emptyList()
+    return text.lines()
+        .asSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("List of discovered") }
+        .mapNotNull { parseMdnsServiceLine(it) }
+        .toList()
+}
+
+/**
+ * Parse a single line of `adb mdns services`. Returns null if the line is
+ * structurally malformed, the service type is unknown, the IP is not a
+ * literal IPv4, or the port is out of range.
+ */
+internal fun parseMdnsServiceLine(line: String): MdnsService? {
+    val parts = line.split(Regex("\\s+"))
+    if (parts.size < 3) return null
+    val instance = parts[0]
+    val rawType = parts[1].trimEnd('.')
+    val serviceType = when (rawType) {
+        "_adb-tls-pairing._tcp" -> MdnsServiceType.PAIRING
+        "_adb-tls-connect._tcp" -> MdnsServiceType.CONNECT
+        else -> return null
+    }
+    val addr = parts.last()
+    val colonIdx = addr.lastIndexOf(':')
+    if (colonIdx <= 0) return null
+    val ip = addr.substring(0, colonIdx)
+    if (!ip.matches(Regex("\\d{1,3}(\\.\\d{1,3}){3}"))) return null
+    val port = addr.substring(colonIdx + 1).toIntOrNull() ?: return null
+    if (port !in 1..65535) return null
+    return MdnsService(instance, serviceType, ip, port)
+}
+
+/**
+ * Classify the stderr of a failed `adb pair` invocation into a
+ * [PairFailureReason]. Pure: no IO. Handles the most common stderr
+ * patterns seen in the wild across adb 30.x → 37.x on Darwin/Linux.
+ *
+ * @param timedOut true if the caller killed the process for exceeding
+ *                 its wall-clock budget. Takes precedence over stderr
+ *                 content classification.
+ */
+internal fun parsePairStderr(stderr: String, timedOut: Boolean): PairFailureReason {
+    if (timedOut) return PairFailureReason.TIMEOUT
+    val lower = stderr.lowercase()
+    return when {
+        "failed to authenticate" in lower -> PairFailureReason.INVALID_CODE
+        "connection refused" in lower -> PairFailureReason.CONNECTION_REFUSED
+        "no route to host" in lower -> PairFailureReason.CONNECTION_REFUSED
+        "network is unreachable" in lower -> PairFailureReason.CONNECTION_REFUSED
+        "timeout" in lower -> PairFailureReason.TIMEOUT
+        stderr.isBlank() -> PairFailureReason.TIMEOUT
+        else -> PairFailureReason.UNKNOWN
+    }
+}
+
+/**
+ * Classify the stderr of a failed `adb connect` invocation into a
+ * [ConnectFailureReason]. Pure: no IO.
+ */
+internal fun parseConnectStderr(stderr: String, timedOut: Boolean): ConnectFailureReason {
+    if (timedOut) return ConnectFailureReason.TIMEOUT
+    val lower = stderr.lowercase()
+    return when {
+        "no route to host" in lower -> ConnectFailureReason.NO_ROUTE
+        "network is unreachable" in lower -> ConnectFailureReason.NO_ROUTE
+        "host is down" in lower -> ConnectFailureReason.NO_ROUTE
+        "connection refused" in lower -> ConnectFailureReason.REFUSED
+        "timeout" in lower -> ConnectFailureReason.TIMEOUT
+        stderr.isBlank() -> ConnectFailureReason.TIMEOUT
+        else -> ConnectFailureReason.UNKNOWN
+    }
+}
+
+/**
+ * Parse the output of `adb --version`, returning the detected platform-tools
+ * version or null if the output doesn't contain a canonical `Version X.Y.Z`
+ * line. Pure: no IO.
+ */
+internal fun parseAdbVersion(output: String): AdbVersion? {
+    val regex = Regex("Version (\\d+)\\.(\\d+)\\.(\\d+)")
+    val match = regex.find(output) ?: return null
+    val (maj, min, patch) = match.destructured
+    return AdbVersion(maj.toInt(), min.toInt(), patch.toInt())
 }

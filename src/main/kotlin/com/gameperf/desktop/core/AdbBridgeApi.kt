@@ -63,6 +63,48 @@ interface AdbBridgeApi {
 
     fun concatSegments(segments: List<File>, output: File): File?
     fun isValidVideoFile(file: File): Boolean
+
+    // ===== v3.2.0 — Wireless ADB =====
+    //
+    // Four new blocking, thread-safe, never-throws methods for the adb pair
+    // WiFi flow (Android 11+). See [PairResult] / [ConnectResult] / [MdnsService]
+    // top-level types in AdbBridge.kt for the data contracts.
+
+    /**
+     * Run `adb pair ip:port` with [code] piped to stdin. Blocks for up to 10
+     * seconds wall-clock. Never throws — all error conditions (timeout, exit
+     * code != 0, unreadable stderr) are mapped to [PairResult.Failure].
+     */
+    fun pair(ip: String, port: Int, code: String): PairResult
+
+    /**
+     * Run `adb connect ip:port`. Blocks for up to 5 seconds wall-clock.
+     * On success, the returned [ConnectResult.Success.deviceId] is `"ip:port"`
+     * and a subsequent `listDevices()` call should include it with `isWifi=true`.
+     */
+    fun connectWireless(ip: String, port: Int): ConnectResult
+
+    /**
+     * Snapshot `adb mdns services`. Blocks for up to 3 seconds. Returns an
+     * empty list if `adb mdns` is not compiled in or the OS mDNS daemon is
+     * down. Never throws. Results are sorted: PAIRING first, then CONNECT,
+     * internally by `instance` ascending.
+     */
+    fun mdnsServices(): List<MdnsService>
+
+    /**
+     * Run `adb disconnect id`. Blocks for up to 3 seconds. Returns `true` only
+     * if the subprocess exited with code 0; any other outcome (timeout, error,
+     * not-found) returns `false` without side effects on VM state.
+     */
+    fun disconnect(id: String): Boolean
+
+    /**
+     * Run `adb --version` and parse the result. Blocks for up to 2 seconds.
+     * Returns `null` if the binary is missing, times out, or the output
+     * doesn't match the canonical `"Version X.Y.Z"` line.
+     */
+    fun getAdbVersion(): AdbVersion?
 }
 
 /**
@@ -123,4 +165,18 @@ class RealAdbBridge : AdbBridgeApi {
         AdbBridge.concatSegments(segments, output)
 
     override fun isValidVideoFile(file: File): Boolean = AdbBridge.isValidVideoFile(file)
+
+    // ===== v3.2.0 — Wireless ADB (1:1 delegations to the singleton) =====
+
+    override fun pair(ip: String, port: Int, code: String): PairResult =
+        AdbBridge.pair(ip, port, code)
+
+    override fun connectWireless(ip: String, port: Int): ConnectResult =
+        AdbBridge.connectWireless(ip, port)
+
+    override fun mdnsServices(): List<MdnsService> = AdbBridge.mdnsServices()
+
+    override fun disconnect(id: String): Boolean = AdbBridge.disconnect(id)
+
+    override fun getAdbVersion(): AdbVersion? = AdbBridge.getAdbVersion()
 }

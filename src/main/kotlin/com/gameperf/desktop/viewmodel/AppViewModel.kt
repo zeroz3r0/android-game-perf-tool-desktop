@@ -2,10 +2,17 @@ package com.gameperf.desktop.viewmodel
 
 import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AdbBridgeApi
+import com.gameperf.desktop.core.AdbVersion
 import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.AutoUpdater
 import com.gameperf.desktop.core.CURRENT_VERSION
+import com.gameperf.desktop.core.ConnectFailureReason
+import com.gameperf.desktop.core.ConnectResult
 import com.gameperf.desktop.core.FileCleanup
+import com.gameperf.desktop.core.MdnsService
+import com.gameperf.desktop.core.MdnsServiceType
+import com.gameperf.desktop.core.PairFailureReason
+import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.core.RealAdbBridge
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.report.PdfExporter
@@ -451,6 +458,15 @@ class AppViewModel(
         }
         startDevicePolling()
         checkForUpdates()
+        // v3.2.0 — Wireless ADB (D-11): non-blocking capability check on the
+        // local platform-tools version. Used by WifiPanelContent to show a
+        // banner when adb < 33 (mDNS auto-connect not available). Zero effect
+        // on the USB happy path because it only runs once, on a background
+        // dispatcher, and the resulting StateFlow is read only when the WiFi
+        // panel is open.
+        scope.launch {
+            _adbVersion.value = withContext(Dispatchers.IO) { adb.getAdbVersion() }
+        }
     }
 
     // ===== Auto-Update =====
@@ -1415,4 +1431,371 @@ class AppViewModel(
 
     private fun currentDateString(): String =
         java.text.SimpleDateFormat("dd/MM/yyyy HH:mm").format(java.util.Date())
+
+    // ===== v3.2.0 — Wireless ADB (pair WiFi flow for Android 11+) =====
+    //
+    // Design reference: sdd/wireless-adb/design.
+    // Spec reference: sdd/wireless-adb/spec (scenarios WP-1..WP-11).
+    //
+    // This section is additive. It does NOT touch [startDevicePolling],
+    // [selectDevice], [refreshDevices], [refreshGame], or the legacy
+    // [switchToWifi] — those stay byte-for-byte identical to v3.1.14.
+    //
+    // Architecture (D-3): one sealed [WifiPanelState] for the panel UI +
+    // three auxiliary StateFlows ([_mdnsAvailable], [_pairingServiceAlive],
+    // [_adbVersion]) that can change in ANY state and therefore don't live
+    // inside the sealed class.
+    //
+    // Coroutine scoping (D-2): the mDNS polling loop runs in its own Job
+    // ([mdnsPollingJob]) that only exists while the panel is expanded, so
+    // the USB-only happy path pays zero cost.
+
+    private val _wifiPanel = MutableStateFlow<WifiPanelState>(WifiPanelState.Hidden)
+    val wifiPanel: StateFlow<WifiPanelState> = _wifiPanel
+
+    private val _mdnsAvailable = MutableStateFlow(true)
+    val mdnsAvailable: StateFlow<Boolean> = _mdnsAvailable
+
+    private val _pairingServiceAlive = MutableStateFlow(false)
+    val pairingServiceAlive: StateFlow<Boolean> = _pairingServiceAlive
+
+    private val _adbVersion = MutableStateFlow<AdbVersion?>(null)
+    val adbVersion: StateFlow<AdbVersion?> = _adbVersion
+
+    private var mdnsPollingJob: Job? = null
+
+    /**
+     * State of the "Agregar device WiFi" panel. Only the VM transitions
+     * between these — the UI is a pure projection via `when (state)` and
+     * calls back through [openWifiPanel], [closeWifiPanel],
+     * [selectMdnsDevice], [submitCodeForSelected], [submitManual], and
+     * [retryError].
+     */
+    sealed class WifiPanelState {
+        /** Panel not visible. USB-only happy path — [mdnsPollingJob] is null. */
+        object Hidden : WifiPanelState()
+
+        /** Panel visible but idle (user hasn't opened the mDNS tab yet). */
+        object Closed : WifiPanelState()
+
+        /** First mDNS poll in flight, no results yet. */
+        object DiscoveringMdns : WifiPanelState()
+
+        /** Latest mDNS snapshot (filtered to PAIRING services only). */
+        data class Discovered(val services: List<MdnsService>) : WifiPanelState()
+
+        /** User clicked a PAIRING service; awaiting the 6-digit code. */
+        data class InputtingCode(val selected: MdnsService) : WifiPanelState()
+
+        /** mDNS returned empty for 3+ polls OR mdnsAvailable was false — manual form. */
+        object InputtingManual : WifiPanelState()
+
+        /** `adb pair` call in flight. */
+        object Pairing : WifiPanelState()
+
+        /** `adb connect` call in flight (post-successful pair). */
+        object Connecting : WifiPanelState()
+
+        /** Pair + connect both succeeded. Briefly visible, then auto-dismisses to [Hidden]. */
+        data class Connected(val deviceId: String) : WifiPanelState()
+
+        /**
+         * Anything failed. [message] is a user-facing Spanish string from
+         * [mapPairReasonToMessage] / [mapConnectReasonToMessage] — NEVER the
+         * raw stderr. [recoverable] controls whether the retry button shows.
+         */
+        data class Error(val message: String, val recoverable: Boolean) : WifiPanelState()
+    }
+
+    /**
+     * Map a [PairFailureReason] to the exact Spanish user-facing string defined
+     * in the spec §2 R-WP-5. Literal constants — `equals()` checks in tests.
+     */
+    private fun mapPairReasonToMessage(reason: PairFailureReason): String = when (reason) {
+        PairFailureReason.INVALID_CODE, PairFailureReason.EXPIRED_CODE ->
+            "Codigo incorrecto. Abri nuevamente 'Emparejar dispositivo con codigo' en el movil para generar un codigo nuevo."
+        PairFailureReason.CONNECTION_REFUSED ->
+            "No se puede conectar a esa direccion. Verifica que la IP sea la que muestra el movil y que esten en la misma WiFi."
+        PairFailureReason.TIMEOUT ->
+            "El movil no respondio. Asegurate de que 'Depuracion inalambrica' este activa en el movil."
+        PairFailureReason.UNKNOWN ->
+            "No se pudo emparejar el dispositivo. Volve a abrir el menu de emparejamiento en el movil y probá de nuevo."
+    }
+
+    /** Same contract as [mapPairReasonToMessage], for the connect phase. */
+    private fun mapConnectReasonToMessage(reason: ConnectFailureReason): String = when (reason) {
+        ConnectFailureReason.NO_ROUTE ->
+            "El movil no esta visible en la red. Verifica que tenga WiFi activa y este en la misma red que esta computadora."
+        ConnectFailureReason.REFUSED ->
+            "El movil rechazo la conexion. Abri de nuevo 'Depuracion inalambrica' en el movil y probá de nuevo."
+        ConnectFailureReason.TIMEOUT ->
+            "El movil no respondio al conectar. Verifica que siga en la misma WiFi."
+        ConnectFailureReason.UNKNOWN ->
+            "No se pudo conectar al dispositivo. Volve a parearlo desde el menu del movil."
+    }
+
+    /**
+     * Start the mDNS discovery polling loop. Cancels any previous loop first.
+     * The loop runs only while the panel is in a "discovering" state —
+     * transitioning to Pairing/Connecting/Error/InputtingCode pauses updates,
+     * closing the panel cancels it.
+     *
+     * Per design §4.1:
+     *  - 2.5s cadence (desfasado del 3s `pollingJob` de devices USB)
+     *  - Snapshot wrapped in `withContext(IO)` so the Default dispatcher
+     *    doesn't block on a subprocess
+     *  - `_pairingServiceAlive` reflects whether a PAIRING service was in
+     *    the most recent snapshot (ground truth for the disabled "Parear"
+     *    button — D-9)
+     *  - 3 consecutive empty polls → auto-fallback to InputtingManual
+     *  - If [FakeAdbBridge.mdnsAvailableOverride] or similar signal is false
+     *    → jump straight to InputtingManual without waiting
+     */
+    private fun startMdnsPolling() {
+        mdnsPollingJob?.cancel()
+
+        // D-11 / WP-3 early-exit: if the caller already knows mDNS is not
+        // available on this system, skip the loop entirely and show the
+        // manual form. The fake exposes this via `mdnsAvailableOverride`;
+        // the real bridge would flip this based on an `adb mdns check`
+        // result before opening the panel. For v3.2.0 the real path
+        // leaves `_mdnsAvailable` at its default (true) and relies on the
+        // 3-empty-polls auto-fallback as a safety net.
+        if (!_mdnsAvailable.value) {
+            _wifiPanel.value = WifiPanelState.InputtingManual
+            return
+        }
+
+        mdnsPollingJob = scope.launch {
+            var consecutiveEmpty = 0
+            while (isActive) {
+                val current = _wifiPanel.value
+                // Only discovering-phase states consume mDNS snapshots. If
+                // the user moved to Pairing/Connecting/InputtingCode/etc.,
+                // we keep the loop alive (so the pairing-alive sensor keeps
+                // updating) but don't overwrite the panel state.
+                if (current is WifiPanelState.Hidden ||
+                    current is WifiPanelState.Closed ||
+                    current is WifiPanelState.Connected
+                ) {
+                    break
+                }
+
+                val services = withContext(Dispatchers.IO) {
+                    try { adb.mdnsServices() } catch (_: Throwable) { emptyList() }
+                }
+                val pairingServices = services.filter { it.serviceType == MdnsServiceType.PAIRING }
+                _pairingServiceAlive.value = pairingServices.isNotEmpty()
+
+                when (val s = _wifiPanel.value) {
+                    is WifiPanelState.DiscoveringMdns, is WifiPanelState.Discovered -> {
+                        _wifiPanel.value = WifiPanelState.Discovered(pairingServices)
+                        if (pairingServices.isEmpty()) {
+                            consecutiveEmpty++
+                        } else {
+                            consecutiveEmpty = 0
+                        }
+                        if (consecutiveEmpty >= 3 && _mdnsAvailable.value) {
+                            _wifiPanel.value = WifiPanelState.InputtingManual
+                        }
+                    }
+                    is WifiPanelState.InputtingCode -> {
+                        // Keep polling silently so _pairingServiceAlive
+                        // stays fresh — the user is on the code input screen
+                        // and we want to disable the Parear button the
+                        // instant the pairing popup closes on the phone.
+                        // No state mutation here.
+                        @Suppress("UNUSED_EXPRESSION") s
+                    }
+                    else -> {
+                        // Pairing / Connecting / Error / InputtingManual —
+                        // just keep the sensor updating, no state transitions.
+                    }
+                }
+                delay(2500)
+            }
+        }
+    }
+
+    /** Cancel the mDNS polling loop. Called on panel close and after Connected. */
+    private fun stopMdnsPolling() {
+        mdnsPollingJob?.cancel()
+        mdnsPollingJob = null
+    }
+
+    /**
+     * D-10 re-discover helper: after a successful `adb pair`, the actual
+     * connect port is NOT the pair port — we have to take a fresh mDNS
+     * snapshot and look for the `_adb-tls-connect._tcp` service with the
+     * same instance id. The phone publishes the connect service within
+     * ~200ms post-pair empirically; 1 retry at 500ms is holgado.
+     *
+     * @param instance the pairing service instance to match against
+     * @param retries extra attempts beyond the first (default 1 → total 2 tries)
+     */
+    private suspend fun findConnectServiceForInstance(
+        instance: String,
+        retries: Int = 1,
+    ): MdnsService? {
+        repeat(retries + 1) { attempt ->
+            val snap = withContext(Dispatchers.IO) {
+                try { adb.mdnsServices() } catch (_: Throwable) { emptyList() }
+            }
+            val match = snap.firstOrNull {
+                it.serviceType == MdnsServiceType.CONNECT && it.instance == instance
+            }
+            if (match != null) return match
+            if (attempt < retries) delay(500)
+        }
+        return null
+    }
+
+    /**
+     * Full pair → connect orchestration. Per design §4.2 and D-10.
+     *
+     * @param service the selected mDNS pairing service, OR null if user
+     *                entered IP/port manually
+     * @param ip      IP to pair with
+     * @param pairPort pair-protocol port
+     * @param code    6-digit code from the phone popup
+     */
+    private suspend fun pairAndConnect(
+        service: MdnsService?,
+        ip: String,
+        pairPort: Int,
+        code: String,
+    ) {
+        _wifiPanel.value = WifiPanelState.Pairing
+
+        val pairResult = withContext(Dispatchers.IO) { adb.pair(ip, pairPort, code) }
+        if (pairResult is PairResult.Failure) {
+            _wifiPanel.value = WifiPanelState.Error(
+                message = mapPairReasonToMessage(pairResult.reason),
+                recoverable = true,
+            )
+            return
+        }
+
+        // D-10: re-discover the connect port — pair-port != connect-port on
+        // Android 11+, and the phone only publishes the connect service
+        // AFTER a successful pair. Assuming pair-port==connect-port would
+        // fail in >50% of cases empirically.
+        val connectIp: String
+        val connectPort: Int
+        if (service != null) {
+            val cs = findConnectServiceForInstance(service.instance, retries = 1)
+            if (cs == null) {
+                _wifiPanel.value = WifiPanelState.Error(
+                    message = "No se pudo encontrar el puerto de conexion del dispositivo. Volve a parear desde el menu del movil.",
+                    recoverable = true,
+                )
+                return
+            }
+            connectIp = cs.ip
+            connectPort = cs.port
+        } else {
+            // Manual mode: no instance to match against. Take a fresh
+            // snapshot and match by IP. Last-resort fallback is to reuse
+            // pairPort, which usually fails but at least gives the user a
+            // specific error instead of hanging.
+            val snap = withContext(Dispatchers.IO) {
+                try { adb.mdnsServices() } catch (_: Throwable) { emptyList() }
+            }
+            val byIp = snap.firstOrNull {
+                it.serviceType == MdnsServiceType.CONNECT && it.ip == ip
+            }
+            if (byIp != null) {
+                connectIp = byIp.ip
+                connectPort = byIp.port
+            } else {
+                connectIp = ip
+                connectPort = pairPort
+            }
+        }
+        _wifiPanel.value = WifiPanelState.Connecting
+        val connectResult = withContext(Dispatchers.IO) {
+            adb.connectWireless(connectIp, connectPort)
+        }
+        when (connectResult) {
+            is ConnectResult.Success -> {
+                _wifiPanel.value = WifiPanelState.Connected(connectResult.deviceId)
+                refreshDevices() // D-7: let the existing poll surface the wifi device
+                delay(1000)
+                _wifiPanel.value = WifiPanelState.Hidden
+                stopMdnsPolling()
+            }
+            is ConnectResult.Failure -> {
+                _wifiPanel.value = WifiPanelState.Error(
+                    message = mapConnectReasonToMessage(connectResult.reason),
+                    recoverable = true,
+                )
+            }
+        }
+    }
+
+    // ===== Public entry points for the WiFi panel UI =====
+
+    /**
+     * Test seam (WP-3 / D-11): flip the mDNS-available sensor. Production
+     * code leaves this at its default (true) and relies on the 3-empty-polls
+     * auto-fallback for the "mDNS broken" path; tests can set it to false
+     * BEFORE calling [openWifiPanel] to drive the immediate manual-form
+     * transition without waiting for the 3-poll timeout.
+     */
+    internal fun setMdnsAvailableForTest(available: Boolean) {
+        _mdnsAvailable.value = available
+    }
+
+    /** Open the panel and start mDNS discovery. No-op if already open. */
+    fun openWifiPanel() {
+        if (_wifiPanel.value !is WifiPanelState.Hidden &&
+            _wifiPanel.value !is WifiPanelState.Closed
+        ) return
+        _wifiPanel.value = WifiPanelState.DiscoveringMdns
+        startMdnsPolling()
+    }
+
+    /** Close the panel and cancel the polling loop. */
+    fun closeWifiPanel() {
+        _wifiPanel.value = WifiPanelState.Hidden
+        stopMdnsPolling()
+    }
+
+    /** User clicked a discovered mDNS service → show the code input screen. */
+    fun selectMdnsDevice(service: MdnsService) {
+        _wifiPanel.value = WifiPanelState.InputtingCode(service)
+    }
+
+    /** User submitted the 6-digit code for a previously-selected mDNS service. */
+    fun submitCodeForSelected(code: String) {
+        val state = _wifiPanel.value
+        if (state !is WifiPanelState.InputtingCode) return
+        val service = state.selected
+        scope.launch {
+            pairAndConnect(
+                service = service,
+                ip = service.ip,
+                pairPort = service.port,
+                code = code,
+            )
+        }
+    }
+
+    /** User submitted the manual form (IP + pair port + code). */
+    fun submitManual(ip: String, pairPort: Int, code: String) {
+        scope.launch {
+            pairAndConnect(
+                service = null,
+                ip = ip,
+                pairPort = pairPort,
+                code = code,
+            )
+        }
+    }
+
+    /** Error screen retry → go back to discovery. */
+    fun retryError() {
+        _wifiPanel.value = WifiPanelState.DiscoveringMdns
+        startMdnsPolling()
+    }
 }

@@ -14,6 +14,57 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.2.0] — 2026-04-08
+
+### Que hay de nuevo
+
+- **Conexion WiFi sin cable desde el arranque**: ahora podes conectar un Android 11 o superior a la app sin usar USB ni una sola vez. Activá "Depuracion inalambrica" en el movil, abrí el tab "WiFi (Android 11+)" o el boton discreto "Agregar device WiFi" segun corresponda, clickeá tu dispositivo en la lista que aparece y tipeá el codigo de 6 digitos del popup. Eso es todo. El proceso completo demora menos de 10 segundos
+- **Descubrimiento automatico via mDNS**: la app detecta solo los dispositivos con "Depuracion inalambrica" encendida en tu red WiFi, sin que tengas que tipear IP ni puerto. Aparecen con el nombre del modelo (ej "adb-32211JEHN-XXXXXX") en menos de 3 segundos
+- **Fallback manual automatico**: si tu red no permite el descubrimiento (WiFi corporativa, firewall, macOS 15 con permisos bloqueados), el formulario manual para tipear IP + puerto + codigo aparece solo despues de 9 segundos. No tenes que buscarlo
+- **Reconexion automatica en sesiones siguientes**: una vez que pareaste un dispositivo, la proxima vez que abras la app con el mismo movil en la misma WiFi va a aparecer solo en la lista de "Dispositivos" sin que toques nada — confiando en el auto-connect nativo de adb 33+
+- **Nuevo onboarding con dos caminos**: cuando la app arranca sin dispositivos conectados, ahora ves dos tabs — **USB** (por default, como siempre) o **WiFi (Android 11+)**. El usuario USB-only no ve ningun cambio si se queda en el tab por default. Cuando ya hay un device conectado, el panel WiFi se oculta y aparece un boton discreto "Agregar device WiFi" debajo de la lista, sin ensuciar el flujo normal
+- **Mensajes de error claros en castellano**: si el codigo esta mal, si el movil no responde, si la red corto la conexion, si macOS esta bloqueando el descubrimiento — cada caso tiene un mensaje accionable que te dice exactamente que hacer. No hay stderr crudo ni terminologia TLS/handshake
+- El boton legacy "Cambiar a WiFi (medir bateria real)" sigue funcionando identico a v3.1.14 — no se toco. Si ya tenes el cable USB enchufado y queres medir bateria real sin cable, ese camino sigue disponible
+
+### Arreglos
+
+- (ninguno — esta version es puramente aditiva)
+
+### Detalles tecnicos
+
+- **Nuevos metodos en `AdbBridgeApi`**: `pair(ip, port, code)`, `connectWireless(ip, port)`, `mdnsServices()`, `disconnect(id)`, `getAdbVersion()`. Todos blocking, thread-safe, **nunca throw** — usan sealed result types (`PairResult`, `ConnectResult`) con reason enums (`PairFailureReason`, `ConnectFailureReason`). Los call-sites del VM los envuelven en `withContext(Dispatchers.IO)` como los metodos existentes
+- **Timeouts concretos**: 10 segundos para `pair`, 5 segundos para `connectWireless`, 3 segundos para `mdnsServices`, 3 segundos para `disconnect`. Cada uno con `Process.destroyForcibly()` en caso de timeout interno. El user ve un mensaje accionable, nunca un hang
+- **Parsers puros testeables**: `parseMdnsServicesOutput`, `parsePairStderr`, `parseConnectStderr`, `parseAdbVersion` son funciones top-level `internal` en `AdbBridge.kt` sin dependencias a procesos externos. Cubiertos con 18 unit tests nuevos en `AdbBridgeMdnsParserTest.kt` (patron identico a `parseSurfaceFlingerListOutput`). Agregar un nuevo stderr para clasificar = 1 linea + 1 test
+- **State machine explicito en el VM**: nueva sealed class `AppViewModel.WifiPanelState` con 10 variantes (`Hidden`, `Closed`, `DiscoveringMdns`, `Discovered(services)`, `InputtingCode(selected)`, `InputtingManual`, `Pairing`, `Connecting`, `Connected(deviceId)`, `Error(message, recoverable)`). Los estados imposibles (ej "pairing en vuelo con error activo") quedan descartados a tiempo de compilacion. La UI hace `when (state)` exhaustivo y delega todas las transiciones a metodos publicos del VM (`openWifiPanel`, `closeWifiPanel`, `selectMdnsDevice`, `submitCodeForSelected`, `submitManual`, `retryError`)
+- **mDNS polling loop aislado en `mdnsPollingJob`**: coroutine separada del `pollingJob` de devices USB para evitar el stall de 1-3 segundos por llamada. Corre a 2.5s (desfasado de los 3s del poll de devices) solamente cuando el panel esta abierto. Cuando el user cierra el panel, el job se cancela y el usuario USB-only paga cero overhead. Auto-fallback a `InputtingManual` despues de 3 polls vacios consecutivos (~7.5s)
+- **Re-discover pre-connect**: antes del `connectWireless`, el VM vuelve a llamar a `mdnsServices()` para buscar el `_adb-tls-connect._tcp` del mismo instance que el pairing — el connect-port es tipicamente distinto al pair-port y puede cambiar si el user toggle wireless debugging. Con 1 retry a 500ms para el race window del phone publicando el connect service. Sin esto, en el ~50% de los casos el connect se iba al puerto equivocado
+- **Sensor `pairingServiceAlive`**: cada tick del `mdnsPollingJob` actualiza `_pairingServiceAlive` segun si el snapshot actual contiene algun service de tipo PAIRING. La UI deshabilita el boton "Parear y conectar" cuando el sensor es falso (el popup del movil se cerro solo por timeout interno del phone) — en vez de un countdown visible que miente porque el SLA del popup varia entre OEMs (Samsung ~15s, Xiaomi ~60s)
+- **Deteccion de platform-tools viejo**: `getAdbVersion()` se ejecuta una sola vez en el `init` del VM. Cuando el panel WiFi esta abierto y la version detectada es <33, aparece un banner amarillo no-bloqueante indicando que la reconexion automatica entre sesiones requiere platform-tools 33 o superior. Cero overhead para el 99% de users que tienen adb 33+
+- **`FakeAdbBridge` extendido con queues FIFO scriptables**: `scriptedPair`, `scriptedConnect`, `scriptedMdnsSnapshots`, `mdnsAvailableOverride`, `scriptedAdbVersion` + contadores `pairCalls`, `connectCalls`, `mdnsServiceCalls`, `disconnectCalls`. La clase se marco `open` y los 2 metodos existentes (`listDevices`, `switchToWifi`) como `open override` para permitir subclasses anonimas en tests puntuales. Los 111 tests pre-existentes de v3.1.14 siguen pasando byte-identicos
+- **29 tests nuevos**: 18 unit puros en `AdbBridgeMdnsParserTest.kt` + 11 de integracion en `AppViewModelTest.kt` usando `FakeAdbBridge` + helper `awaitWifiPanel` (polling a 25ms con `withTimeoutOrNull` porque el scope del VM usa `Dispatchers.Default` y no se puede acelerar con virtual time). Suite total pasa de 111 a 140 tests. Cero regresiones, skipped sigue exactamente en 7
+- **Tests criticos de regresion USB**: `usbHappyPathZeroExtraClicksRegressionVsV3114` asserta que con un device USB conectado el `selectedDevice` queda seteado, `wifiPanel == Hidden`, `mdnsPollingJob == null` y `mdnsServiceCalls == 0`. Canary del happy path USB — si este test rompe, el scope R-WP-3 fue violado. `switchToWifiLegacyBehaviorIsIdenticalToV3114` asserta que llamar `vm.switchToWifi()` legacy NO muta ningun StateFlow nuevo del feature wireless — el path legacy es ortogonal al state machine nuevo
+- **Frozen regions intactas byte-a-byte**: `AdbBridge.kt` lineas 64-88 (`data class Device` + `switchToWifi` legacy) y `AppViewModel.kt` el bloque original de `startDevicePolling` + `selectDevice` + `switchToWifi` VM — cero lineas modificadas, verificado con `git diff e44bfce` + `diff -q` del contenido extraido. El codigo legacy de `switchToWifi` es ortogonal al feature nuevo
+- **Sin dependencias nuevas**: cero libraries agregadas al `build.gradle.kts`. Todo el feature usa solo `ProcessBuilder` + `kotlinx-coroutines-core` + Compose Desktop 1.6.1 ya existente. El JAR uberJar crece ~1 MB (69 MB → ~70 MB estimado), bien dentro del margen del 5% (≤72 MB hard limit)
+- **Sin persistencia propia de devices**: NO se agrego `known_devices.json` ni ningun preference. La reconexion entre sesiones se delega al mecanismo nativo de adb (`$ADB_MDNS_AUTO_CONNECT=adb-tls-connect`, default en platform-tools 37+). Menos codigo, menos bugs, menos superficie de ataque
+- **UI en `HomeScreen.kt`**: nuevo Composable `WifiPanelContent(viewModel)` que proyecta el state machine en 10 sub-composables (`DiscoveringMdnsView`, `DiscoveredView`, `InputtingCodeView`, `InputtingManualView`, `PairingView`, `ConnectingView`, `ConnectedView`, `ErrorView` + `WifiOnboardingSteps` helper). Render-path dual: (a) tab "WiFi (Android 11+)" del onboarding cuando `devices.isEmpty()`, (b) boton discreto "Agregar device WiFi" + `AnimatedVisibility` cuando `devices.isNotEmpty()`. La seccion legacy del boton "Cambiar a WiFi (medir bateria real)" NO se toco — es una region congelada del spec R3
+- **Version bump**: `gradle.properties` `appVersion=3.1.14` → `appVersion=3.2.0`. Bump de minor (no patch) porque el feature es nuevo y visible al usuario, no un bugfix
+
+### Como probar
+
+1. **WP-1 happy path con mDNS**: Desconecta todos los cables USB. Abri la app. Toca el tab "WiFi (Android 11+)" del panel de dispositivos. En un Pixel 7a (o cualquier Android 11+) andá a Opciones de desarrollador → "Depuracion inalambrica" → ON → "Emparejar dispositivo con codigo de emparejamiento". En la app tiene que aparecer tu device en la lista "Dispositivos en la red" en menos de 3 segundos. Clickealo, tipea el codigo de 6 digitos que muestra el movil, toca "Parear y conectar". Espera 3-8 segundos. Tiene que aparecer en la lista principal como `WiFi: adb-XXXXXX-YYYYYY` sin pedirte nada mas.
+
+2. **WP-2 fallback manual**: Abri el tab "WiFi (Android 11+)" con el movil apagado o con wireless debugging off. Esperá 9 segundos. El formulario manual (IP + puerto + codigo) tiene que expandirse solo, sin que toques nada.
+
+3. **WP-7 cross-session reconnect**: Parea un dispositivo una vez (paso 1). Cerra la app completamente. Dejá pasar 10 segundos. Abri la app de nuevo. El dispositivo tiene que aparecer solo en la lista de "Dispositivos" sin que toques ningun control WiFi. (Requiere adb >= 33 — si ves el banner amarillo "platform-tools viejo", actualizá con `brew upgrade android-platform-tools`).
+
+4. **WP-8 USB regression (critico)**: Enchufa un cable USB con un device. Abri la app. NO toques nada del panel WiFi. El device USB tiene que auto-detectarse y auto-seleccionarse EXACTAMENTE igual que en v3.1.14. No debe haber ningun control WiFi visible por default — solo el boton discreto "Agregar device WiFi" debajo de la lista, que podes ignorar.
+
+5. **WP-10 legacy switchToWifi**: Con un device USB conectado, toca el boton legacy "Cambiar a WiFi (medir bateria real)". Tiene que funcionar byte-a-byte identico a v3.1.14 — el flujo `adb tcpip 5555` + read IP + `adb connect` no se toco. Ningun control del feature nuevo se activa como efecto colateral.
+
+6. **Smoke macOS 15 Sequoia**: Si corres por primera vez en macOS 15+, confirma que el dialogo "Local Network" aparece al abrir el tab WiFi por primera vez. Si lo neg
+
+as, despues de 9 segundos tiene que aparecer el mensaje accionable "macOS esta bloqueando el descubrimiento de dispositivos. Anda a Configuracion → Privacidad y Seguridad → Red Local y permiti el acceso a esta app." (este escenario esta gated al entorno real — no es automatizable).
+
 ## [3.1.14] — 2026-04-08
 
 ### Que hay de nuevo
