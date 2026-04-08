@@ -14,6 +14,30 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.1.13] — 2026-04-08
+
+### Que hay de nuevo
+
+- **Boton "Reparar videos" en el historial**: si una sesion vieja quedo con el video cortado (por un crash de la app, un corte de luz, o cualquier cosa que haya impedido que la unificacion automatica corriera al arranque), ahora podes apretar el boton "Reparar videos" en la cabecera de "Pruebas recientes" para forzar manualmente la reconstruccion. La logica es la misma que ya corre automaticamente al iniciar la app, solo que ahora la podes invocar cuando quieras
+
+### Arreglos
+
+- **Bug critico, cierre de la saga v3.1.10 → v3.1.12**: el chain del recordJob (los segmentos 2..N de una grabacion larga) NO tenia la misma proteccion que el primer segmento. Si el segundo, tercer o cuarto segmento moria silenciosamente en el dispositivo (porque /sdcard se lleno, porque el encoder rechazo la combinacion de bitrate/resolucion, porque el low-memory killer mato el proceso, etc.) el codigo simplemente hacia `break` y vos perdias el resto del video sin enterarte. Ahora cada segmento del chain pasa por la misma validacion isAlive + lectura de stderr + retry con perfil STANDARD que ya tenia el primero, y si despues del retry el segmento sigue muerto se te muestra una advertencia explicita con el motivo en vez de quedarte sin nada
+- **Tests fantasmas eliminados**: 7 tests del proyecto (6 en `ConcatResilienceTest`, 1 en `ReportRenderingTest`) usaban el patron `if (env != "true") return` para auto-saltarse cuando faltaban dependencias externas. JUnit los reportaba como PASSED aunque no hubieran corrido ni una sola assertion — era cobertura mentirosa. Ahora usan `Assume.assumeTrue(...)` y se reportan correctamente como SKIPPED. La suite ya no miente sobre lo que cubre
+
+### Detalles tecnicos
+
+- **`AppViewModel.kt`**: la logica de `tryStart()` (warm-up + isAlive + stderr capture + retry) que estaba inline solo para el primer segmento se extrajo a dos helpers reutilizables:
+  - `validateScreenRecordProcess(process, warmupMs)`: funcion pura-ish que recibe un Process, espera el warm-up y clasifica en `Alive | DeadDuringWarmup(exitCode, stderr) | NullProcess`. Lee hasta 2KB de stderr (via `redirectErrorStream(true)`) cuando el proceso muere
+  - `startSegmentWithRetry(deviceId, sessionId, segment, profile)`: orquesta el flujo completo (start + validate + retry con STANDARD si el profile inicial fallo)
+  - El primer segmento en `startCapture()` y el chain loop dentro de `recordJob` ahora llaman al MISMO helper. No hay mas duplicacion ni mas paths sin instrumentar
+- **Contador `recordChainFailures`**: se agrego un contador interno (Volatile Int) para diagnostico. Se resetea en cada `startCapture()` y se incrementa cuando un segmento del chain muere despues del retry. Util para tests y futura telemetria
+- **Mensaje de chain failure**: cuando el chain rompe, el codigo setea `_captureWarning` con un texto explicito ("El video dejó de grabarse en el segmento N — el dispositivo rechazó screenrecord (...). Las métricas posteriores siguen siendo válidas."). Solo se setea si no hay ya otro warning activo (no clobberea, por ejemplo, un warning previo de "video corrupto" del concat)
+- **`AppViewModelTest.kt` (nuevo, 4 tests)**: cubre `validateScreenRecordProcess` con procesos reales spawneados via `ProcessBuilder("sh", "-c", ...)` — no se necesita mockear `AdbBridge`. Casos: (a) proceso que muere con exit 1 escribiendo a stderr → debe clasificar como `DeadDuringWarmup` con stderr capturado y exitCode preservado, (b) proceso que sobrevive el warm-up → `Alive`, (c) input null → `NullProcess`, (d) sanity check del contador `recordChainFailures` arrancando en 0. NO se cubre el control flow de `startSegmentWithRetry` end-to-end porque el helper depende del singleton `AdbBridge` y mockearlo requeriria escalar scope (refactor a interface o agregar mockk como dep). Documentado como gap conocido en el archivo del test
+- **`Assumptions` migration**: se intento usar `org.junit.jupiter.api.Assumptions.assumeTrue` pero el proyecto corre sobre kotlin-test-junit (JUnit 4), no Jupiter. Se uso `org.junit.Assume.assumeTrue(message, condition)` (notar el orden de argumentos: mensaje primero, condicion segundo, al reves de Jupiter). Mismas semanticas de skip
+- **Botón "Reparar videos"**: nuevo metodo publico `AppViewModel.repairOldVideos()` que reusa `FileCleanup.repairTruncatedVideos(snapshot)` (la firma real devuelve `List<HistoryEntry>`, no un Result struct, asi que el mensaje de status muestra solo el conteo de reparados). UI: `TextButton` con icono `Icons.Default.Build` agregado en `HomeScreen.kt` dentro del header de "Pruebas recientes", pegado a la derecha del titulo, antes del bloque de seleccion para comparacion. Estilo discreto (`fontSize = 11.sp`, color `TextDim`) para que no compita con el flow principal de captura
+- **NO se tocaron**: el `delay(3000)` del chain step (clave para v3.1.12), `concatSegments` ni la deteccion de archivos corruptos en `AdbBridge`, `EmbeddedVideoPlayer.kt`, ni el patch revertido `v3.1.11-round2-incomplete.patch`
+
 ## [3.1.12] — 2026-04-07
 
 ### Que hay de nuevo

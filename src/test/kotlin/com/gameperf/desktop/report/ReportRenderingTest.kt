@@ -3,6 +3,8 @@ package com.gameperf.desktop.report
 import com.gameperf.desktop.core.AdbBridge
 import kotlin.test.Test
 import kotlin.test.assertTrue
+// v3.1.13: project uses kotlin-test-junit (JUnit 4), not Jupiter. Same skip semantics.
+import org.junit.Assume.assumeTrue
 
 /**
  * Test that generates a real HTML report with synthetic data so the orchestrator
@@ -17,11 +19,17 @@ class ReportRenderingTest {
 
     @Test
     fun generateSampleReportForVisualVerification() {
-        // Disabled by default — uncomment the line below to regenerate a sample HTML in
-        // ~/GamePerf Reports/ that you can pipe through chrome --print-to-pdf to verify
-        // visual changes to the print mode without needing a live capture.
-        // Run with: ./gradlew test --tests "com.gameperf.desktop.report.ReportRenderingTest"
-        if (System.getenv("RUN_REPORT_FIXTURE") != "true") return
+        // Disabled by default — opt in by setting RUN_REPORT_FIXTURE=true to regenerate
+        // a sample HTML in ~/GamePerf Reports/ that you can pipe through
+        // chrome --print-to-pdf to verify visual changes to the print mode without
+        // needing a live capture.
+        // Run with: RUN_REPORT_FIXTURE=true ./gradlew test --tests "com.gameperf.desktop.report.ReportRenderingTest"
+        // v3.1.13: replaced silent `if (env != true) return` with assumeTrue so the
+        // test reports as SKIPPED instead of falsely PASSED when the env var is absent.
+        assumeTrue(
+            "Requires RUN_REPORT_FIXTURE=true",
+            System.getenv("RUN_REPORT_FIXTURE") == "true"
+        )
 
         val device = AdbBridge.DeviceInfo(
             model = "Pixel 7 Pro",

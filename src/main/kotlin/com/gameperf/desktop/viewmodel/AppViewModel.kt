@@ -255,6 +255,145 @@ class AppViewModel {
     private var recordSegment = 0
     private var recordJob: Job? = null
 
+    // v3.1.13: diagnostic counter for chain segment failures (segments 1..N that
+    // died during warm-up after the first one). Exposed for tests and future telemetry.
+    // Reset on every new capture in startCapture().
+    @Volatile internal var recordChainFailures: Int = 0
+        private set
+
+    /**
+     * v3.1.13 — Result of validating a freshly-started screenrecord [Process].
+     *
+     * Why this exists: a [Process] returned by `AdbBridge.startScreenRecord` may
+     * already be dead by the time we look at it (encoder rejected, /sdcard full,
+     * low-memory killer, unsupported codec). We need a single uniform way to
+     * detect that and surface the stderr for diagnosis. Used by both the initial
+     * segment path and the chain loop in [recordJob].
+     *
+     * Pure data class — no side effects on construction. The actual waiting/checking
+     * happens in [validateScreenRecordProcess], which is package-private so tests
+     * can drive it with synthetic processes (e.g. `sh -c "exit 1"`) without having
+     * to mock the entire `AdbBridge` singleton.
+     */
+    internal sealed class ScreenRecordValidation {
+        /** Process is still alive after the warm-up window — ready for use. */
+        data class Alive(val process: Process) : ScreenRecordValidation()
+        /** Process died during warm-up. [stderr] is the captured tail (best-effort). */
+        data class DeadDuringWarmup(val exitCode: Int, val stderr: String) : ScreenRecordValidation()
+        /** The caller passed a null process (i.e. `ProcessBuilder.start()` itself failed). */
+        object NullProcess : ScreenRecordValidation()
+    }
+
+    /**
+     * v3.1.13 — Validate a freshly-started screenrecord process.
+     *
+     * Waits [warmupMs] (default 1500ms — what `screenrecord` needs to actually start
+     * capturing frames), then checks `isAlive`. If the process died, reads up to
+     * 2KB of its stderr (which is also stdout because `redirectErrorStream(true)`
+     * is set in [AdbBridge.startScreenRecord]) for diagnosis.
+     *
+     * **Pure-ish**: the only side effects are `delay()` and reading the process'
+     * own stream. Does NOT mutate any AppViewModel state, does NOT log to stderr.
+     * The caller is responsible for logging and reacting to the result.
+     *
+     * Visible to tests so we can verify the dead-process detection without having
+     * to start a real `screenrecord` chain on a real device.
+     */
+    internal suspend fun validateScreenRecordProcess(
+        process: Process?,
+        warmupMs: Long = 1500
+    ): ScreenRecordValidation {
+        if (process == null) return ScreenRecordValidation.NullProcess
+        delay(warmupMs)
+        if (process.isAlive) return ScreenRecordValidation.Alive(process)
+        // Process died. `redirectErrorStream(true)` means stderr is on the inputStream.
+        // Read defensively: cap at 2KB so we don't block on a runaway producer.
+        val tail = try {
+            val buf = ByteArray(2048)
+            val read = process.inputStream.read(buf)
+            if (read > 0) String(buf, 0, read).trim() else "(no output)"
+        } catch (_: Exception) { "(stderr unreadable)" }
+        val exit = try { process.exitValue() } catch (_: Exception) { -1 }
+        return ScreenRecordValidation.DeadDuringWarmup(exitCode = exit, stderr = tail)
+    }
+
+    /**
+     * v3.1.13 — Start a single screenrecord segment with retry-on-failure semantics.
+     *
+     * Logic:
+     *   1. Call `AdbBridge.startScreenRecord` with [profile].
+     *   2. Validate via [validateScreenRecordProcess] (warm-up 1500ms + isAlive check).
+     *   3. If alive → return the process.
+     *   4. If dead → log the stderr. If [profile] != STANDARD, retry with STANDARD.
+     *   5. If the retry also dies → log and return null.
+     *
+     * Used by BOTH the initial segment path in [startCapture] AND each iteration of
+     * the chain loop in [recordJob]. Before v3.1.13, only the initial segment had
+     * this logic — chain segments called `startScreenRecord` directly and any
+     * silent death produced a `break` with no warning. That was the root cause of
+     * the v3.1.10/11/12 chain regressions.
+     *
+     * @return the started, alive [Process] on success; null if both attempts failed.
+     */
+    private suspend fun startSegmentWithRetry(
+        deviceId: String,
+        sessionId: String,
+        segment: Int,
+        profile: AdbBridge.ScreenRecordProfile
+    ): Process? {
+        val firstAttempt = AdbBridge.startScreenRecord(deviceId, sessionId, segment, profile)
+        when (val v = validateScreenRecordProcess(firstAttempt)) {
+            is ScreenRecordValidation.Alive -> return v.process
+            is ScreenRecordValidation.DeadDuringWarmup -> {
+                System.err.println(
+                    "AppViewModel: screenrecord segment=$segment profile=$profile died during warm-up " +
+                        "(exit=${v.exitCode}): ${v.stderr}"
+                )
+            }
+            ScreenRecordValidation.NullProcess -> {
+                System.err.println(
+                    "AppViewModel: screenrecord segment=$segment profile=$profile failed to start " +
+                        "(ProcessBuilder.start returned null)"
+                )
+            }
+        }
+
+        // Retry with STANDARD profile if we weren't already on it.
+        if (profile != AdbBridge.ScreenRecordProfile.STANDARD) {
+            System.err.println("AppViewModel: retrying segment=$segment with STANDARD profile")
+            val retry = AdbBridge.startScreenRecord(
+                deviceId, sessionId, segment, AdbBridge.ScreenRecordProfile.STANDARD
+            )
+            when (val v = validateScreenRecordProcess(retry)) {
+                is ScreenRecordValidation.Alive -> return v.process
+                is ScreenRecordValidation.DeadDuringWarmup -> {
+                    System.err.println(
+                        "AppViewModel: STANDARD retry for segment=$segment also died " +
+                            "(exit=${v.exitCode}): ${v.stderr}"
+                    )
+                }
+                ScreenRecordValidation.NullProcess -> {
+                    System.err.println(
+                        "AppViewModel: STANDARD retry for segment=$segment failed to start"
+                    )
+                }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * v3.1.13 — Build a human-readable diagnostic message for a failed segment.
+     * Looks at the process' last stderr if we still have it (we don't in the chain
+     * loop because we drop the reference). For now this is just a fallback string;
+     * the per-attempt stderr is already logged inside [startSegmentWithRetry].
+     */
+    private fun describeChainFailure(segment: Int): String =
+        "El video dejó de grabarse en el segmento $segment — el dispositivo rechazó " +
+            "screenrecord (encoder, espacio en /sdcard o memoria insuficiente). " +
+            "Las métricas posteriores siguen siendo válidas."
+
     fun init() {
         // Startup file-system cleanup runs on IO before the rest of init touches the
         // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
@@ -462,6 +601,7 @@ class AppViewModel {
         _captureError.value = null
         _captureWarning.value = null
         shouldStop = false
+        recordChainFailures = 0  // v3.1.13: reset diagnostic counter per capture
         AdbBridge.resetSessionState()
 
         captureJob = scope.launch {
@@ -490,7 +630,7 @@ class AppViewModel {
                     else -> AdbBridge.ScreenRecordProfile.STANDARD
                 }
             }
-            // v3.1.11: startScreenRecord has TWO failure modes that the v3.1.10 code
+            // v3.1.11/13: startScreenRecord has TWO failure modes that the v3.1.10 code
             // didn't distinguish:
             //   (a) ProcessBuilder.start() throws → returns null immediately
             //   (b) start() succeeds but `screenrecord` exits within 100ms with non-zero
@@ -500,40 +640,22 @@ class AppViewModel {
             //       no detection for this — the chain timer fired, pullRecordings found
             //       no files, the user got a session with empty videoPath and no error.
             //
-            // Detection strategy: after the 1500ms warm-up delay (which screenrecord
-            // needs to actually start capturing frames), check `process.isAlive()`. If
-            // it died during warm-up, read its stderr to diagnose, retry with a safer
-            // profile if applicable, and surface a non-fatal warning to the user if
-            // BOTH attempts fail.
-            //
-            // We use a small helper because the same logic runs in the chain segment
-            // path inside recordJob too.
-            suspend fun tryStart(p: AdbBridge.ScreenRecordProfile): Process? {
-                val proc = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, p) ?: return null
-                delay(1500)  // warm-up
-                if (proc.isAlive) return proc
-                // Process died during warm-up. Read its stderr (redirected via redirectErrorStream)
-                // for diagnosis, then return null so the caller can retry or warn.
-                val stderr = try {
-                    proc.inputStream.bufferedReader().readText().trim().take(500)
-                } catch (_: Exception) { "(no stderr)" }
-                System.err.println("AppViewModel: screenrecord with profile=$p died during warm-up (exit=${proc.exitValue()}): $stderr")
-                return null
-            }
-
-            recordProcess = tryStart(recordProfile)
-            if (recordProcess == null && recordProfile != AdbBridge.ScreenRecordProfile.STANDARD) {
-                // Profile-specific failure: retry with the safe default profile.
-                System.err.println("AppViewModel: retrying screenrecord with STANDARD profile")
-                recordProcess = tryStart(AdbBridge.ScreenRecordProfile.STANDARD)
-            }
+            // v3.1.13: the detection logic (warm-up + isAlive + stderr capture + retry
+            // with STANDARD) used to be inline as `tryStart`. It's now extracted to
+            // [startSegmentWithRetry] so the chain loop in recordJob can reuse the
+            // EXACT SAME logic for segments 1..N. Before v3.1.13, only the initial
+            // segment had this — chain segments could die silently and the loop
+            // would just `break` without telling the user. That was the v3.1.10/11/12
+            // root cause.
+            recordProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, recordProfile)
             if (recordProcess == null) {
                 // Both attempts failed. Surface a non-fatal warning so the user knows
                 // why the report has no video. Capture continues with metrics only.
                 _captureWarning.value = "El video no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las metricas si se estan registrando."
                 System.err.println("AppViewModel: screenrecord failed for both COMPACT and STANDARD profiles on device ${device.id}")
             }
-            // Note: tryStart already includes the 1500ms warm-up delay, no need to delay again here.
+            // Note: startSegmentWithRetry already includes the 1500ms warm-up delay (and
+            // a second one if the retry path is taken), no need to delay again here.
 
             // NOW start the clock - video and metrics are synced from this point
             val startTime = System.currentTimeMillis()
@@ -554,6 +676,11 @@ class AppViewModel {
             //   the extra 2 seconds per chain step is negligible (~2% overhead at 10 min).
             //
             // v3.1.11: only chain if the initial segment actually started.
+            // v3.1.13: chain segments now go through [startSegmentWithRetry] just like
+            // the first one. If a chain segment dies during warm-up we get the same
+            // stderr-capture + retry-with-STANDARD treatment, AND if it ultimately
+            // fails we surface an EXPLICIT warning to the user instead of breaking
+            // silently. This closes the v3.1.10/11/12 regression saga.
             recordJob = scope.launch {
                 while (!shouldStop) {
                     delay(175_000)
@@ -564,9 +691,19 @@ class AppViewModel {
                     // produced 7MB partial files instead of full 80MB segments.
                     delay(3000)
                     recordSegment++
-                    val nextProcess = AdbBridge.startScreenRecord(device.id, sessionId, recordSegment, recordProfile)
+                    val nextProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, recordProfile)
                     if (nextProcess == null) {
-                        System.err.println("AppViewModel: chain segment $recordSegment failed to start, stopping chain (existing segments preserved)")
+                        // v3.1.13: do NOT break silently. Tell the user the chain stopped
+                        // and why, so they understand the video is partial. Metrics
+                        // capture continues — the chain failure is non-fatal.
+                        recordChainFailures++
+                        val msg = describeChainFailure(recordSegment)
+                        System.err.println("AppViewModel: chain segment $recordSegment failed after retry — $msg")
+                        // Only set the warning if we don't already have one (don't
+                        // clobber e.g. a "video corrupt" message from concat).
+                        if (_captureWarning.value == null) {
+                            _captureWarning.value = msg
+                        }
                         recordProcess = null
                         break  // exit the chain loop, but do NOT stop the metrics capture
                     }
@@ -925,6 +1062,47 @@ class AppViewModel {
 
     fun clearCaptureWarning() {
         _captureWarning.value = null
+    }
+
+    /**
+     * v3.1.13 — Manually re-run the legacy-video repair logic that already runs once
+     * automatically in [init]. Exposed as a button in [HomeScreen] so users can
+     * trigger it after a power loss / app crash that left segments unconcatenated.
+     *
+     * Updates [statusMessage] with the outcome. Never throws — failures are caught
+     * inside `FileCleanup.repairTruncatedVideos` and reported via stderr.
+     *
+     * Note: `repairTruncatedVideos` returns the list of *successfully repaired*
+     * entries (NOT a Result struct). It does not expose a separate "checked" count.
+     * The status message reflects only the repaired count, which is what the user
+     * cares about. If the list is empty, we cannot distinguish "nothing needed
+     * fixing" from "fixing failed for everything we tried" without instrumenting
+     * FileCleanup further (out of scope for v3.1.13).
+     */
+    fun repairOldVideos() {
+        scope.launch {
+            _statusMessage.value = "Reparando videos antiguos..."
+            val repaired = withContext(Dispatchers.IO) {
+                try {
+                    val snapshot = SessionHistory.load()
+                    val result = FileCleanup.repairTruncatedVideos(snapshot)
+                    result.forEach { SessionHistory.updateEntry(it) }
+                    if (result.isNotEmpty()) {
+                        _history.value = SessionHistory.load()
+                    }
+                    result.size
+                } catch (t: Throwable) {
+                    System.err.println("AppViewModel.repairOldVideos: ${t.message}")
+                    -1
+                }
+            }
+            _statusMessage.value = when {
+                repaired < 0 -> "No se pudieron reparar los videos (revisa los logs)"
+                repaired == 0 -> "No hay videos antiguos por reparar"
+                repaired == 1 -> "Se reparó 1 video"
+                else -> "Se repararon $repaired videos"
+            }
+        }
     }
 
     /** Place a marker at the current capture second (used during live capture). */

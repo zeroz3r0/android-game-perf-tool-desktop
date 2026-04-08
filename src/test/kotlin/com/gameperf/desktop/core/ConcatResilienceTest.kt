@@ -7,6 +7,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+// v3.1.13: this project's test runtime is kotlin-test-junit → JUnit 4 (NOT Jupiter).
+// We use `org.junit.Assume.assumeTrue` instead of the Jupiter equivalent — it has
+// the same skip semantics and is available without changing the build dependencies.
+import org.junit.Assume.assumeTrue
 
 /**
  * Tests for [AdbBridge.concatSegments] and [AdbBridge.isValidVideoFile] resilience
@@ -73,8 +77,11 @@ class ConcatResilienceTest {
 
     @Test
     fun `isValidVideoFile returns true for a valid generated mp4`() {
-        if (System.getenv("RUN_FFMPEG_TESTS") != "true") return
-        if (!ffmpegAvailable()) return
+        // v3.1.13: replaced silent `if (env != true) return` with JUnit Assumptions so
+        // the test correctly reports as SKIPPED instead of falsely PASSED when the
+        // gating env var is absent.
+        assumeTrue("Requires RUN_FFMPEG_TESTS=true", System.getenv("RUN_FFMPEG_TESTS") == "true")
+        assumeTrue("Requires ffmpeg in PATH", ffmpegAvailable())
 
         val tmpDir = createTempDirectory("gp-test-").toFile()
         try {
@@ -88,8 +95,8 @@ class ConcatResilienceTest {
 
     @Test
     fun `isValidVideoFile returns false for a corrupt mp4 with no moov atom`() {
-        if (System.getenv("RUN_FFMPEG_TESTS") != "true") return
-        if (!ffmpegAvailable()) return
+        assumeTrue("Requires RUN_FFMPEG_TESTS=true", System.getenv("RUN_FFMPEG_TESTS") == "true")
+        assumeTrue("Requires ffmpeg in PATH", ffmpegAvailable())
 
         val tmpDir = createTempDirectory("gp-test-").toFile()
         try {
@@ -127,8 +134,8 @@ class ConcatResilienceTest {
 
     @Test
     fun `concatSegments skips corrupt first segment and uses valid ones`() {
-        if (System.getenv("RUN_FFMPEG_TESTS") != "true") return
-        if (!ffmpegAvailable()) return
+        assumeTrue("Requires RUN_FFMPEG_TESTS=true", System.getenv("RUN_FFMPEG_TESTS") == "true")
+        assumeTrue("Requires ffmpeg in PATH", ffmpegAvailable())
 
         val tmpDir = createTempDirectory("gp-test-").toFile()
         try {
@@ -160,8 +167,8 @@ class ConcatResilienceTest {
 
     @Test
     fun `concatSegments returns null when ALL segments are corrupt`() {
-        if (System.getenv("RUN_FFMPEG_TESTS") != "true") return
-        if (!ffmpegAvailable()) return
+        assumeTrue("Requires RUN_FFMPEG_TESTS=true", System.getenv("RUN_FFMPEG_TESTS") == "true")
+        assumeTrue("Requires ffmpeg in PATH", ffmpegAvailable())
 
         val tmpDir = createTempDirectory("gp-test-").toFile()
         try {
@@ -181,8 +188,8 @@ class ConcatResilienceTest {
 
     @Test
     fun `concatSegments returns the single valid segment when only one is valid`() {
-        if (System.getenv("RUN_FFMPEG_TESTS") != "true") return
-        if (!ffmpegAvailable()) return
+        assumeTrue("Requires RUN_FFMPEG_TESTS=true", System.getenv("RUN_FFMPEG_TESTS") == "true")
+        assumeTrue("Requires ffmpeg in PATH", ffmpegAvailable())
 
         val tmpDir = createTempDirectory("gp-test-").toFile()
         try {
@@ -208,8 +215,8 @@ class ConcatResilienceTest {
 
     @Test
     fun `concatSegments preserves valid 2-segment concat when both are valid`() {
-        if (System.getenv("RUN_FFMPEG_TESTS") != "true") return
-        if (!ffmpegAvailable()) return
+        assumeTrue("Requires RUN_FFMPEG_TESTS=true", System.getenv("RUN_FFMPEG_TESTS") == "true")
+        assumeTrue("Requires ffmpeg in PATH", ffmpegAvailable())
 
         val tmpDir = createTempDirectory("gp-test-").toFile()
         try {

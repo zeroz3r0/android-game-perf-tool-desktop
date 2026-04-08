@@ -486,7 +486,31 @@ fun HomeScreen(vm: AppViewModel) {
                         Spacer(Modifier.width(8.dp))
                         Text("Pruebas recientes", color = Cyan, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.weight(1f))
+                        // v3.1.13: discreet button to manually re-run the legacy video
+                        // repair logic. Useful after a power loss / crash that left
+                        // segments un-concatenated. The same logic runs once on app
+                        // startup automatically, this is just the on-demand version.
+                        // Kept small + secondary so it doesn't compete with the main
+                        // capture flow.
+                        TextButton(
+                            onClick = { vm.repairOldVideos() },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Build,
+                                contentDescription = null,
+                                tint = TextDim,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "Reparar videos",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
                         if (comparisonSelection.isNotEmpty()) {
+                            Spacer(Modifier.width(8.dp))
                             Text(
                                 "${comparisonSelection.size} seleccionadas",
                                 color = Purple, fontSize = 11.sp, fontWeight = FontWeight.SemiBold
