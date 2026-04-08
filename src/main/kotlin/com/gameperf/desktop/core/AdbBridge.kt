@@ -141,6 +141,13 @@ object AdbBridge {
     private var prevCpuBusy: Long = 0
     private var prevCpuTotal: Long = 0
     private var prevCpuInitialized: Boolean = false
+    // v3.1.11 — frame de-duplication state for captureFrames.
+    // SurfaceFlinger's `--latency` returns the most recent ~127 frames in the buffer
+    // (≈2s of footage at 60fps). When the polling loop calls captureFrames every 500ms,
+    // successive responses overlap by ~1.5s. Without de-dup, every jank frame is counted
+    // 3-4× by the running total in AppViewModel. Tracking the last seen timestamp lets us
+    // ignore frames we already saw and only count newly-presented frames.
+    private var lastSeenFrameTimestampNs: Long = 0L
 
     /** Reset session-scoped state so consecutive captures start clean. */
     fun resetSessionState() {
@@ -148,6 +155,7 @@ object AdbBridge {
         prevCpuBusy = 0
         prevCpuTotal = 0
         prevCpuInitialized = false
+        lastSeenFrameTimestampNs = 0L
     }
 
     /**
@@ -214,11 +222,50 @@ object AdbBridge {
 
     data class FrameSnapshot(val fps: Int, val avgFrameTime: Double, val jankCount: Int, val stutterCount: Int)
 
+    /**
+     * Capture frame statistics from SurfaceFlinger's `--latency` buffer.
+     *
+     * Reads the layer name via [findLayer], shells out to `dumpsys SurfaceFlinger --latency`,
+     * and delegates parsing + de-duplication to [parseFrameLatencyOutput] (the pure function
+     * extracted for unit-testability). Updates the session-scoped [lastSeenFrameTimestampNs]
+     * after parsing so the next call only counts truly new frames.
+     */
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
         val layer = findLayer(deviceId, pkg) ?: return null
         val output = shell(deviceId, "dumpsys SurfaceFlinger --latency '$layer'")
+        val (snapshot, newLastSeen) = parseFrameLatencyOutput(output, lastSeenFrameTimestampNs)
+        if (newLastSeen > 0L) lastSeenFrameTimestampNs = newLastSeen
+        return snapshot
+    }
+
+    /**
+     * Pure parser for `dumpsys SurfaceFlinger --latency` output.
+     *
+     * The buffer holds the most recent ~127 frames (≈2 seconds at 60fps). FPS and
+     * average frame time are computed on the **current 1-second window** of the
+     * buffer (these are point-in-time observations, not accumulated counts, so they
+     * are correct as long as we read the most recent window).
+     *
+     * `jankCount` and `stutterCount`, however, are counts that the caller accumulates
+     * via `totalJank += frame.jankCount` across calls. v3.1.10 and earlier counted
+     * jank frames over the **entire** buffer on every call, causing 3-4× over-count
+     * because successive calls (every 500ms) re-saw the same frames in their 2-second
+     * windows. v3.1.11 fixes this by passing in [lastSeenTimestampNs] (the last frame
+     * timestamp the caller has already seen) and only counting frames strictly newer.
+     *
+     * @param output Raw output from `dumpsys SurfaceFlinger --latency '<layer>'`
+     * @param lastSeenTimestampNs Latest frame timestamp from the previous call, or 0L
+     *   on the first call this session
+     * @return Pair of (snapshot, newLastSeen). The newLastSeen value should be saved by
+     *   the caller and passed back on the next invocation. Returns (null, 0L) if the
+     *   output is unparseable or contains too few frames.
+     */
+    internal fun parseFrameLatencyOutput(
+        output: String,
+        lastSeenTimestampNs: Long
+    ): Pair<FrameSnapshot?, Long> {
         val lines = output.lines()
-        if (lines.size < 3) return null
+        if (lines.size < 3) return null to 0L
         val times = mutableListOf<Long>()
         for (i in 1 until lines.size) {
             val parts = lines[i].trim().split("\\s+".toRegex())
@@ -227,19 +274,72 @@ object AdbBridge {
                 if (ts > 0 && ts < Long.MAX_VALUE / 2 && (times.isEmpty() || ts >= times.last())) times.add(ts)
             }
         }
-        if (times.size < 2) return null
-        val frameTimes = (1 until times.size).mapNotNull { i ->
-            val d = (times[i] - times[i - 1]) / 1_000_000.0
-            if (d in 0.1..1000.0) d else null
-        }
-        if (frameTimes.isEmpty()) return null
+        if (times.size < 2) return null to 0L
+
+        // FPS + avgFrameTime: computed on the most recent 1-second window of the
+        // buffer. This is a point-in-time observation and does not need de-duplication.
         val windowNs = 1_000_000_000L
         val windowed = times.filter { it >= times.last() - windowNs }
         val fps = if (windowed.size >= 2) {
             val delta = (windowed.last() - windowed.first()) / 1_000_000_000.0
             if (delta > 0) ((windowed.size - 1) / delta).toInt().coerceIn(1, 144) else 0
         } else 0
-        return FrameSnapshot(fps, frameTimes.average(), frameTimes.count { it > 16.67 }, frameTimes.count { it > 100.0 })
+
+        val frameTimes = (1 until times.size).mapNotNull { i ->
+            val d = (times[i] - times[i - 1]) / 1_000_000.0
+            if (d in 0.1..1000.0) d else null
+        }
+        if (frameTimes.isEmpty()) return null to 0L
+        val avgFrameTime = frameTimes.average()
+
+        // jankCount + stutterCount: counted ONLY over frames newer than the last call.
+        val newFrameTimes: List<Double> = if (lastSeenTimestampNs == 0L) {
+            // First call this session: limit to the same 1s window used for FPS so we
+            // don't dump 2s of stale jank into the counter on iteration 0.
+            val firstWindowStart = times.last() - windowNs
+            val newTimes = times.filter { it >= firstWindowStart }
+            (1 until newTimes.size).mapNotNull { i ->
+                val d = (newTimes[i] - newTimes[i - 1]) / 1_000_000.0
+                if (d in 0.1..1000.0) d else null
+            }
+        } else {
+            // Subsequent calls: only frames with timestamp > lastSeen are new. We need
+            // pairs (so the deltas are correct), so we walk the times list and start
+            // collecting from the first index where ts > lastSeen, INCLUDING the prior
+            // frame as the anchor for the first delta.
+            val firstNewIdx = times.indexOfFirst { it > lastSeenTimestampNs }
+            when {
+                firstNewIdx < 0 -> {
+                    // No new frames at all (lastSeen >= every timestamp in the buffer).
+                    emptyList()
+                }
+                firstNewIdx == 0 -> {
+                    // Buffer rotated completely since last call: the oldest frame in
+                    // the new buffer is already newer than lastSeen, so there's no
+                    // pre-buffer anchor for the very first delta. v3.1.11 round-2 fix:
+                    // start from index 1 instead of dropping the entire window. We lose
+                    // ONE delta (the unanchored leading frame) instead of all of them.
+                    // This matters on high-fps games during slow-tier hiccups where the
+                    // gap between captureFrames calls can exceed the SF buffer time-span.
+                    (1 until times.size).mapNotNull { i ->
+                        val d = (times[i] - times[i - 1]) / 1_000_000.0
+                        if (d in 0.1..1000.0) d else null
+                    }
+                }
+                else -> {
+                    // Normal case: some new frames, with at least one already-seen anchor.
+                    (firstNewIdx until times.size).mapNotNull { i ->
+                        val d = (times[i] - times[i - 1]) / 1_000_000.0
+                        if (d in 0.1..1000.0) d else null
+                    }
+                }
+            }
+        }
+
+        val jankCount = newFrameTimes.count { it > 16.67 }
+        val stutterCount = newFrameTimes.count { it > 100.0 }
+
+        return FrameSnapshot(fps, avgFrameTime, jankCount, stutterCount) to times.last()
     }
 
     data class MemSnapshot(val totalMb: Long, val nativeMb: Long, val javaMb: Long)
@@ -332,16 +432,22 @@ object AdbBridge {
      * On a low-end SoC like the Pixel XL's Snapdragon 821 (Adreno 530, native 1440x2560),
      * the second case is the difference between a playable game and a stuttering mess.
      *
-     * v3.1.10 introduces a compact profile (540x960 @ 2 Mbps) for LOW / LOWER_MID tier
-     * devices. The video is still usable for frame-by-frame analysis but the scaling
-     * factor against 1440p is ~7x pixels vs ~4x for the standard profile — slightly
-     * worse math on paper, but empirically the smaller output surface is cheaper for
-     * SurfaceFlinger to composite even accounting for the larger scale factor, because
-     * the virtual display fillrate is the dominant cost.
+     * v3.1.10 introduced a compact profile for LOW / LOWER_MID tier devices.
+     * v3.1.11: COMPACT changed from 540x960 to 544x960 because Android MediaCodec AVC
+     * encoders typically require both dimensions to be multiples of 16 (some older SoCs
+     * even require 32). 540 is not a multiple of 16 (540/16 = 33.75) so the OMX layer
+     * either rejects the size outright (exit code != 0, screenrecord process dies in
+     * ~100ms with no recording) or silently rounds the width — both broken outcomes.
+     * 544 (= 16 × 34) is encoder-safe on every Android device and is visually identical
+     * to 540 for analysis purposes.
+     *
+     * Both dimensions of both profiles MUST remain multiples of 16. Future maintainers:
+     * if you add a new profile, run it through `width % 16 == 0 && height % 16 == 0`
+     * before committing.
      */
     enum class ScreenRecordProfile(val width: Int, val height: Int, val bitRate: Int) {
-        STANDARD(720, 1280, 4_000_000),
-        COMPACT(540, 960, 2_000_000)
+        STANDARD(720, 1280, 4_000_000),  // 720 = 16×45, 1280 = 16×80
+        COMPACT(544, 960, 2_000_000)     // 544 = 16×34, 960 = 16×60
     }
 
     /**

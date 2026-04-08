@@ -530,29 +530,49 @@ class AppViewModel {
             var totalStutter = 0
             var consecutiveAdbFailures = 0
 
-            // v3.1.10: Tiered cadence to reduce capture overhead on the game.
+            // v3.1.11 round-2: Tiered cadence with FOUR independent phases for capture
+            // overhead reduction. See `core/TierSchedule.kt` for the full design rationale
+            // and coincidence analysis. Summary:
             //
-            // Rationale: `dumpsys meminfo <pkg>` blocks the game's main looper for 50-200ms
-            // per call, and `dumpsys thermalservice` / sysfs thermal are medium cost. The
-            // only truly cheap fast-tier metrics are FPS (via `dumpsys SurfaceFlinger
-            // --latency` which is 5-20ms) and CPU (via `cat /proc/stat` which is 5-10ms).
+            //   - Fast tier (every iter, ~30-50ms):    FPS, CPU, battery
+            //   - Medium tier (% 4 == 1, ~30-80ms):    thermal sensors
+            //   - Slow tier (% 10 == 6, ~200-800ms):   `dumpsys meminfo` (blocks game main thread)
+            //   - Compositor tier (% 14 == 3, ~150-500ms): `getMissedFrames` (full SF dump)
             //
-            // We still run the loop every 500ms but guard the expensive calls with counters
-            // so they only fire on the slower cadence. Memory every 5s, thermal every 2s.
-            // Battery is cheap so it stays on the fast tier.
+            // The four phases are chosen so that:
+            //   1. Iter 0 fires ONLY the fast tier (no startup burst).
+            //   2. Slow and Compositor NEVER coincide (their period gcd=2 with phase parity
+            //      mismatch). This means the game NEVER sees both `meminfo` and `getMissedFrames`
+            //      in the same iteration — a regression of v3.1.11 round-1 that the round-2
+            //      review caught.
+            //   3. Slow and Medium NEVER coincide (verified by inspection of `% 10 == 6` vs
+            //      `% 4 == 1` — no integer satisfies both).
+            //   4. Medium and Compositor coincide once every 28 iterations (~14s), but both
+            //      together are still cheaper (~630ms worst case) than the v3.1.10 baseline.
             //
-            // `getMissedFrames` (which does a full `dumpsys SurfaceFlinger` costing 150-500ms
-            // and grabs the global compositor lock) is REMOVED from the live loop entirely.
-            // It's now only called at session boundaries (start + end) for the final delta
-            // that lands in the report. The live UI counter for frameDrops is updated using
-            // `totalJank` which we already track per sample for free.
+            // `lastMissedDelta` is seeded BEFORE the loop starts (using `missedStart` since the
+            // delta is 0 by definition at t=0) so the live HUD never shows a misleading "0"
+            // for the first 7 seconds of capture before the compositor tier first fires.
+            //
+            // SurfaceFlinger reset detection: if `liveMissed < lastLiveMissed` we detect that
+            // SF has reset its counters (screen rotation, screen off/on, SystemUI restart on
+            // some devices). On detection we re-baseline `missedStart` so the running delta
+            // stays correct, and the final report computation uses the same logic.
             //
             // Last-known-value pattern: the LiveMetrics update always receives something for
             // each field, even on iterations where a slow-tier metric didn't fire. We hold
             // the last observed mem/thermal values in locals and re-emit them.
+            val schedule = com.gameperf.desktop.core.TierSchedule()
             var iterCount = 0
             var lastMem: AdbBridge.MemSnapshot? = null
             var lastThermal = AdbBridge.ThermalSnapshot(-1.0, -1.0, -1.0, -1.0)
+            // Seed lastMissedDelta to 0 (the delta against missedStart at t=0 is by
+            // definition 0). lastLiveMissed tracks the previous reading so we can detect
+            // SurfaceFlinger counter resets. Use a mutable missedBaseline that gets
+            // re-anchored on reset.
+            var lastMissedDelta = 0
+            var missedBaseline = missedStart
+            var lastLiveMissed = missedStart
 
             while (!shouldStop) {
                 val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
@@ -564,7 +584,7 @@ class AppViewModel {
                 delay(500)
                 if (shouldStop) break
 
-                // === FAST TIER (every iteration ~= every 500ms) ===
+                // === FAST TIER (every iteration) ===
                 // FPS via --latency (5-20ms), CPU via /proc/stat (5-10ms), battery (5-15ms)
                 val frame = AdbBridge.captureFrames(device.id, pkg)
                 if (shouldStop) break
@@ -573,32 +593,55 @@ class AppViewModel {
                 val battery = AdbBridge.getBatteryLevel(device.id)
                 if (shouldStop) break
 
-                // === MEDIUM TIER (every ~2s, i.e. every 4th iteration) ===
+                // === MEDIUM TIER (~ every 2s) ===
                 // Thermal sensors — sysfs is fast-ish (~30-80ms) but multi-cat adds up.
-                val runThermal = iterCount % 4 == 0
+                val runThermal = schedule.runMedium(iterCount)
                 if (runThermal) {
                     val t = AdbBridge.captureTemperature(device.id)
                     if (shouldStop) break
                     lastThermal = t
                 }
 
-                // === SLOW TIER (every ~5s, i.e. every 10th iteration) ===
+                // === SLOW TIER (~ every 5s) ===
                 // `dumpsys meminfo <pkg>` is the worst offender: 200-800ms AND blocks the
                 // game's main thread. Memory is a slow-changing signal, 5s is plenty.
-                val runMem = iterCount % 10 == 0
+                val runMem = schedule.runSlow(iterCount)
                 if (runMem) {
                     val m = AdbBridge.captureMemory(device.id, pkg)
                     if (shouldStop) break
                     if (m != null) lastMem = m
                 }
 
+                // === COMPOSITOR TIER (~ every 7s, NEVER coincides with slow) ===
+                // `getMissedFrames` does a full `dumpsys SurfaceFlinger` (150-500ms) and grabs
+                // the SF global lock — the same lock the game uses to present frames. We
+                // intentionally separate this from the slow tier so the game never sees both
+                // its main thread blocked AND its compositor blocked in the same iteration.
+                val runCompositor = schedule.runCompositor(iterCount)
+                if (runCompositor) {
+                    val liveMissed = AdbBridge.getMissedFrames(device.id)
+                    if (shouldStop) break
+                    if (liveMissed < lastLiveMissed) {
+                        // SurfaceFlinger counter reset detected (rotation, screen off/on,
+                        // SystemUI restart). Re-anchor the baseline so the delta stays
+                        // correct from this point on. We carry forward the previously
+                        // accumulated delta so the live HUD doesn't lose history.
+                        missedBaseline = liveMissed - lastMissedDelta
+                    } else {
+                        lastMissedDelta = liveMissed - missedBaseline
+                    }
+                    lastLiveMissed = liveMissed
+                }
+
                 iterCount++
 
-                // Device disconnect detection: if the fast tier returned all null/0/empty
-                // the device is likely disconnected. We only need the fast-tier results
-                // for this heuristic — the slow tiers may legitimately be idle.
-                val allFailed = frame == null && cpu == 0 && battery == 0
-                if (allFailed) {
+                // Device disconnect detection: if the fast tier returned all FAILURE
+                // SENTINELS (frame == null, cpu < 0 from parse fail, battery < 0 from parse
+                // fail), the device is likely disconnected. Note: cpu == 0 and battery == 0
+                // are LEGITIMATE values (paused game = 0% CPU, dead device = 0% battery),
+                // so we use `< 0` not `== 0`. Three consecutive failures trigger disconnect.
+                val fastTierFailed = frame == null && cpu < 0 && battery < 0
+                if (fastTierFailed) {
                     consecutiveAdbFailures++
                     if (consecutiveAdbFailures >= 3) {
                         shouldStop = true
@@ -631,10 +674,20 @@ class AppViewModel {
                     frameTimeAvgHistory.add(frame.avgFrameTime)
                     allFrameTimes.add(frame.avgFrameTime)
                 }
+                // v3.1.11: jankCount/stutterCount are de-duplicated inside captureFrames
+                // (see AdbBridge.lastSeenFrameTimestampNs) so this accumulator is correct
+                // and not over-counted by the SurfaceFlinger buffer overlap.
                 totalJank += frame?.jankCount ?: 0
                 totalStutter += frame?.stutterCount ?: 0
 
                 val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+                // v3.1.11 round-2: thermal "no data" sentinel uses Double.NaN instead of 0.0
+                // so the UI can render "—" instead of "0°C" before the first thermal sample.
+                // (UI must check `tempCpu.isNaN()` and render placeholder on true.)
+                val tempCpuLive = if (lastThermal.cpu > 0) lastThermal.cpu else Double.NaN
+                val tempGpuLive = if (lastThermal.gpu > 0) lastThermal.gpu else Double.NaN
+                val tempBatLive = if (lastThermal.battery > 0) lastThermal.battery else Double.NaN
+                val tempSkinLive = if (lastThermal.skin > 0) lastThermal.skin else Double.NaN
                 _liveMetrics.value = LiveMetrics(
                     elapsed = currentElapsed, fps = fps,
                     avgFps = if (fpsHistory.isNotEmpty()) fpsHistory.average() else 0.0,
@@ -643,17 +696,16 @@ class AppViewModel {
                     memMb = lastMem?.totalMb ?: 0,
                     nativeMb = lastMem?.nativeMb ?: 0,
                     javaMb = lastMem?.javaMb ?: 0,
-                    tempCpu = lastThermal.cpu,
-                    tempGpu = lastThermal.gpu,
-                    tempBattery = lastThermal.battery,
-                    tempSkin = lastThermal.skin,
+                    tempCpu = tempCpuLive,
+                    tempGpu = tempGpuLive,
+                    tempBattery = tempBatLive,
+                    tempSkin = tempSkinLive,
                     jankCount = totalJank, stutterCount = totalStutter,
                     battery = battery,
-                    // v3.1.10: frameDrops live counter replaced by totalJank. The final
-                    // report number is computed post-loop from missedEnd - missedStart so
-                    // precision is preserved; the live counter is now "jank count" which
-                    // comes for free from the per-frame analysis in captureFrames.
-                    frameDrops = totalJank,
+                    // v3.1.11 round-2: frameDrops uses the SAME getMissedFrames delta the
+                    // final report uses, polled from the compositor tier (every ~7s) with
+                    // SF reset detection. Seeded to 0 at t=0 so the HUD never shows stale data.
+                    frameDrops = lastMissedDelta,
                     fpsHistory = fpsHistory.toList(),
                     fpsTimed = fpsTimed.toList(),
                     memHistory = memHistory.toList(),
@@ -718,7 +770,19 @@ class AppViewModel {
             val maxCpu = cpuHistory.maxOrNull() ?: 0
             val maxTempCpu = tempCpuHistory.maxOrNull() ?: 0.0
             val maxTempGpu = tempGpuHistory.maxOrNull() ?: 0.0
-            val totalDrops = missedEnd - missedStart
+            // v3.1.11 round-2: total drops uses the carry-forward delta from the live loop
+            // (which handles SurfaceFlinger counter resets) plus a final delta from the
+            // last-known baseline. Falls back to `missedEnd - missedStart` only when the
+            // live loop never reset the baseline (no SF resets occurred). This guarantees
+            // `totalDrops >= 0` even on devices where SF reset its counters mid-session.
+            val finalDelta = if (missedEnd >= missedBaseline) {
+                missedEnd - missedBaseline
+            } else {
+                // SF reset between the last live poll and the finalize poll. Conservative
+                // fallback: use the last live delta we observed.
+                lastMissedDelta
+            }
+            val totalDrops = maxOf(0, finalDelta)
 
             // Grade
             val problems = mutableListOf<String>()

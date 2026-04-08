@@ -14,6 +14,61 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [3.1.11] — 2026-04-07
+
+### Que hay de nuevo
+
+- El contador de "frames perdidos" durante la captura ahora muestra el numero correcto, igual al que aparece en el reporte final (antes mostraban dos numeros distintos bajo el mismo nombre)
+- La primera medicion de la captura ya no provoca un microsegundo de stutter en el juego: arrancamos suaves y vamos calentando los tiers segun corresponda
+- En telefonos como el Pixel XL el video se graba en un tamaño que el codec sí acepta. Antes podia rechazar la resolución y dejarte sin video sin avisar
+- Si el termometro o el FPS no estan listos al arrancar, ya no ves "-1°C" o numeros raros en el HUD durante el primer segundo
+
+### Arreglos
+
+- Bug critico de v3.1.10: el contador de "frames perdidos" en vivo era una metrica completamente distinta a la del reporte final. Live mostraba el conteo de "jank" (frames lentos) y el reporte mostraba "missed frames" (deadlines de vsync perdidos por el compositor). Mismo nombre, dos cosas. Ahora ambos muestran missed frames y son consistentes
+- Bug critico de v3.1.10: el conteo de "jank" estaba inflado entre 3 y 4 veces porque cada llamada al SurfaceFlinger lee los ultimos ~127 frames del buffer (≈2 segundos), y como llamabamos cada 500ms los mismos frames se contaban hasta 4 veces. Ahora solo se cuentan los frames realmente nuevos entre llamadas
+- Bug critico de v3.1.10: la primera iteracion del loop de captura disparaba TODOS los tiers a la vez (fast + medium + slow), causando un stutter de ~1 a 1.5 segundos al inicio de cada captura. Justo el problema que el fix de v3.1.10 pretendia evitar. Ademas, esa coincidencia se repetia cada 10 segundos (LCM de 4 y 10). Ahora los tiers estan desfasados para que la primera iteracion sea solo fast, y los tiers caros se reparten en iteraciones distintas
+- Bug critico de v3.1.10: el COMPACT screenrecord profile usaba 540x960, pero 540 no es multiplo de 16. El encoder AVC de Android (OMX/MediaCodec) requiere `width-alignment=16` en la mayoria de SoCs. En devices low-end como el Pixel XL podria rechazar la resolucion y matar el proceso de screenrecord en ~100ms, dejandote sin video. Cambiado a 544x960 (544 = 16×34), encoder-safe en todos los Android conocidos
+- Bug heredado: el HUD en vivo mostraba "-1°C" durante los primeros segundos de captura porque el `lastThermal` arrancaba con sentinel -1.0 y se emitia sin guardar antes del primer thermal sample. Ahora se coalescen los negativos a 0
+
+### Detalles tecnicos
+
+#### C1 — frameDrops semantic break (live counter vs final report)
+
+- **Root cause**: v3.1.10 cambio `LiveMetrics.frameDrops = totalJank` (suma de frames con frametime > 16.67ms desde `captureFrames`) pero el reporte final seguia usando `frameDrops = missedEnd - missedStart` (delta del contador global de SurfaceFlinger). Mismo field name, metricas distintas. Usuarios viendo el HUD durante captura ven un numero, despues el reporte final muestra otro
+- **Fix**: poll `getMissedFrames` UNA VEZ por slow tier (cada 5s ≈ cada 10 iteraciones) y emit `lastMissedDelta = liveMissed - missedStart` a `LiveMetrics.frameDrops`. La misma metrica que el reporte final, solo que sampleada menos seguido. El costo de 150-500ms del `dumpsys SurfaceFlinger` es aceptable porque ya estamos en el tier lento (donde tambien corre meminfo) y el game no nota carga adicional al estar en una iteracion ya cara
+
+#### C2 — first iteration burst
+
+- **Root cause**: `iterCount % 4 == 0` y `iterCount % 10 == 0` ambos true en `iterCount = 0`. La primera iteracion del loop ejecutaba fast + medium + slow tier juntos: ~30-50ms (fast) + 30-80ms (thermal) + 200-800ms (meminfo) = 500-1000ms de bloqueo en la primera iteracion. Exactamente el burst que el fix de v3.1.10 queria evitar. Encima, LCM(4,10)=20 → la coincidencia se repetia cada 20 iteraciones ≈ cada 10 segundos
+- **Fix**: cambiar las fases de los modulos. Medium ahora es `iterCount % 4 == 3` (fires en iter 3, 7, 11, 15, ...) y slow es `iterCount % 10 == 7` (fires en iter 7, 17, 27, ...). La primera iteracion (iter 0) **no dispara ningun tier caro** — solo fast tier (~30-50ms total). Los tiers caros se siguen agrupando cada cierto numero de iteraciones, pero nunca en la primera
+
+#### C3 — totalJank over-count (4× inflation)
+
+- **Root cause**: `dumpsys SurfaceFlinger --latency '<layer>'` devuelve los ~127 frames mas recientes del buffer (≈2 segundos a 60fps). El polling loop llamaba a `captureFrames` cada 500ms. Cada llamada veia 1.5 segundos overlapados con la anterior. `captureFrames` contaba `jankCount = frameTimes.count { it > 16.67 }` sobre TODO el buffer cada vez. El caller hacia `totalJank += frame.jankCount` → los mismos frames se contaban hasta 4 veces (uno por cada llamada que los veia en su buffer)
+- **Fix**: tracking `lastSeenFrameTimestampNs` como state de `AdbBridge`. `captureFrames` ahora solo cuenta frames con timestamp estrictamente mayor al ultimo visto. La logica de parsing se extrajo a `parseFrameLatencyOutput(output, lastSeenTimestampNs)` para hacerla pura y unit-testeable
+- **Validation**: nuevo test `polling loop simulation - 4 calls do not over-count the same jank frames` simula 4 llamadas con buffer overlapado y valida que `totalJank` quede dentro de ±2 del numero esperado. Sin el fix, el test mostraria 3-4× el valor
+
+#### C4 — COMPACT screenrecord 540 not multiple of 16
+
+- **Root cause**: el codec AVC de Android (via OMX/MediaCodec) requiere que `width` y `height` sean multiplos de 16 (algunos SoCs viejos requieren multiplo de 32). 540/16 = 33.75 — invalido. En devices low-end como el Pixel XL, el `screenrecord` binary rechaza la resolucion con exit code != 0 (no exception, asi que el try/catch no lo cazaba), el proceso muere en ~100ms, `pullRecordings` no encuentra archivos, y el usuario queda sin video sin ningun mensaje de error. Justo en la clase de devices que el COMPACT profile pretendia ayudar
+- **Fix**: cambiar COMPACT de 540x960 a 544x960. 544 = 16×34, encoder-safe. Visualmente identico a 540 para analisis frame-by-frame. Ambas dimensiones de ambos profiles ahora estan documentadas como multiples de 16 con un comentario para futuros maintainers
+
+#### Otros fixes menores incluidos en el mismo release
+
+- **W6 fix**: `lastThermal = ThermalSnapshot(-1.0, -1.0, -1.0, -1.0)` se emitia a `LiveMetrics` sin guardar, mostrando "-1°C" en el HUD durante los primeros segundos de captura. Ahora se coalescen los valores negativos a 0.0 antes de emit
+- **Refactor para testabilidad**: la logica de parsing de `captureFrames` se extrajo a `parseFrameLatencyOutput` (funcion pura). 9 unit tests nuevos en `FrameLatencyParserTest` cubriendo first-call window limiting, dedup en subsequent calls, simulacion de polling loop, edge cases (empty output, garbage timestamps, no new frames)
+
+### Pendiente para futuras versiones (de los WARNINGs reportados por judgment day Round 1)
+
+- **W2/W3** (v3.1.12): mejorar normalizacion de `detectTier` para `Adreno(TM)530` (sin espacios) y `Mali G710` (sin hyphen). El fix de v3.1.10 cubrio el caso con espacios pero no estos
+- **W4** (v3.1.12): refresh `_deviceInfo` antes de empezar capture, o recalcular `recordProfile` por segmento, para evitar que un device LOW use STANDARD si `_deviceInfo` no se cargo todavia
+- **W7** (v3.1.12): escapar single quotes en layer names antes de interpolarlos en `dumpsys --latency '$layer'` para evitar shell injection
+- **W8** (v3.1.12): mostrar `memHistory` con el mismo timeline que `fpsHistory` en el chart (actualmente memoria tiene 10× menos puntos que FPS, los charts side-by-side tienen ejes X distintos sin labels)
+- **W9** (v3.1.12): mover thermal de medium tier (cada 2s) a fast tier (cada 500ms) para no perder transient throttle spikes — el costo de 30-80ms es aceptable en fast tier
+- **Logging diagnostico** (v3.1.12): agregar log a `~/.gameperf/debug.log` cuando `detectTier` retorna UNKNOWN, cuando el screenrecord profile elegido difiere del esperado, y cuando el slow tier no fire en >10s
+- **Validacion empirica en device real** del usuario: correr una captura de 5 minutos en Pixel XL con Touch2Goal Soccer y confirmar que el game se siente menos afectado, que `fpsHistory` esta poblado, y que el HUD no muestra valores absurdos
+
 ## [3.1.10] — 2026-04-07
 
 ### Que hay de nuevo
