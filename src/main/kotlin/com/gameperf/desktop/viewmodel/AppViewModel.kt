@@ -15,6 +15,13 @@ import com.gameperf.desktop.core.PairFailureReason
 import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.core.RealAdbBridge
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.core.model.Device
+import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.DevicePlatform
+import com.gameperf.desktop.core.bridge.AndroidBridge
+import com.gameperf.desktop.core.ios.IosBridge
+import com.gameperf.desktop.core.ios.SidecarClient
+import com.gameperf.desktop.core.ios.SidecarLifecycle
 import com.gameperf.desktop.report.PdfExporter
 import com.gameperf.desktop.report.ReportGenerator
 import com.gameperf.desktop.ui.util.PickerUtils
@@ -159,6 +166,8 @@ class AppViewModel(
             }
             _tempComparisons.clear()
         }
+        // v4.0.0: stop iOS sidecar if running
+        try { sidecarLifecycle?.stop() } catch (_: Exception) { }
         scope.cancel()
     }
 
@@ -168,14 +177,14 @@ class AppViewModel(
     private val _adbAvailable = MutableStateFlow(false)
     val adbAvailable: StateFlow<Boolean> = _adbAvailable
 
-    private val _devices = MutableStateFlow<List<AdbBridge.Device>>(emptyList())
-    val devices: StateFlow<List<AdbBridge.Device>> = _devices
+    private val _devices = MutableStateFlow<List<Device>>(emptyList())
+    val devices: StateFlow<List<Device>> = _devices
 
-    private val _selectedDevice = MutableStateFlow<AdbBridge.Device?>(null)
-    val selectedDevice: StateFlow<AdbBridge.Device?> = _selectedDevice
+    private val _selectedDevice = MutableStateFlow<Device?>(null)
+    val selectedDevice: StateFlow<Device?> = _selectedDevice
 
-    private val _deviceInfo = MutableStateFlow<AdbBridge.DeviceInfo?>(null)
-    val deviceInfo: StateFlow<AdbBridge.DeviceInfo?> = _deviceInfo
+    private val _deviceInfo = MutableStateFlow<DeviceInfo?>(null)
+    val deviceInfo: StateFlow<DeviceInfo?> = _deviceInfo
 
     private val _gamePackage = MutableStateFlow<String?>(null)
     val gamePackage: StateFlow<String?> = _gamePackage
@@ -276,6 +285,13 @@ class AppViewModel(
      * concurrent generations from different threads.
      */
     private val _tempComparisons: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    // ===== iOS Sidecar =====
+    private var sidecarLifecycle: SidecarLifecycle? = null
+    private var iosBridge: IosBridge? = null
+
+    private val _iosAvailable = MutableStateFlow(false)
+    val iosAvailable: StateFlow<Boolean> = _iosAvailable
 
     @Volatile private var shouldStop = false
     @Volatile private var captureStartTime: Long = 0L
@@ -474,6 +490,63 @@ class AppViewModel(
         scope.launch {
             _adbVersion.value = withContext(Dispatchers.IO) { adb.getAdbVersion() }
         }
+        // v4.0.0 — iOS sidecar: attempt to start the pymobiledevice3 sidecar
+        // in background. If Python is missing or sidecar fails to start, iOS
+        // is silently unavailable (Android continues working normally).
+        scope.launch(Dispatchers.IO) {
+            tryInitIosSidecar()
+        }
+    }
+
+    /**
+     * v4.0.0 — Try to start the iOS sidecar. Non-blocking, non-fatal.
+     * If successful, [iosBridge] is set and [_iosAvailable] becomes true.
+     * Device polling will then include iOS devices in the list.
+     */
+    private fun tryInitIosSidecar() {
+        try {
+            if (!SidecarLifecycle.isPythonAvailable()) {
+                System.err.println("AppViewModel: Python 3 not found, iOS support disabled")
+                return
+            }
+
+            // Locate sidecar directory relative to the app
+            val sidecarDir = findSidecarDir() ?: run {
+                System.err.println("AppViewModel: sidecar/ directory not found, iOS support disabled")
+                return
+            }
+
+            val lifecycle = SidecarLifecycle(sidecarDir)
+            val started = lifecycle.start(scope)
+            if (started) {
+                sidecarLifecycle = lifecycle
+                iosBridge = IosBridge(lifecycle.client)
+                _iosAvailable.value = true
+                System.err.println("AppViewModel: iOS sidecar started on port, iOS support enabled")
+            } else {
+                System.err.println("AppViewModel: iOS sidecar failed to start: ${lifecycle.lastError}")
+            }
+        } catch (e: Exception) {
+            System.err.println("AppViewModel: iOS sidecar init error: ${e.message}")
+        }
+    }
+
+    /**
+     * Find the sidecar/ directory. Checks:
+     * 1. Next to the JAR (production)
+     * 2. Project root (development)
+     * 3. ~/.gameperf/sidecar/ (installed)
+     */
+    private fun findSidecarDir(): String? {
+        val candidates = listOf(
+            // Development: project root
+            java.io.File("sidecar"),
+            // Production: next to the JAR
+            java.io.File(System.getProperty("user.dir"), "sidecar"),
+            // User install
+            java.io.File(System.getProperty("user.home"), ".gameperf/sidecar"),
+        )
+        return candidates.firstOrNull { it.isDirectory && java.io.File(it, "gameperf_sidecar/__init__.py").exists() }?.absolutePath
     }
 
     // ===== Auto-Update =====
@@ -547,7 +620,10 @@ class AppViewModel(
             while (isActive) {
                 delay(3000)
                 if (_screen.value == AppScreen.HOME) {
-                    val devs = adb.listDevices()
+                    val adbDevs = adb.listDevices()
+                    val androidDevs = adbDevs.map { Device(id = it.id, model = it.model, platform = DevicePlatform.ANDROID, isWifi = it.isWifi) }
+                    val iosDevs = try { iosBridge?.listDevices() ?: emptyList() } catch (_: Exception) { emptyList() }
+                    val devs = androidDevs + iosDevs
                     val changed = devs.map { it.id } != _devices.value.map { it.id }
                     if (changed) {
                         _devices.value = devs
@@ -569,7 +645,14 @@ class AppViewModel(
     fun refreshDevices() {
         scope.launch {
             _statusMessage.value = "Buscando dispositivos..."
-            val devs = adb.listDevices()
+            val adbDevs = adb.listDevices()
+            // Convert AdbBridge.Device → shared Device model for UI consumers
+            val androidDevs = adbDevs.map { Device(id = it.id, model = it.model, platform = DevicePlatform.ANDROID, isWifi = it.isWifi) }
+            // v4.0.0: merge iOS devices if sidecar is available
+            val iosDevs = try {
+                iosBridge?.listDevices() ?: emptyList()
+            } catch (_: Exception) { emptyList() }
+            val devs = androidDevs + iosDevs
             _devices.value = devs
             if (devs.isNotEmpty() && _selectedDevice.value == null) {
                 selectDevice(devs.first())
@@ -577,20 +660,47 @@ class AppViewModel(
                 _selectedDevice.value = null
                 _deviceInfo.value = null
                 _gamePackage.value = null
-                _statusMessage.value = "Conecta un dispositivo Android por USB"
+                _statusMessage.value = "Conecta un dispositivo Android o iOS por USB"
             }
         }
     }
 
-    fun selectDevice(device: AdbBridge.Device) {
+    fun selectDevice(device: Device) {
         scope.launch {
             _selectedDevice.value = device
             _isWifi.value = device.isWifi
             _statusMessage.value = "Conectado a ${device.model}. Leyendo specs..."
-            _deviceInfo.value = adb.getDeviceInfo(device.id)
-            _statusMessage.value = "Buscando juego en primer plano..."
-            _gamePackage.value = adb.detectGame(device.id)
-            _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar" else "No se detecto juego. Abre un juego y pulsa Refrescar."
+
+            if (device.platform == DevicePlatform.IOS) {
+                // iOS device — use IosBridge for info
+                val iosInfo = iosBridge?.getDeviceInfo(device.id)
+                _deviceInfo.value = iosInfo ?: DeviceInfo(
+                    device.model, "Apple", "Unknown", "Apple GPU", "Unknown",
+                    0, "Unknown", "Unknown", DevicePlatform.IOS,
+                )
+                _statusMessage.value = "Buscando juego en primer plano..."
+                _gamePackage.value = iosBridge?.detectGame(device.id)
+                _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar"
+                    else "No se detecto juego. Abre un juego en el iPhone y pulsa Refrescar."
+            } else {
+                // Android device — use AdbBridgeApi
+                val adbInfo = adb.getDeviceInfo(device.id)
+                _deviceInfo.value = DeviceInfo(
+                    model = adbInfo.model,
+                    manufacturer = adbInfo.manufacturer,
+                    cpu = adbInfo.cpu,
+                    gpu = adbInfo.gpu,
+                    ram = adbInfo.ram,
+                    cores = adbInfo.cores,
+                    osVersion = adbInfo.sdk.toString(),
+                    resolution = adbInfo.resolution,
+                    platform = DevicePlatform.ANDROID,
+                )
+                _statusMessage.value = "Buscando juego en primer plano..."
+                _gamePackage.value = adb.detectGame(device.id)
+                _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar"
+                    else "No se detecto juego. Abre un juego y pulsa Refrescar."
+            }
         }
     }
 
@@ -617,7 +727,8 @@ class AppViewModel(
                 _wifiStatus.value = "Conectado via WiFi: $wifiId\nDesconecta el cable USB para medir bateria real."
                 // Wait and refresh
                 delay(3000)
-                val devs = adb.listDevices()
+                val adbDevs = adb.listDevices()
+                val devs = adbDevs.map { Device(id = it.id, model = it.model, platform = DevicePlatform.ANDROID, isWifi = it.isWifi) }
                 _devices.value = devs
                 val wifiDevice = devs.find { it.id == wifiId }
                 if (wifiDevice != null) {
@@ -802,8 +913,8 @@ class AppViewModel(
             // each field, even on iterations where a slow-tier metric didn't fire. We hold
             // the last observed mem/thermal values in locals and re-emit them.
             var iterCount = 0
-            var lastMem: AdbBridge.MemSnapshot? = null
-            var lastThermal = AdbBridge.ThermalSnapshot(-1.0, -1.0, -1.0, -1.0)
+            var lastMem: com.gameperf.desktop.core.model.MemSnapshot? = null
+            var lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(-1.0, -1.0, -1.0, -1.0)
 
             while (!shouldStop) {
                 val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
@@ -830,7 +941,7 @@ class AppViewModel(
                 if (runThermal) {
                     val t = adb.captureTemperature(device.id)
                     if (shouldStop) break
-                    lastThermal = t
+                    lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(t.cpu, t.gpu, t.battery, t.skin)
                 }
 
                 // === SLOW TIER (every ~5s, i.e. every 10th iteration) ===
@@ -840,7 +951,7 @@ class AppViewModel(
                 if (runMem) {
                     val m = adb.captureMemory(device.id, pkg)
                     if (shouldStop) break
-                    if (m != null) lastMem = m
+                    if (m != null) lastMem = com.gameperf.desktop.core.model.MemSnapshot(m.totalMb, m.nativeMb, m.javaMb)
                 }
 
                 iterCount++

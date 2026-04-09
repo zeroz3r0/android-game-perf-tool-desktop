@@ -77,6 +77,10 @@ object AdbBridge {
 
     // ===== Devices =====
 
+    @Deprecated(
+        "Use com.gameperf.desktop.core.model.Device instead",
+        ReplaceWith("com.gameperf.desktop.core.model.Device(id, model, DevicePlatform.ANDROID, isWifi)", "com.gameperf.desktop.core.model.Device", "com.gameperf.desktop.core.model.DevicePlatform"),
+    )
     data class Device(val id: String, val model: String, val isWifi: Boolean)
 
     fun listDevices(): List<Device> {
@@ -103,6 +107,10 @@ object AdbBridge {
         return if (connectOutput.contains("connected")) "$ip:$port" else null
     }
 
+    @Deprecated(
+        "Use com.gameperf.desktop.core.model.DeviceInfo instead",
+        ReplaceWith("com.gameperf.desktop.core.model.DeviceInfo(model, manufacturer, cpu, gpu, ram, cores, sdk.toString(), resolution, DevicePlatform.ANDROID)"),
+    )
     data class DeviceInfo(
         val model: String, val manufacturer: String, val cpu: String,
         val gpu: String, val ram: String, val cores: Int,
@@ -233,6 +241,7 @@ object AdbBridge {
             ?: extracted.firstOrNull()
     }
 
+    @Deprecated("Use com.gameperf.desktop.core.model.FrameSnapshot instead")
     data class FrameSnapshot(val fps: Int, val avgFrameTime: Double, val jankCount: Int, val stutterCount: Int)
 
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
@@ -263,6 +272,7 @@ object AdbBridge {
         return FrameSnapshot(fps, frameTimes.average(), frameTimes.count { it > 16.67 }, frameTimes.count { it > 100.0 })
     }
 
+    @Deprecated("Use com.gameperf.desktop.core.model.MemSnapshot instead")
     data class MemSnapshot(val totalMb: Long, val nativeMb: Long, val javaMb: Long)
 
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
@@ -297,6 +307,7 @@ object AdbBridge {
         }
     }
 
+    @Deprecated("Use com.gameperf.desktop.core.model.ThermalSnapshot instead")
     data class ThermalSnapshot(val cpu: Double, val gpu: Double, val battery: Double, val skin: Double)
 
     fun captureTemperature(deviceId: String): ThermalSnapshot {

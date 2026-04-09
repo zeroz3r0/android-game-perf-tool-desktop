@@ -1,0 +1,17 @@
+[project]
+name = "gameperf-sidecar"
+version = "1.0.0"
+description = "iOS device profiling sidecar for GamePerf Desktop"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.110.0,<1.0.0",
+    "uvicorn[standard]>=0.27.0,<1.0.0",
+    "pymobiledevice3>=4.0.0,<5.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

@@ -17,3 +17,11 @@ Thumbs.db
 # Reports
 *.html
 *.mp4
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# SDD
+.atl/

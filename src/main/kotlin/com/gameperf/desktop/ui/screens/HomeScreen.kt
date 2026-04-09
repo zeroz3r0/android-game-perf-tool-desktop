@@ -24,11 +24,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.MdnsService
 import com.gameperf.desktop.core.MdnsServiceType
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.core.model.DevicePlatform
 import com.gameperf.desktop.ui.components.ExportBanner
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.theme.*
@@ -317,9 +317,28 @@ fun HomeScreen(vm: AppViewModel) {
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Column {
-                                    Text(device.model, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(device.model, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                        Spacer(Modifier.width(6.dp))
+                                        // v4.0.0: platform badge
+                                        val badgeText = if (device.platform == DevicePlatform.IOS) "iOS" else "Android"
+                                        val badgeColor = if (device.platform == DevicePlatform.IOS) Color(0xFF007AFF) else Green
+                                        Text(
+                                            badgeText,
+                                            color = badgeColor,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier
+                                                .background(badgeColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                                        )
+                                    }
                                     Text(
-                                        if (device.isWifi) "WiFi: ${device.id}" else "USB: ${device.id.take(12)}...",
+                                        when {
+                                            device.platform == DevicePlatform.IOS -> "USB: ${device.id.take(16)}..."
+                                            device.isWifi -> "WiFi: ${device.id}"
+                                            else -> "USB: ${device.id.take(12)}..."
+                                        },
                                         color = TextDim, fontSize = 10.sp
                                     )
                                 }
@@ -331,7 +350,8 @@ fun HomeScreen(vm: AppViewModel) {
                         val currentIsWifi by vm.isWifi.collectAsState()
                         val wifiStatusText by vm.wifiStatus.collectAsState()
 
-                        if (selectedDevice != null && !currentIsWifi) {
+                        // v4.0.0: WiFi button only for Android devices
+                        if (selectedDevice != null && !currentIsWifi && selectedDevice?.platform == DevicePlatform.ANDROID) {
                             Spacer(Modifier.height(8.dp))
                             OutlinedButton(
                                 onClick = { vm.switchToWifi() },
@@ -362,7 +382,10 @@ fun HomeScreen(vm: AppViewModel) {
                             StatRow("GPU", info.gpu.take(40))
                             StatRow("RAM", info.ram)
                             StatRow("Cores", "${info.cores}")
-                            StatRow("SDK", "${info.sdk}")
+                            StatRow(
+                                if (info.platform == DevicePlatform.IOS) "iOS" else "SDK",
+                                info.osVersion
+                            )
                         }
 
                         // v3.2.0: discreet entry point to the wireless pairing flow

@@ -1,8 +1,8 @@
 package com.gameperf.desktop.report
 
-import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
 import com.gameperf.desktop.ui.util.fmtUS
@@ -30,7 +30,7 @@ object ReportGenerator {
     }
 
     fun generate(
-        pkg: String, info: AdbBridge.DeviceInfo?, grade: Char, score: Int, duration: Int,
+        pkg: String, info: DeviceInfo?, grade: Char, score: Int, duration: Int,
         fpsHistory: List<Int>, memHistory: List<Long>, nativeHistory: List<Long>, javaHistory: List<Long>,
         cpuHistory: List<Int>, tempCpuHistory: List<Double>, tempGpuHistory: List<Double>, tempSkinHistory: List<Double>,
         allFrameTimes: List<Double>,
@@ -453,13 +453,25 @@ $markersHtml
         <div class="hw-item"><span class="hw-label">GPU</span><span class="hw-value">${esc((info?.gpu ?: "?").take(60))}</span></div>
         <div class="hw-item"><span class="hw-label">RAM</span><span class="hw-value">${info?.ram ?: "?"}</span></div>
         <div class="hw-item"><span class="hw-label">Cores</span><span class="hw-value">${info?.cores ?: "?"}</span></div>
-        <div class="hw-item"><span class="hw-label">SDK</span><span class="hw-value">${info?.sdk ?: "?"}</span></div>
+        <div class="hw-item"><span class="hw-label">Plataforma</span><span class="hw-value">${info?.platform?.name ?: "?"}</span></div>
+        <div class="hw-item"><span class="hw-label">${if (info?.platform == com.gameperf.desktop.core.model.DevicePlatform.IOS) "iOS" else "SDK"}</span><span class="hw-value">${info?.osVersion ?: "?"}</span></div>
         <div class="hw-item"><span class="hw-label">Resolucion</span><span class="hw-value">${esc(info?.resolution ?: "?")}</span></div>
         ${if (deviceTier.isNotEmpty()) """<div class="hw-item"><span class="hw-label">GPU Tier</span><span class="hw-value hw-tier">${esc(deviceTier)}</span></div>""" else ""}
         ${if (deviceScore > 0) """<div class="hw-item"><span class="hw-label">Hardware Score</span><span class="hw-value">${deviceScore}/100</span></div>""" else ""}
     </div>
 </section>
 
+${if (info?.platform == com.gameperf.desktop.core.model.DevicePlatform.IOS) """
+<section class="card" style="border-left: 3px solid #007AFF; margin-top: 16px;">
+    <div class="card-header"><h2>&#9432; Notas sobre iOS</h2></div>
+    <div style="padding: 12px 16px; color: #94a3b8; font-size: 12px;">
+        <p>&#8226; La temperatura de skin no esta disponible en iOS.</p>
+        <p>&#8226; La memoria muestra el total (physFootprint). No se puede separar nativa/Java en iOS.</p>
+        <p>&#8226; GPU% es estimado desde el frame timing, no una lectura directa del hardware.</p>
+        <p>&#8226; El video se captura mediante screenshots (15fps Mac / 8fps Windows), no grabacion nativa.</p>
+    </div>
+</section>
+""" else ""}
 <footer class="report-footer">
     <div class="footer-logo">Game Performance Tool</div>
     <p>v${AppVersion.NAME} — Informe generado el ${SimpleDateFormat("dd/MM/yyyy 'a las' HH:mm:ss").format(Date())}</p>
@@ -967,7 +979,7 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
     }
 
     private fun buildJsonData(
-        pkg: String, info: AdbBridge.DeviceInfo?, grade: Char, score: Int, duration: Int,
+        pkg: String, info: DeviceInfo?, grade: Char, score: Int, duration: Int,
         avgFps: Int, minFps: Int, maxFps: Int,
         p1: Int, p5: Int, p50: Int, p90: Int, p99: Int,
         avgFrameTime: Double, p99FrameTime: Double,
@@ -982,7 +994,7 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
   "sessionId": "$sessionId",
   "date": "$dateISO",
   "package": "${escJs(pkg)}",
-  "device": {"model":"${escJs(info?.model ?: "?")}","manufacturer":"${escJs(info?.manufacturer ?: "?")}","cpu":"${escJs(info?.cpu ?: "?")}","gpu":"${escJs((info?.gpu ?: "?").take(60))}","ram":"${escJs(info?.ram ?: "?")}","cores":${info?.cores ?: 0},"sdk":${info?.sdk ?: 0},"resolution":"${escJs(info?.resolution ?: "?")}","tier":"${escJs(deviceTier)}"},
+  "device": {"model":"${escJs(info?.model ?: "?")}","manufacturer":"${escJs(info?.manufacturer ?: "?")}","cpu":"${escJs(info?.cpu ?: "?")}","gpu":"${escJs((info?.gpu ?: "?").take(60))}","ram":"${escJs(info?.ram ?: "?")}","cores":${info?.cores ?: 0},"sdk":"${escJs(info?.osVersion ?: "0")}","resolution":"${escJs(info?.resolution ?: "?")}","tier":"${escJs(deviceTier)}"},
   "grade": "$grade", "score": $score, "deviceGrade": "$deviceGrade", "deviceScore": $deviceScore, "duration": $duration,
   "fps": {"avg":$avgFps,"min":$minFps,"max":$maxFps,"p1":$p1,"p5":$p5,"p50":$p50,"p90":$p90,"p99":$p99,"stability":$stability},
   "frameTime": {"avg":${fmtUS("%.2f", avgFrameTime)},"p99":${fmtUS("%.2f", p99FrameTime)},"jank":$jank,"stutter":$stutter},

@@ -1,6 +1,7 @@
 package com.gameperf.desktop.report
 
-import com.gameperf.desktop.core.AdbBridge
+import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.DevicePlatform
 import kotlin.test.Test
 import kotlin.test.assertTrue
 // v3.1.13: project uses kotlin-test-junit (JUnit 4), not Jupiter. Same skip semantics.
@@ -31,15 +32,16 @@ class ReportRenderingTest {
             System.getenv("RUN_REPORT_FIXTURE") == "true"
         )
 
-        val device = AdbBridge.DeviceInfo(
+        val device = DeviceInfo(
             model = "Pixel 7 Pro",
             manufacturer = "Google",
             cpu = "Tensor G2 octa-core",
             gpu = "Mali-G710 MC10",
             ram = "12.0 GB",
             cores = 8,
-            sdk = 34,
-            resolution = "1440x3120"
+            osVersion = "34",
+            resolution = "1440x3120",
+            platform = DevicePlatform.ANDROID,
         )
 
         // Synthetic 60-second session: FPS oscillates between 35 and 60 with a few drops
