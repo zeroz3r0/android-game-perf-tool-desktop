@@ -90,9 +90,11 @@ class MetricsSession:
 
     def _monitor_loop(self):
         """Background loop that polls DVT instruments."""
+        import asyncio
+
         try:
             from pymobiledevice3.lockdown import create_using_usbmux
-            self._lockdown = create_using_usbmux(serial=self.udid)
+            self._lockdown = asyncio.run(create_using_usbmux(serial=self.udid))
         except Exception as e:
             logger.error(f"Cannot connect to device {self.udid}: {e}")
             self._running = False

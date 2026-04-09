@@ -17,16 +17,16 @@ logger = logging.getLogger("gameperf_sidecar.devices")
 router = APIRouter()
 
 
-def _list_connected_devices() -> list[dict]:
+async def _list_connected_devices() -> list[dict]:
     """List all connected iOS devices via usbmux."""
     try:
         from pymobiledevice3.usbmux import list_devices
-        devices = list_devices()
+        from pymobiledevice3.lockdown import create_using_usbmux
+        devices = await list_devices()
         result = []
         for dev in devices:
             try:
-                from pymobiledevice3.lockdown import create_using_usbmux
-                lockdown = create_using_usbmux(serial=dev.serial)
+                lockdown = await create_using_usbmux(serial=dev.serial)
                 product_type = lockdown.product_type or "Unknown"
                 # Try to get a friendly model name
                 model = lockdown.all_values.get("DeviceName", product_type)
@@ -55,11 +55,11 @@ def _list_connected_devices() -> list[dict]:
         return []
 
 
-def _get_device_info(udid: str) -> dict:
+async def _get_device_info(udid: str) -> dict:
     """Get detailed hardware info for a device."""
     try:
         from pymobiledevice3.lockdown import create_using_usbmux
-        lockdown = create_using_usbmux(serial=udid)
+        lockdown = await create_using_usbmux(serial=udid)
         values = lockdown.all_values
 
         # Extract hardware info
@@ -151,12 +151,12 @@ def _get_resolution(product_type: str) -> str:
 @router.get("/devices")
 async def list_devices():
     """List all connected iOS devices."""
-    devices = _list_connected_devices()
+    devices = await _list_connected_devices()
     return {"devices": devices}
 
 
 @router.get("/device/{udid}/info")
 async def get_device_info(udid: str):
     """Get hardware info for a specific device."""
-    info = _get_device_info(udid)
+    info = await _get_device_info(udid)
     return info

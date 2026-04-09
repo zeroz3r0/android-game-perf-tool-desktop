@@ -80,31 +80,34 @@ class CaptureSession:
 
     def _capture_loop(self):
         """Capture screenshots at target FPS."""
-        try:
+        import asyncio
+
+        async def _async_capture():
             from pymobiledevice3.lockdown import create_using_usbmux
             from pymobiledevice3.services.screenshot import ScreenshotService
 
-            lockdown = create_using_usbmux(serial=self.udid)
-            screenshot_service = ScreenshotService(lockdown=lockdown)
+            lockdown = await create_using_usbmux(serial=self.udid)
+            async with ScreenshotService(lockdown=lockdown) as screenshot_service:
+                interval = 1.0 / self.target_fps
 
-            interval = 1.0 / self.target_fps
+                while self._running:
+                    start_time = time.time()
+                    try:
+                        png_data = await screenshot_service.take_screenshot()
+                        if png_data:
+                            frame_path = self._frames_dir / f"frame_{self._frame_count:06d}.png"
+                            frame_path.write_bytes(png_data)
+                            self._frame_count += 1
+                    except Exception as e:
+                        logger.debug(f"Screenshot error: {e}")
 
-            while self._running:
-                start_time = time.time()
-                try:
-                    png_data = screenshot_service.take_screenshot()
-                    if png_data:
-                        frame_path = self._frames_dir / f"frame_{self._frame_count:06d}.png"
-                        frame_path.write_bytes(png_data)
-                        self._frame_count += 1
-                except Exception as e:
-                    logger.debug(f"Screenshot error: {e}")
+                    elapsed = time.time() - start_time
+                    sleep_time = max(0, interval - elapsed)
+                    if sleep_time > 0:
+                        await asyncio.sleep(sleep_time)
 
-                elapsed = time.time() - start_time
-                sleep_time = max(0, interval - elapsed)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-
+        try:
+            asyncio.run(_async_capture())
         except Exception as e:
             logger.error(f"Capture loop error for {self.udid}: {e}")
         finally:
@@ -152,15 +155,15 @@ class CaptureSession:
             return None
 
 
-def _take_single_screenshot(udid: str) -> Optional[bytes]:
+async def _take_single_screenshot(udid: str) -> Optional[bytes]:
     """Take a single screenshot and return PNG bytes."""
     try:
         from pymobiledevice3.lockdown import create_using_usbmux
         from pymobiledevice3.services.screenshot import ScreenshotService
 
-        lockdown = create_using_usbmux(serial=udid)
-        screenshot_service = ScreenshotService(lockdown=lockdown)
-        return screenshot_service.take_screenshot()
+        lockdown = await create_using_usbmux(serial=udid)
+        async with ScreenshotService(lockdown=lockdown) as screenshot_service:
+            return await screenshot_service.take_screenshot()
     except Exception as e:
         logger.error(f"Screenshot error for {udid}: {e}")
         return None
@@ -169,7 +172,7 @@ def _take_single_screenshot(udid: str) -> Optional[bytes]:
 @router.get("/device/{udid}/screenshot")
 async def screenshot(udid: str):
     """Take a single screenshot and return as PNG."""
-    png_data = _take_single_screenshot(udid)
+    png_data = await _take_single_screenshot(udid)
     if png_data is None:
         raise HTTPException(status_code=500, detail="Failed to capture screenshot")
     return Response(content=png_data, media_type="image/png")
