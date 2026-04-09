@@ -31,6 +31,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -44,7 +45,12 @@ import java.util.concurrent.TimeUnit
 private class FrameCache(private val maxSize: Int = 1500) {
     private val cache = object : LinkedHashMap<Int, ImageBitmap>(maxSize + 1, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ImageBitmap>?): Boolean {
-            return size > maxSize
+            if (size > maxSize) {
+                // M-8: release native Skia resources on eviction instead of waiting for GC.
+                eldest?.value?.let { tryCloseBitmap(it) }
+                return true
+            }
+            return false
         }
     }
 
@@ -60,11 +66,47 @@ private class FrameCache(private val maxSize: Int = 1500) {
     fun contains(index: Int): Boolean = cache.containsKey(index)
 
     @Synchronized
-    fun clear() = cache.clear()
+    fun clear() {
+        // M-8: explicitly release all native Skia bitmaps before clearing.
+        cache.values.forEach { tryCloseBitmap(it) }
+        cache.clear()
+    }
 
     @Synchronized
     fun size(): Int = cache.size
 }
+
+/**
+ * M-8: Attempt to release native Skia resources backing an [ImageBitmap].
+ * Compose Desktop's ImageBitmap doesn't expose a public `close()` method,
+ * but the underlying `org.jetbrains.skia.Bitmap` (or `Image`) does. We
+ * use reflection as a best-effort path — if it fails, GC finalization is
+ * the fallback (same as the pre-fix behavior).
+ */
+private fun tryCloseBitmap(bitmap: ImageBitmap) {
+    try {
+        // SkiaBackedImageBitmap wraps an org.jetbrains.skia.Bitmap that has close().
+        val skiaField = bitmap.javaClass.declaredFields.firstOrNull {
+            it.type.name.contains("Bitmap") || it.type.name.contains("Image")
+        }
+        if (skiaField != null) {
+            skiaField.isAccessible = true
+            val skiaObj = skiaField.get(bitmap)
+            val closeMethod = skiaObj?.javaClass?.getMethod("close")
+            closeMethod?.invoke(skiaObj)
+        }
+    } catch (_: Exception) {
+        // Best-effort: if reflection fails, GC handles cleanup (pre-fix behavior).
+    }
+}
+
+/**
+ * H-1: Thread-safe set tracking all currently-running ffmpeg [Process] instances
+ * spawned by [extractFrameAtIndex]. When a preload is cancelled or the player is
+ * disposed, these are forcibly killed to prevent zombie OS processes.
+ */
+private val activeProcesses: MutableSet<Process> =
+    Collections.synchronizedSet(mutableSetOf<Process>())
 
 /**
  * Decode exactly ONE frame from the MP4 at the given frame index, using ffmpeg
@@ -106,18 +148,25 @@ private fun extractFrameAtIndex(videoPath: String, frameIndex: Int, fps: Double)
             "-"
         ).redirectErrorStream(false).start()
 
-        // Read JPEG bytes from stdout.
-        val bytes = proc.inputStream.use { it.readBytes() }
-        // Drain stderr to prevent the process from hanging on a full pipe buffer.
-        proc.errorStream.use { it.readBytes() }
+        // H-1: track process so it can be killed on cancel/dispose.
+        activeProcesses.add(proc)
+        try {
+            // Read JPEG bytes from stdout.
+            val bytes = proc.inputStream.use { it.readBytes() }
+            // Drain stderr to prevent the process from hanging on a full pipe buffer.
+            proc.errorStream.use { it.readBytes() }
 
-        if (!proc.waitFor(5, TimeUnit.SECONDS)) {
-            proc.destroyForcibly()
-            return null
+            if (!proc.waitFor(5, TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
+                return null
+            }
+            if (proc.exitValue() != 0 || bytes.isEmpty()) return null
+
+            org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
+        } finally {
+            // H-1: untrack after completion (success or failure).
+            activeProcesses.remove(proc)
         }
-        if (proc.exitValue() != 0 || bytes.isEmpty()) return null
-
-        org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
     } catch (_: Exception) {
         null
     }
@@ -190,6 +239,8 @@ fun EmbeddedVideoPlayer(
      */
     fun preloadWindow(centerIndex: Int) {
         preloadJob?.cancel()
+        // H-1: kill any ffmpeg processes that were spawned by the cancelled preload.
+        killActiveProcesses()
         preloadJob = coroutineScope.launch(Dispatchers.IO) {
             val totalFrames = (videoDurationMs / 1000.0 * videoFps).toInt().coerceAtLeast(1)
             val windowRadius = 600
@@ -292,6 +343,9 @@ fun EmbeddedVideoPlayer(
     DisposableEffect(videoPath) {
         onDispose {
             preloadJob?.cancel()
+            // H-1: kill all tracked ffmpeg processes to prevent zombies.
+            killActiveProcesses()
+            // M-8: clear() now disposes native Skia resources.
             frameCache.clear()
         }
     }
@@ -361,6 +415,19 @@ fun EmbeddedVideoPlayer(
                 Text("Preparando video...", color = TextDim, fontSize = 13.sp)
             }
         }
+    }
+}
+
+/**
+ * H-1: Force-kill all tracked ffmpeg processes. Called when preloadJob is
+ * cancelled (new seek) and on dispose (player leaves the composition).
+ */
+private fun killActiveProcesses() {
+    synchronized(activeProcesses) {
+        activeProcesses.forEach { proc ->
+            try { proc.destroyForcibly() } catch (_: Exception) {}
+        }
+        activeProcesses.clear()
     }
 }
 

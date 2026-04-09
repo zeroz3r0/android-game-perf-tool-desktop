@@ -141,6 +141,13 @@ data class SessionResult(
 class AppViewModel(
     private val adb: AdbBridgeApi = RealAdbBridge(),
 ) {
+    // H-2: cap history lists to prevent unbounded memory growth in long sessions.
+    // 7200 entries = 2 hours at 1Hz polling (more than any practical session).
+    // 500_000 frame times = ~2.3 hours at 60fps.
+    companion object {
+        internal const val MAX_HISTORY_SIZE = 7_200
+        internal const val MAX_FRAME_TIMES_SIZE = 500_000
+    }
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     /** Must be called when the application window is closed to avoid scope leaks. */
@@ -601,7 +608,9 @@ class AppViewModel(
     fun switchToWifi() {
         val device = _selectedDevice.value ?: return
         if (device.isWifi) return
-        scope.launch {
+        // H-3: run on IO dispatcher — switchToWifi contains Thread.sleep(2000)
+        // and blocking exec() calls that would starve Dispatchers.Default.
+        scope.launch(Dispatchers.IO) {
             _wifiStatus.value = "Activando WiFi ADB..."
             val wifiId = adb.switchToWifi(device.id)
             if (wifiId != null) {
@@ -856,22 +865,42 @@ class AppViewModel(
                 if (fps > 0) {
                     fpsHistory.add(fps)
                     fpsTimed.add(TimedSample(sampleSecond, fps.toDouble()))
+                    // H-2: cap to prevent unbounded growth
+                    if (fpsHistory.size > MAX_HISTORY_SIZE) fpsHistory.removeFirst()
+                    if (fpsTimed.size > MAX_HISTORY_SIZE) fpsTimed.removeFirst()
                 }
                 val memNow = lastMem
                 if (runMem && memNow != null) {
                     memHistory.add(memNow.totalMb)
                     nativeHistory.add(memNow.nativeMb)
                     javaHistory.add(memNow.javaMb)
+                    if (memHistory.size > MAX_HISTORY_SIZE) memHistory.removeFirst()
+                    if (nativeHistory.size > MAX_HISTORY_SIZE) nativeHistory.removeFirst()
+                    if (javaHistory.size > MAX_HISTORY_SIZE) javaHistory.removeFirst()
                 }
-                if (cpu > 0) cpuHistory.add(cpu)
+                if (cpu > 0) {
+                    cpuHistory.add(cpu)
+                    if (cpuHistory.size > MAX_HISTORY_SIZE) cpuHistory.removeFirst()
+                }
                 if (runThermal) {
-                    if (lastThermal.cpu > 0) tempCpuHistory.add(lastThermal.cpu)
-                    if (lastThermal.gpu > 0) tempGpuHistory.add(lastThermal.gpu)
-                    if (lastThermal.skin > 0) tempSkinHistory.add(lastThermal.skin)
+                    if (lastThermal.cpu > 0) {
+                        tempCpuHistory.add(lastThermal.cpu)
+                        if (tempCpuHistory.size > MAX_HISTORY_SIZE) tempCpuHistory.removeFirst()
+                    }
+                    if (lastThermal.gpu > 0) {
+                        tempGpuHistory.add(lastThermal.gpu)
+                        if (tempGpuHistory.size > MAX_HISTORY_SIZE) tempGpuHistory.removeFirst()
+                    }
+                    if (lastThermal.skin > 0) {
+                        tempSkinHistory.add(lastThermal.skin)
+                        if (tempSkinHistory.size > MAX_HISTORY_SIZE) tempSkinHistory.removeFirst()
+                    }
                 }
                 if (frame != null && frame.avgFrameTime > 0) {
                     frameTimeAvgHistory.add(frame.avgFrameTime)
                     allFrameTimes.add(frame.avgFrameTime)
+                    if (frameTimeAvgHistory.size > MAX_HISTORY_SIZE) frameTimeAvgHistory.removeFirst()
+                    if (allFrameTimes.size > MAX_FRAME_TIMES_SIZE) allFrameTimes.removeFirst()
                 }
                 totalJank += frame?.jankCount ?: 0
                 totalStutter += frame?.stutterCount ?: 0

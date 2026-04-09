@@ -61,15 +61,26 @@ object SessionHistory {
         return try {
             val text = historyFile.readText()
             parseEntries(text)
-        } catch (_: Exception) { emptyList() }
+        } catch (e: Exception) {
+            // M-3: log instead of silently swallowing — aids debugging corrupt history files.
+            System.err.println("[GamePerf] Failed to load session history: ${e.message}")
+            emptyList()
+        }
     }
 
     @Synchronized
     fun save(entries: List<HistoryEntry>) {
         try {
             historyFile.parentFile?.mkdirs()
-            historyFile.writeText(toJson(entries.take(MAX_ENTRIES)))
-        } catch (_: Exception) {}
+            // M-3: atomic write pattern — write to .tmp first, then rename. Prevents
+            // corruption if the JVM crashes or disk fills mid-write.
+            val tmpFile = File(historyFile.parentFile, "${historyFile.name}.tmp")
+            tmpFile.writeText(toJson(entries.take(MAX_ENTRIES)))
+            tmpFile.renameTo(historyFile)
+        } catch (e: Exception) {
+            // M-3: log instead of silently swallowing — aids debugging disk-full / permission errors.
+            System.err.println("[GamePerf] Failed to save session history: ${e.message}")
+        }
     }
 
     /**
@@ -232,15 +243,16 @@ object SessionHistory {
                 val tsMs = Regex("\"tsMs\"\\s*:\\s*(\\d+)").find(mObj)?.groupValues?.get(1)?.toLongOrNull()
                 val tsLegacy = Regex("\"ts\"\\s*:\\s*(\\d+)").find(mObj)?.groupValues?.get(1)?.toIntOrNull()
                 val timestampMs = tsMs ?: ((tsLegacy ?: continue).toLong() * 1000)
-                val typeName = Regex("\"type\"\\s*:\\s*\"([^\"]+)\"").find(mObj)?.groupValues?.get(1) ?: continue
+                // M-4: use escape-aware regex for all string fields (handles \" in values)
+                val typeName = Regex("\"type\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1) ?: continue
                 val type = try { MarkerType.valueOf(typeName) } catch (_: Exception) { MarkerType.CUSTOM }
-                val id = Regex("\"id\"\\s*:\\s*\"([^\"]+)\"").find(mObj)?.groupValues?.get(1)
+                val id = Regex("\"id\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1)
                     ?: java.util.UUID.randomUUID().toString()
-                val title = Regex("\"title\"\\s*:\\s*\"([^\"]*)\"").find(mObj)?.groupValues?.get(1)
+                val title = Regex("\"title\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1)
                     ?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: type.label
-                val note = Regex("\"note\"\\s*:\\s*\"([^\"]*)\"").find(mObj)?.groupValues?.get(1)
+                val note = Regex("\"note\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1)
                     ?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
-                val colorHex = Regex("\"color\"\\s*:\\s*\"([^\"]+)\"").find(mObj)?.groupValues?.get(1) ?: type.colorHex
+                val colorHex = Regex("\"color\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1) ?: type.colorHex
                 result.add(SessionMarker(
                     id = id,
                     timestampMs = timestampMs,
@@ -267,8 +279,10 @@ object SessionHistory {
         }
         for (obj in topObjects) {
             try {
+                // M-4: use a parser that handles escaped quotes (\" inside values)
+                // instead of [^\"]* which breaks on game names like My "Cool" Game.
                 fun field(name: String): String {
-                    val r = Regex("\"$name\"\\s*:\\s*\"([^\"]*?)\"")
+                    val r = Regex("\"$name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
                     return r.find(obj)?.groupValues?.get(1)?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
                 }
                 fun intField(name: String): Int {

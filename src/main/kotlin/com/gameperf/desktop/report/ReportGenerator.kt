@@ -940,7 +940,17 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
         else { if (v > bad) "bad" else if (v > warn) "warn" else "good" }
 
     private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
-    private fun escJs(s: String) = s.replace("\\", "\\\\").replace("'", "\\'").replace("\"", "\\\"").replace("\n", " ")
+    // M-6: escJs must also escape `/` as `\/` to prevent </script> breakout when values
+    // are embedded inside <script> blocks. Also escape \r, \t, and backtick for robustness.
+    private fun escJs(s: String) = s
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("\"", "\\\"")
+        .replace("/", "\\/")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("`", "\\`")
 
     private fun metricCard(title: String, value: String, icon: String, grade: Char, gc: String, detail: String): String {
         val emoji = when (icon) {
