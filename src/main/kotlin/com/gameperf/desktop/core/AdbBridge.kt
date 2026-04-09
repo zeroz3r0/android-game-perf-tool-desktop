@@ -9,6 +9,20 @@ import java.util.concurrent.TimeUnit
  */
 object AdbBridge {
 
+    // ===== Input validation (v3.2.1-security) =====
+
+    /** Validates an Android package name: only alphanumeric, dots, and underscores. */
+    private fun isValidPackageName(pkg: String): Boolean =
+        pkg.isNotEmpty() && pkg.matches(Regex("^[a-zA-Z0-9._]+$"))
+
+    /** Validates a device ID: alphanumeric, dots, colons, underscores, dashes (covers USB serial + IP:port). */
+    private fun isValidDeviceId(id: String): Boolean =
+        id.isNotEmpty() && id.matches(Regex("^[a-zA-Z0-9.:_-]+$"))
+
+    /** Validates a session ID: alphanumeric, underscores, dashes. */
+    private fun isValidSessionId(id: String): Boolean =
+        id.isNotEmpty() && id.matches(Regex("^[a-zA-Z0-9_-]+$"))
+
     /**
      * Resolve ADB path. macOS packaged apps don't inherit terminal PATH,
      * so we check common locations.
@@ -54,8 +68,10 @@ object AdbBridge {
         } catch (_: Exception) { "" }
     }
 
-    fun shell(deviceId: String, cmd: String, timeoutMs: Long = 5000): String =
-        exec("adb", "-s", deviceId, "shell", cmd, timeoutMs = timeoutMs)
+    fun shell(deviceId: String, cmd: String, timeoutMs: Long = 5000): String {
+        require(isValidDeviceId(deviceId)) { "Invalid device ID: $deviceId" }
+        return exec("adb", "-s", deviceId, "shell", cmd, timeoutMs = timeoutMs)
+    }
 
     fun isAvailable(): Boolean = exec("adb", "version").isNotEmpty()
 
@@ -137,17 +153,21 @@ object AdbBridge {
 
     // ===== Metrics =====
 
+    @Volatile
     private var cachedLayer: Pair<String, String>? = null
     private var prevCpuBusy: Long = 0
     private var prevCpuTotal: Long = 0
     private var prevCpuInitialized: Boolean = false
+    private val cpuLock = Any()
 
     /** Reset session-scoped state so consecutive captures start clean. */
     fun resetSessionState() {
         cachedLayer = null
-        prevCpuBusy = 0
-        prevCpuTotal = 0
-        prevCpuInitialized = false
+        synchronized(cpuLock) {
+            prevCpuBusy = 0
+            prevCpuTotal = 0
+            prevCpuInitialized = false
+        }
     }
 
     /**
@@ -172,6 +192,7 @@ object AdbBridge {
      * a string instead of calling adb.
      */
     fun findLayer(deviceId: String, pkg: String): String? {
+        require(isValidPackageName(pkg)) { "Invalid package name: $pkg" }
         cachedLayer?.let { (p, l) -> if (p == pkg) return l }
         val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--list")
         val found = parseSurfaceFlingerListOutput(output, pkg)
@@ -216,7 +237,7 @@ object AdbBridge {
 
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
         val layer = findLayer(deviceId, pkg) ?: return null
-        val output = shell(deviceId, "dumpsys SurfaceFlinger --latency '$layer'")
+        val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--latency", layer)
         val lines = output.lines()
         if (lines.size < 3) return null
         val times = mutableListOf<Long>()
@@ -245,7 +266,8 @@ object AdbBridge {
     data class MemSnapshot(val totalMb: Long, val nativeMb: Long, val javaMb: Long)
 
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
-        val output = shell(deviceId, "dumpsys meminfo $pkg", timeoutMs = 8000)
+        require(isValidPackageName(pkg)) { "Invalid package name: $pkg" }
+        val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "meminfo", pkg, timeoutMs = 8000)
         val total = (Regex("TOTAL PSS:\\s+(\\d+)").find(output) ?: Regex("TOTAL\\s+(\\d+)").find(output))
             ?.groupValues?.get(1)?.toLongOrNull() ?: return null
         val native = Regex("Native Heap\\s+(\\d+)").find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
@@ -260,17 +282,19 @@ object AdbBridge {
         if (p.size < 8) return -1
         val busy = (1..3).sumOf { p[it].toLongOrNull() ?: 0L } + (6..7).sumOf { p[it].toLongOrNull() ?: 0L }
         val total = (1..7).sumOf { p[it].toLongOrNull() ?: 0L }
-        if (!prevCpuInitialized) {
+        synchronized(cpuLock) {
+            if (!prevCpuInitialized) {
+                prevCpuBusy = busy
+                prevCpuTotal = total
+                prevCpuInitialized = true
+                return -1
+            }
+            val deltaBusy = busy - prevCpuBusy
+            val deltaTotal = total - prevCpuTotal
             prevCpuBusy = busy
             prevCpuTotal = total
-            prevCpuInitialized = true
-            return -1
+            return if (deltaTotal > 0) (deltaBusy * 100 / deltaTotal).toInt().coerceIn(0, 100) else -1
         }
-        val deltaBusy = busy - prevCpuBusy
-        val deltaTotal = total - prevCpuTotal
-        prevCpuBusy = busy
-        prevCpuTotal = total
-        return if (deltaTotal > 0) (deltaBusy * 100 / deltaTotal).toInt().coerceIn(0, 100) else -1
     }
 
     data class ThermalSnapshot(val cpu: Double, val gpu: Double, val battery: Double, val skin: Double)
@@ -356,6 +380,8 @@ object AdbBridge {
         segment: Int = 0,
         profile: ScreenRecordProfile = ScreenRecordProfile.STANDARD
     ): Process? {
+        require(isValidDeviceId(deviceId)) { "Invalid device ID: $deviceId" }
+        require(isValidSessionId(sessionId)) { "Invalid session ID: $sessionId" }
         return try {
             val remotePath = "/sdcard/gp_${sessionId}_$segment.mp4"
             val size = "${profile.width}x${profile.height}"
@@ -379,20 +405,23 @@ object AdbBridge {
      * Pull all recorded segments for a session from device to local dir, then delete from device.
      */
     fun pullRecordings(deviceId: String, sessionId: String, localDir: java.io.File, maxSegments: Int = 20): List<java.io.File> {
+        require(isValidSessionId(sessionId)) { "Invalid session ID: $sessionId" }
         val files = mutableListOf<java.io.File>()
         for (i in 0..maxSegments) {
             val remotePath = "/sdcard/gp_${sessionId}_$i.mp4"
-            val check = shell(deviceId, "ls $remotePath 2>/dev/null")
+            val check = exec("adb", "-s", deviceId, "shell", "ls", remotePath, timeoutMs = 5000)
             if (check.isBlank() || check.contains("No such file")) break
             val localFile = java.io.File(localDir, "video_${sessionId}_$i.mp4")
             exec(adbPath, "-s", deviceId, "pull", remotePath, localFile.absolutePath, timeoutMs = 60000)
             if (localFile.exists() && localFile.length() > 0) files.add(localFile)
-            shell(deviceId, "rm $remotePath")
+            exec("adb", "-s", deviceId, "shell", "rm", remotePath, timeoutMs = 5000)
         }
         return files
     }
 
     fun cleanRecordings(deviceId: String) {
+        // Uses shell() intentionally: glob expansion needs the device shell.
+        // The pattern is a fixed literal (no user input), so no injection risk.
         shell(deviceId, "rm -f /sdcard/gp_*.mp4")
     }
 

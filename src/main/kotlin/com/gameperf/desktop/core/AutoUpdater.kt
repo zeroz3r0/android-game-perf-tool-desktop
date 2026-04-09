@@ -340,7 +340,7 @@ object AutoUpdater {
 
         // Relaunch via `open -n` so the native launcher reads Contents/app/*.cfg and applies
         // -Dskiko.library.path / -Dcompose.application.resources.dir / -Xdock:name.
-        val relaunchCommand = """open -n "${bundleRoot.absolutePath}""""
+        val relaunchCommand = "open -n ${shellQuote(bundleRoot.absolutePath)}"
         createUnixUpdateScript(currentJar, newJar, bakJar, relaunchCommand = relaunchCommand)
 
         System.exit(0)
@@ -363,7 +363,7 @@ object AutoUpdater {
         downloadedFile.copyTo(newJar, overwrite = true)
 
         // Relaunch via the native launcher .exe so its bundled .cfg is honored.
-        val relaunchCommand = """start "" "${launcher.absolutePath}""""
+        val relaunchCommand = """start "" "${launcher.absolutePath}"""" // Windows: double quotes are safe (no $() expansion)
         createWindowsUpdateScript(currentJar, newJar, bakJar, relaunchCommand = relaunchCommand)
 
         System.exit(0)
@@ -393,11 +393,14 @@ object AutoUpdater {
         // Prefer the native launcher; fall back to xdg-open on the bundle root.
         val relaunchCommand = when {
             launcher != null && launcher.canExecute() ->
-                """nohup "${launcher.absolutePath}" > /dev/null 2>&1 &"""
+                "nohup ${shellQuote(launcher.absolutePath)} > /dev/null 2>&1 &"
             bundleRoot != null ->
-                """xdg-open "${bundleRoot.absolutePath}""""
-            else ->
-                """nohup "${'$'}javaBin" -jar "${currentJar.absolutePath}" > /dev/null 2>&1 &"""
+                "xdg-open ${shellQuote(bundleRoot.absolutePath)}"
+            else -> {
+                val javaHome = System.getProperty("java.home")
+                val javaBin = File(javaHome, "bin/java").absolutePath
+                "nohup ${shellQuote(javaBin)} -jar ${shellQuote(currentJar.absolutePath)} > /dev/null 2>&1 &"
+            }
         }
         createUnixUpdateScript(currentJar, newJar, bakJar, relaunchCommand = relaunchCommand)
 
@@ -408,13 +411,13 @@ object AutoUpdater {
     private fun unixRelaunchJavaJar(currentJar: File): String {
         val javaHome = System.getProperty("java.home")
         val javaBin = File(javaHome, "bin/java").absolutePath
-        return """nohup "$javaBin" -jar "${currentJar.absolutePath}" > /dev/null 2>&1 &"""
+        return "nohup ${shellQuote(javaBin)} -jar ${shellQuote(currentJar.absolutePath)} > /dev/null 2>&1 &"
     }
 
     private fun winRelaunchJavaJar(currentJar: File): String {
         val javaHome = System.getProperty("java.home")
         val javaBin = File(javaHome, "bin/java.exe").absolutePath
-        return """start "" "$javaBin" -jar "${currentJar.absolutePath}""""
+        return """start "" "$javaBin" -jar "${currentJar.absolutePath}"""" // Windows: double quotes are safe (no $() expansion)
     }
 
     // ═══════ Installation Detection ═══════
@@ -555,6 +558,14 @@ object AutoUpdater {
     }
 
     /**
+     * Single-quote a string for safe embedding in a bash script. Single quotes prevent
+     * ALL shell expansion ($, `, \, etc.). Any literal single quote within the value
+     * is escaped as `'\''` (end quote, escaped literal quote, start quote).
+     */
+    private fun shellQuote(value: String): String =
+        "'" + value.replace("'", "'\\''") + "'"
+
+    /**
      * Build and launch a defensive bash update script. The script:
      *  - logs every step to `~/GamePerf Reports/updates/last-update.log` for post-mortem,
      *  - validates the new JAR exists and is non-empty,
@@ -563,6 +574,9 @@ object AutoUpdater {
      *  - executes [relaunchCommand] (caller-supplied: `nohup java -jar`, `open -n`, etc.),
      *  - self-deletes via `trap EXIT`,
      *  - uses `set -e` so any unexpected failure aborts cleanly.
+     *
+     * v3.2.1-security: all embedded file paths use single-quote escaping via [shellQuote]
+     * to prevent shell injection from paths containing backticks, $(), etc.
      */
     private fun createUnixUpdateScript(
         currentJar: File,
@@ -572,42 +586,46 @@ object AutoUpdater {
     ) {
         val script = File(currentJar.parentFile, ".gameperf-update.sh")
         val logPath = "\$HOME/GamePerf Reports/updates/last-update.log"
+        val qScript = shellQuote(script.absolutePath)
+        val qCurrent = shellQuote(currentJar.absolutePath)
+        val qNew = shellQuote(newJar.absolutePath)
+        val qBak = shellQuote(bakJar.absolutePath)
         script.writeText(
             """#!/bin/bash
 set -e
 LOG="$logPath"
 mkdir -p "${'$'}(dirname "${'$'}LOG")" 2>/dev/null || true
 exec >> "${'$'}LOG" 2>&1
-trap 'rm -f "${script.absolutePath}"' EXIT
+trap 'rm -f $qScript' EXIT
 echo "=== [${'$'}(date '+%Y-%m-%d %H:%M:%S')] Update script started ==="
-echo "Current JAR: ${currentJar.absolutePath}"
-echo "New JAR:     ${newJar.absolutePath}"
-echo "Backup:      ${bakJar.absolutePath}"
+echo "Current JAR: $qCurrent"
+echo "New JAR:     $qNew"
+echo "Backup:      $qBak"
 
 # Wait for parent process to die
 sleep 2
 
 # Verify new JAR exists and is non-empty
-if [ ! -s "${newJar.absolutePath}" ]; then
-  echo "FATAL: new JAR does not exist or is empty: ${newJar.absolutePath}"
+if [ ! -s $qNew ]; then
+  echo "FATAL: new JAR does not exist or is empty: $qNew"
   exit 1
 fi
-NEW_SIZE=${'$'}(stat -f%z "${newJar.absolutePath}" 2>/dev/null || stat -c%s "${newJar.absolutePath}" 2>/dev/null || echo 0)
+NEW_SIZE=${'$'}(stat -f%z $qNew 2>/dev/null || stat -c%s $qNew 2>/dev/null || echo 0)
 echo "New JAR size: ${'$'}NEW_SIZE bytes"
 
 # Backup current JAR (remove any prior backup first)
-if [ -f "${bakJar.absolutePath}" ]; then
+if [ -f $qBak ]; then
   echo "Removing old backup..."
-  rm -f "${bakJar.absolutePath}"
+  rm -f $qBak
 fi
 echo "Backing up current JAR..."
-mv -f "${currentJar.absolutePath}" "${bakJar.absolutePath}"
+mv -f $qCurrent $qBak
 
 # Install new JAR
 echo "Installing new JAR..."
-mv -f "${newJar.absolutePath}" "${currentJar.absolutePath}"
+mv -f $qNew $qCurrent
 
-# Relaunch (caller-supplied command)
+# Relaunch (caller-supplied command — paths already shellQuote'd by callers)
 echo "Relaunching: $relaunchCommand"
 $relaunchCommand
 
