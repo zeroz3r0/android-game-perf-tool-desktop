@@ -71,11 +71,14 @@ class CaptureSession:
 
         # Stitch frames into video with ffmpeg
         video_path = self._stitch_video()
-        # Cleanup frame images
-        try:
-            shutil.rmtree(self._frames_dir)
-        except Exception:
-            pass
+        # Cleanup frame images ONLY if stitch succeeded
+        if video_path is not None:
+            try:
+                shutil.rmtree(self._frames_dir)
+            except Exception:
+                pass
+        else:
+            logger.warning(f"Keeping frame images at {self._frames_dir} because stitch failed")
         return video_path
 
     def _capture_loop(self):

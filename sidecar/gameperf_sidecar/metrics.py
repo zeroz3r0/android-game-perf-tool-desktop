@@ -9,10 +9,17 @@ Uses pymobiledevice3's DVT (Developer Tools) instruments to capture:
 - Battery via lockdown
 
 Sentinel: -1 / -1.0 for unavailable metrics.
+
+v4.0.0-fix: DVT connections are kept OPEN for the lifetime of the session.
+Previous version opened and closed Sysmontap/Graphics/DiagnosticsService
+on every 500ms poll — 6 DVT connections/second, which would overwhelm
+the device. Now each service is opened ONCE in the async monitor loop
+and polled repeatedly.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -35,6 +42,12 @@ class MetricsSession:
 
     Keeps the latest snapshot in memory so the Kotlin app can poll via GET /device/{udid}/metrics
     without the overhead of re-establishing the DVT connection each time.
+
+    Architecture (v4.0.0-fix):
+    - A single background thread runs an asyncio event loop
+    - DVT services (Sysmontap, Graphics) are opened ONCE as async context managers
+    - The loop polls each service every ~500ms WITHOUT reconnecting
+    - All state is protected by self._lock
     """
 
     def __init__(self, udid: str):
@@ -52,7 +65,6 @@ class MetricsSession:
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._lockdown = None
         self._last_update = 0.0
 
     def start(self):
@@ -60,14 +72,14 @@ class MetricsSession:
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread = threading.Thread(target=self._run_async_loop, daemon=True)
         self._thread.start()
 
     def stop(self):
         """Stop background monitoring."""
         self._running = False
         if self._thread:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=10)
 
     def snapshot(self) -> dict:
         """Return latest metrics snapshot."""
@@ -88,119 +100,155 @@ class MetricsSession:
                 "batteryLevel": self.latest_battery_level,
             }
 
-    def _monitor_loop(self):
-        """Background loop that polls DVT instruments."""
-        import asyncio
+    def _run_async_loop(self):
+        """Entry point for the background thread — runs the async monitor loop."""
+        try:
+            asyncio.run(self._async_monitor_loop())
+        except Exception as e:
+            logger.error(f"MetricsSession async loop died for {self.udid}: {e}")
+        finally:
+            self._running = False
+
+    async def _async_monitor_loop(self):
+        """
+        Main async monitoring loop. Opens DVT connections ONCE and polls repeatedly.
+
+        Architecture:
+        - create_using_usbmux → lockdown (async)
+        - Battery: polled via lockdown.all_values (cheap, every iteration)
+        - CPU/Mem: polled via Sysmontap async iterator (opened once)
+        - FPS: polled via Graphics async iterator (opened once)
+        - Thermals: polled via DiagnosticsService (opened once)
+        """
+        from pymobiledevice3.lockdown import create_using_usbmux
+
+        lockdown = await create_using_usbmux(serial=self.udid)
+
+        # Capture battery from lockdown (no DVT needed)
+        self._capture_battery_from_lockdown(lockdown)
+
+        # Run instrument captures concurrently as separate tasks
+        # Each opens its DVT service ONCE and polls in a loop
+        tasks = [
+            asyncio.create_task(self._poll_sysmontap(lockdown)),
+            asyncio.create_task(self._poll_graphics(lockdown)),
+            asyncio.create_task(self._poll_thermals(lockdown)),
+            asyncio.create_task(self._poll_battery(lockdown)),
+        ]
 
         try:
-            from pymobiledevice3.lockdown import create_using_usbmux
-            self._lockdown = asyncio.run(create_using_usbmux(serial=self.udid))
-        except Exception as e:
-            logger.error(f"Cannot connect to device {self.udid}: {e}")
-            self._running = False
-            return
+            # Wait until _running is False
+            while self._running:
+                await asyncio.sleep(0.5)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        while self._running:
-            try:
-                self._capture_cpu_and_memory()
-                self._capture_fps()
-                self._capture_thermals()
-                self._capture_battery()
-                self._last_update = time.time()
-            except Exception as e:
-                logger.warning(f"Metrics capture error for {self.udid}: {e}")
-
-            # Poll every ~500ms to match Android cadence
-            time.sleep(0.5)
-
-    def _capture_cpu_and_memory(self):
-        """Capture CPU% and memory via sysmontap."""
+    async def _poll_sysmontap(self, lockdown):
+        """Poll CPU% and memory via Sysmontap — connection kept open."""
         try:
             from pymobiledevice3.services.dvt.instruments.sysmontap import Sysmontap
 
-            with Sysmontap(lockdown=self._lockdown) as sysmontap:
-                # Get a single snapshot
-                for proc_snapshot in sysmontap:
+            async with Sysmontap(lockdown=lockdown) as sysmontap:
+                async for proc_snapshot in sysmontap:
+                    if not self._running:
+                        break
                     if proc_snapshot is None:
                         continue
+
                     system_attrs = proc_snapshot.get("System", {})
                     with self._lock:
-                        # System CPU usage (0-100)
                         cpu_usage = system_attrs.get("SystemCPUUsage", {})
                         total = cpu_usage.get("CPU_TotalLoad", -1)
                         self.latest_cpu = int(total) if total >= 0 else -1
 
-                        # Memory: physFootprint of the frontmost app
                         processes = proc_snapshot.get("Processes", {})
-                        # Sum or find the largest consumer — for now just total
                         if processes:
                             max_mem = max(
                                 (p.get("physFootprint", 0) for p in processes.values()),
                                 default=0,
                             )
                             self.latest_mem_mb = int(max_mem / (1024 * 1024))
-                    break  # Single snapshot
-        except Exception as e:
-            logger.debug(f"Sysmontap error: {e}")
 
-    def _capture_fps(self):
-        """Capture FPS via Graphics DVT service."""
+                    self._last_update = time.time()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Sysmontap error for {self.udid}: {e}")
+
+    async def _poll_graphics(self, lockdown):
+        """Poll FPS via Graphics DVT service — connection kept open."""
         try:
             from pymobiledevice3.services.dvt.instruments.graphics import Graphics
 
-            with Graphics(lockdown=self._lockdown) as graphics:
-                for sample in graphics:
+            async with Graphics(lockdown=lockdown) as graphics:
+                async for sample in graphics:
+                    if not self._running:
+                        break
                     if sample is None:
                         continue
+
                     with self._lock:
                         fps = sample.get("CoreAnimationFramesPerSecond", -1)
                         self.latest_fps = int(fps) if fps >= 0 else -1
                         if fps > 0:
                             self.latest_avg_frame_time = 1000.0 / fps
-                            # Jank: frame time > 16.67ms (below 60fps target)
-                            # This is a rough estimate — Android uses compositor data
                             if fps < 55:
                                 self.latest_jank_count += 1
                             if fps < 30:
                                 self.latest_stutter_count += 1
-                    break
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.debug(f"Graphics DVT error: {e}")
+            logger.warning(f"Graphics DVT error for {self.udid}: {e}")
 
-    def _capture_thermals(self):
-        """Capture thermal data via diagnostics service."""
+    async def _poll_thermals(self, lockdown):
+        """Poll thermal data periodically — reuses DiagnosticsService connection."""
         try:
             from pymobiledevice3.services.diagnostics import DiagnosticsService
 
-            with DiagnosticsService(lockdown=self._lockdown) as diag:
-                ioregistry = diag.ioregistry_entry("AppleARMSOCDevice", "IOService")
-                with self._lock:
-                    if ioregistry and isinstance(ioregistry, dict):
-                        # CPU temp — varies by device model
-                        self.latest_temp_cpu = _extract_temp(ioregistry, ["SOC Die Temp Sensor0", "die-temp", "Temperature"])
-                        # GPU temp — rarely exposed separately
-                        self.latest_temp_gpu = _extract_temp(ioregistry, ["GPU Die Temp Sensor", "gpu-temp"])
+            async with DiagnosticsService(lockdown=lockdown) as diag:
+                while self._running:
+                    try:
+                        ioregistry = diag.ioregistry_entry("AppleARMSOCDevice", "IOService")
+                        with self._lock:
+                            if ioregistry and isinstance(ioregistry, dict):
+                                self.latest_temp_cpu = _extract_temp(ioregistry, ["SOC Die Temp Sensor0", "die-temp", "Temperature"])
+                                self.latest_temp_gpu = _extract_temp(ioregistry, ["GPU Die Temp Sensor", "gpu-temp"])
 
-                # Battery temp via different IORegistry path
-                battery_info = diag.ioregistry_entry("AppleSmartBattery", "IOService")
-                if battery_info and isinstance(battery_info, dict):
-                    raw_temp = battery_info.get("Temperature", -1)
-                    with self._lock:
-                        if raw_temp > 0:
-                            # Apple reports in centidegrees
-                            self.latest_temp_battery = raw_temp / 100.0
-                        else:
-                            self.latest_temp_battery = -1.0
+                        battery_info = diag.ioregistry_entry("AppleSmartBattery", "IOService")
+                        if battery_info and isinstance(battery_info, dict):
+                            raw_temp = battery_info.get("Temperature", -1)
+                            with self._lock:
+                                if raw_temp > 0:
+                                    self.latest_temp_battery = raw_temp / 100.0
+                                else:
+                                    self.latest_temp_battery = -1.0
+                    except Exception as e:
+                        logger.debug(f"Thermal poll error: {e}")
+
+                    await asyncio.sleep(2.0)  # Thermals change slowly — every 2s
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.debug(f"Diagnostics error: {e}")
+            logger.warning(f"DiagnosticsService error for {self.udid}: {e}")
 
-    def _capture_battery(self):
-        """Capture battery level via lockdown."""
+    async def _poll_battery(self, lockdown):
+        """Poll battery level periodically via lockdown."""
+        while self._running:
+            try:
+                self._capture_battery_from_lockdown(lockdown)
+            except Exception as e:
+                logger.debug(f"Battery poll error: {e}")
+            await asyncio.sleep(2.0)  # Battery changes slowly
+
+    def _capture_battery_from_lockdown(self, lockdown):
+        """Capture battery level — sync, called from async context."""
         try:
-            if self._lockdown:
-                battery = self._lockdown.all_values.get("BatteryCurrentCapacity", -1)
-                with self._lock:
-                    self.latest_battery_level = int(battery) if battery >= 0 else -1
+            battery = lockdown.all_values.get("BatteryCurrentCapacity", -1)
+            with self._lock:
+                self.latest_battery_level = int(battery) if battery >= 0 else -1
         except Exception as e:
             logger.debug(f"Battery error: {e}")
 
@@ -229,7 +277,7 @@ async def get_metrics(udid: str):
     """Get latest metrics snapshot for a device.
 
     Auto-starts a monitoring session on first call. The session runs in a
-    background thread polling DVT instruments every ~500ms.
+    background thread with persistent DVT connections.
     """
     session = _get_or_create_session(udid)
     return session.snapshot()

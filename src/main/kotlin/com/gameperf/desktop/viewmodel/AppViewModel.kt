@@ -749,6 +749,7 @@ class AppViewModel(
     fun startCapture(durationSeconds: Int = 0) {
         val device = _selectedDevice.value ?: return
         val pkg = _gamePackage.value ?: return
+        val isIosDevice = device.platform == DevicePlatform.IOS
 
         _screen.value = AppScreen.CAPTURING
         _isCapturing.value = true
@@ -758,57 +759,53 @@ class AppViewModel(
         _captureWarning.value = null
         shouldStop = false
         recordChainFailures = 0  // v3.1.13: reset diagnostic counter per capture
-        adb.resetSessionState()
+        if (!isIosDevice) adb.resetSessionState()
 
         captureJob = scope.launch {
-            val batteryStart = adb.getBatteryLevel(device.id)
-            val missedStart = adb.getMissedFrames(device.id)
+            val batteryStart = if (isIosDevice) {
+                iosBridge?.getBatteryLevel(device.id) ?: 100
+            } else {
+                adb.getBatteryLevel(device.id)
+            }
+            val missedStart = if (isIosDevice) 0 else adb.getMissedFrames(device.id)
             val isWifiMode = _isWifi.value
-            if (!isWifiMode) adb.disableCharging(device.id)
+            if (!isWifiMode && !isIosDevice) adb.disableCharging(device.id)
 
             // Start video recording and metrics at the same moment
             val videoDir = File(System.getProperty("user.home"), "GamePerf Reports")
             videoDir.mkdirs()
             val sessionId = java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(java.util.Date())
-            adb.cleanRecordings(device.id)
+            if (!isIosDevice) adb.cleanRecordings(device.id)
             recordSegment = 0
-            // v3.1.10: Pick screenrecord profile based on device tier. LOW and LOWER_MID
-            // devices (like the Pixel XL with Adreno 530) get the compact profile to
-            // minimize the SurfaceFlinger virtual-display downscale cost. Everyone else
-            // keeps the standard 720p profile.
-            val recordProfile = run {
-                val gpu = _deviceInfo.value?.gpu ?: ""
-                val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
-                when (tier) {
-                    com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
-                    com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
-                        AdbBridge.ScreenRecordProfile.COMPACT
-                    else -> AdbBridge.ScreenRecordProfile.STANDARD
+            // v4.0.0: iOS screen recording goes through the sidecar
+            var iosScreenCaptureId: String? = null
+            if (isIosDevice) {
+                iosScreenCaptureId = iosBridge?.let { bridge ->
+                    val client = (bridge as? IosBridge)?.let {
+                        sidecarLifecycle?.client
+                    }
+                    client?.startScreenRecord(device.id, sessionId)
                 }
-            }
-            // v3.1.11/13: startScreenRecord has TWO failure modes that the v3.1.10 code
-            // didn't distinguish:
-            //   (a) ProcessBuilder.start() throws → returns null immediately
-            //   (b) start() succeeds but `screenrecord` exits within 100ms with non-zero
-            //       (unsupported codec, "ERROR: --size <WxH>: width/height must be a
-            //        multiple of 16", missing /sdcard permission, etc.). In this case
-            //       start() returns a Process object but it's already dead. v3.1.10 had
-            //       no detection for this — the chain timer fired, pullRecordings found
-            //       no files, the user got a session with empty videoPath and no error.
-            //
-            // v3.1.13: the detection logic (warm-up + isAlive + stderr capture + retry
-            // with STANDARD) used to be inline as `tryStart`. It's now extracted to
-            // [startSegmentWithRetry] so the chain loop in recordJob can reuse the
-            // EXACT SAME logic for segments 1..N. Before v3.1.13, only the initial
-            // segment had this — chain segments could die silently and the loop
-            // would just `break` without telling the user. That was the v3.1.10/11/12
-            // root cause.
-            recordProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, recordProfile)
-            if (recordProcess == null) {
-                // Both attempts failed. Surface a non-fatal warning so the user knows
-                // why the report has no video. Capture continues with metrics only.
-                _captureWarning.value = "El video no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las metricas si se estan registrando."
-                System.err.println("AppViewModel: screenrecord failed for both COMPACT and STANDARD profiles on device ${device.id}")
+                if (iosScreenCaptureId == null) {
+                    _captureWarning.value = "No se pudo iniciar la grabación de pantalla en iOS. Las métricas sí se están registrando."
+                }
+            } else {
+                // Android: Pick screenrecord profile based on device tier
+                val recordProfile = run {
+                    val gpu = _deviceInfo.value?.gpu ?: ""
+                    val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
+                    when (tier) {
+                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
+                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
+                            AdbBridge.ScreenRecordProfile.COMPACT
+                        else -> AdbBridge.ScreenRecordProfile.STANDARD
+                    }
+                }
+                recordProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, recordProfile)
+                if (recordProcess == null) {
+                    _captureWarning.value = "El video no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las metricas si se estan registrando."
+                    System.err.println("AppViewModel: screenrecord failed for both COMPACT and STANDARD profiles on device ${device.id}")
+                }
             }
             // Note: startSegmentWithRetry already includes the 1500ms warm-up delay (and
             // a second one if the retry path is taken), no need to delay again here.
@@ -837,33 +834,38 @@ class AppViewModel(
             // stderr-capture + retry-with-STANDARD treatment, AND if it ultimately
             // fails we surface an EXPLICIT warning to the user instead of breaking
             // silently. This closes the v3.1.10/11/12 regression saga.
-            recordJob = scope.launch {
-                while (!shouldStop) {
-                    delay(175_000)
-                    if (shouldStop) break
-                    adb.stopScreenRecord(recordProcess)
-                    // v3.1.12: 3-second wait to let the device-side screenrecord binary
-                    // flush its moov atom. This prevents the segment-zero corruption that
-                    // produced 7MB partial files instead of full 80MB segments.
-                    delay(3000)
-                    recordSegment++
-                    val nextProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, recordProfile)
-                    if (nextProcess == null) {
-                        // v3.1.13: do NOT break silently. Tell the user the chain stopped
-                        // and why, so they understand the video is partial. Metrics
-                        // capture continues — the chain failure is non-fatal.
-                        recordChainFailures++
-                        val msg = describeChainFailure(recordSegment)
-                        System.err.println("AppViewModel: chain segment $recordSegment failed after retry — $msg")
-                        // Only set the warning if we don't already have one (don't
-                        // clobber e.g. a "video corrupt" message from concat).
-                        if (_captureWarning.value == null) {
-                            _captureWarning.value = msg
-                        }
-                        recordProcess = null
-                        break  // exit the chain loop, but do NOT stop the metrics capture
+            // v4.0.0: chain recording is Android-only (iOS uses sidecar single-session)
+            if (!isIosDevice) {
+                val chainProfile = run {
+                    val gpu = _deviceInfo.value?.gpu ?: ""
+                    val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
+                    when (tier) {
+                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
+                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
+                            AdbBridge.ScreenRecordProfile.COMPACT
+                        else -> AdbBridge.ScreenRecordProfile.STANDARD
                     }
-                    recordProcess = nextProcess
+                }
+                recordJob = scope.launch {
+                    while (!shouldStop) {
+                        delay(175_000)
+                        if (shouldStop) break
+                        adb.stopScreenRecord(recordProcess)
+                        delay(3000)
+                        recordSegment++
+                        val nextProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, chainProfile)
+                        if (nextProcess == null) {
+                            recordChainFailures++
+                            val msg = describeChainFailure(recordSegment)
+                            System.err.println("AppViewModel: chain segment $recordSegment failed after retry — $msg")
+                            if (_captureWarning.value == null) {
+                                _captureWarning.value = msg
+                            }
+                            recordProcess = null
+                            break
+                        }
+                        recordProcess = nextProcess
+                    }
                 }
             }
 
@@ -926,32 +928,56 @@ class AppViewModel(
                 delay(500)
                 if (shouldStop) break
 
-                // === FAST TIER (every iteration ~= every 500ms) ===
-                // FPS via --latency (5-20ms), CPU via /proc/stat (5-10ms), battery (5-15ms)
-                val frame = adb.captureFrames(device.id, pkg)
-                if (shouldStop) break
-                val cpu = adb.captureCpuPercent(device.id)
-                if (shouldStop) break
-                val battery = adb.getBatteryLevel(device.id)
-                if (shouldStop) break
+                // === METRICS CAPTURE ===
+                // v4.0.0: platform-aware — iOS uses iosBridge, Android uses adb
+                val frame: AdbBridge.FrameSnapshot?
+                val cpu: Int
+                val battery: Int
 
-                // === MEDIUM TIER (every ~2s, i.e. every 4th iteration) ===
-                // Thermal sensors — sysfs is fast-ish (~30-80ms) but multi-cat adds up.
-                val runThermal = iterCount % 4 == 0
-                if (runThermal) {
-                    val t = adb.captureTemperature(device.id)
+                if (isIosDevice) {
+                    // iOS: all metrics come from the sidecar via iosBridge (single HTTP call per method)
+                    val iosFrame = iosBridge?.captureFrames(device.id, pkg)
+                    frame = if (iosFrame != null) AdbBridge.FrameSnapshot(iosFrame.fps, iosFrame.avgFrameTime, iosFrame.jankCount, iosFrame.stutterCount) else null
                     if (shouldStop) break
-                    lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(t.cpu, t.gpu, t.battery, t.skin)
-                }
+                    cpu = iosBridge?.captureCpuPercent(device.id) ?: 0
+                    if (shouldStop) break
+                    battery = iosBridge?.getBatteryLevel(device.id) ?: 0
+                    if (shouldStop) break
 
-                // === SLOW TIER (every ~5s, i.e. every 10th iteration) ===
-                // `dumpsys meminfo <pkg>` is the worst offender: 200-800ms AND blocks the
-                // game's main thread. Memory is a slow-changing signal, 5s is plenty.
-                val runMem = iterCount % 10 == 0
-                if (runMem) {
-                    val m = adb.captureMemory(device.id, pkg)
+                    // iOS: thermal + memory on every iteration (sidecar caches, HTTP is cheap)
+                    val iosTherm = iosBridge?.captureTemperature(device.id)
+                    if (iosTherm != null) {
+                        lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(iosTherm.cpu, iosTherm.gpu, iosTherm.battery, iosTherm.skin)
+                    }
+                    val iosMem = iosBridge?.captureMemory(device.id, pkg)
+                    if (iosMem != null) {
+                        lastMem = com.gameperf.desktop.core.model.MemSnapshot(iosMem.totalMb, iosMem.nativeMb, iosMem.javaMb)
+                    }
+                } else {
+                    // Android: tiered cadence to reduce overhead
+                    // FAST TIER (every 500ms): FPS, CPU, battery
+                    frame = adb.captureFrames(device.id, pkg)
                     if (shouldStop) break
-                    if (m != null) lastMem = com.gameperf.desktop.core.model.MemSnapshot(m.totalMb, m.nativeMb, m.javaMb)
+                    cpu = adb.captureCpuPercent(device.id)
+                    if (shouldStop) break
+                    battery = adb.getBatteryLevel(device.id)
+                    if (shouldStop) break
+
+                    // MEDIUM TIER (every ~2s): thermals
+                    val runThermal = iterCount % 4 == 0
+                    if (runThermal) {
+                        val t = adb.captureTemperature(device.id)
+                        if (shouldStop) break
+                        lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(t.cpu, t.gpu, t.battery, t.skin)
+                    }
+
+                    // SLOW TIER (every ~5s): memory
+                    val runMem = iterCount % 10 == 0
+                    if (runMem) {
+                        val m = adb.captureMemory(device.id, pkg)
+                        if (shouldStop) break
+                        if (m != null) lastMem = com.gameperf.desktop.core.model.MemSnapshot(m.totalMb, m.nativeMb, m.javaMb)
+                    }
                 }
 
                 iterCount++
@@ -981,7 +1007,9 @@ class AppViewModel(
                     if (fpsTimed.size > MAX_HISTORY_SIZE) fpsTimed.removeFirst()
                 }
                 val memNow = lastMem
-                if (runMem && memNow != null) {
+                // v4.0.0: iOS captures mem/thermal every iteration; Android uses tiered cadence
+                val shouldRecordMem = isIosDevice || (iterCount % 10 == 1) // align with runMem above
+                if (shouldRecordMem && memNow != null) {
                     memHistory.add(memNow.totalMb)
                     nativeHistory.add(memNow.nativeMb)
                     javaHistory.add(memNow.javaMb)
@@ -993,7 +1021,8 @@ class AppViewModel(
                     cpuHistory.add(cpu)
                     if (cpuHistory.size > MAX_HISTORY_SIZE) cpuHistory.removeFirst()
                 }
-                if (runThermal) {
+                val shouldRecordThermal = isIosDevice || (iterCount % 4 == 1) // align with runThermal above
+                if (shouldRecordThermal) {
                     if (lastThermal.cpu > 0) {
                         tempCpuHistory.add(lastThermal.cpu)
                         if (tempCpuHistory.size > MAX_HISTORY_SIZE) tempCpuHistory.removeFirst()
@@ -1060,55 +1089,56 @@ class AppViewModel(
             // Stop recording and pull videos
             timerJob.cancel()
             recordJob?.cancel()
-            adb.stopScreenRecord(recordProcess)
-            recordProcess = null
-            // v3.1.12: increased from 2000ms to 3000ms. The screenrecord binary on the
-            // device needs time to flush the moov atom to /sdcard after receiving SIGTERM.
-            // 2 seconds was insufficient on some devices (the Pixel XL produced corrupt
-            // segments because the chain timer was killing screenrecord after only 1s of
-            // post-stop wait — see recordJob delay below).
-            delay(3000) // let last segment finalize on device
-            val recordings = adb.pullRecordings(device.id, sessionId, videoDir)
 
-            // Concatenate all segments into a single unified video file. screenrecord
-            // has a hard 3-min/segment limit so longer sessions produce multiple files
-            // (_0.mp4, _1.mp4, ...). v3.1.9 introduced concat to fix the 2:56 truncation;
-            // v3.1.12 makes the concat resilient to corrupt segments (filters them out
-            // before invoking ffmpeg) and the fallback uses `firstValidSegment` instead
-            // of `first()` so the user never gets a path pointing at a corrupt _0.mp4.
-            val videoPath: String = if (recordings.isNotEmpty()) {
-                val unified = java.io.File(videoDir, "video_${sessionId}.mp4")
-                val result = if (recordings.size > 1) {
-                    adb.concatSegments(recordings, unified)
-                } else {
-                    // Single segment — validate it's playable, return null if corrupt
-                    if (adb.isValidVideoFile(recordings.first())) recordings.first() else null
-                }
-                if (result != null) {
-                    result.absolutePath
-                } else {
-                    // Concat failed AND no single valid segment. Surface a warning so the
-                    // user knows the video is missing (not just empty), and try to find
-                    // ANY valid segment in the original list as a last resort.
-                    val anyValid = recordings.firstOrNull { adb.isValidVideoFile(it) }
-                    if (anyValid != null) {
-                        System.err.println("AppViewModel: concat failed, falling back to first valid segment: ${anyValid.name}")
-                        _captureWarning.value = "El video se grabo solo parcialmente. Algunos segmentos estaban corruptos y se descartaron."
-                        anyValid.absolutePath
-                    } else {
-                        System.err.println("AppViewModel: NO valid video segments produced (all ${recordings.size} corrupt)")
-                        _captureWarning.value = "Los segmentos de video estan corruptos y no se pudieron unir. Las metricas si estan completas."
-                        ""
-                    }
-                }
+            // v4.0.0: platform-aware recording stop + pull
+            val videoPath: String
+            if (isIosDevice) {
+                // iOS: stop sidecar capture → it returns the stitched video path
+                val iosVideoPath = if (iosScreenCaptureId != null) {
+                    sidecarLifecycle?.client?.stopScreenRecord(device.id, iosScreenCaptureId)
+                } else null
+                videoPath = iosVideoPath ?: ""
             } else {
-                ""
+                // Android: stop adb screenrecord, pull segments, concat
+                adb.stopScreenRecord(recordProcess)
+                recordProcess = null
+                delay(3000) // let last segment finalize on device
+                val recordings = adb.pullRecordings(device.id, sessionId, videoDir)
+
+                videoPath = if (recordings.isNotEmpty()) {
+                    val unified = java.io.File(videoDir, "video_${sessionId}.mp4")
+                    val result = if (recordings.size > 1) {
+                        adb.concatSegments(recordings, unified)
+                    } else {
+                        if (adb.isValidVideoFile(recordings.first())) recordings.first() else null
+                    }
+                    if (result != null) {
+                        result.absolutePath
+                    } else {
+                        val anyValid = recordings.firstOrNull { adb.isValidVideoFile(it) }
+                        if (anyValid != null) {
+                            System.err.println("AppViewModel: concat failed, falling back to first valid segment: ${anyValid.name}")
+                            _captureWarning.value = "El video se grabo solo parcialmente. Algunos segmentos estaban corruptos y se descartaron."
+                            anyValid.absolutePath
+                        } else {
+                            System.err.println("AppViewModel: NO valid video segments produced (all ${recordings.size} corrupt)")
+                            _captureWarning.value = "Los segmentos de video estan corruptos y no se pudieron unir. Las metricas si estan completas."
+                            ""
+                        }
+                    }
+                } else {
+                    ""
+                }
             }
 
             // === FINALIZE ===
-            if (!isWifiMode) adb.restoreCharging(device.id)
-            val batteryEnd = adb.getBatteryLevel(device.id)
-            val missedEnd = adb.getMissedFrames(device.id)
+            if (!isWifiMode && !isIosDevice) adb.restoreCharging(device.id)
+            val batteryEnd = if (isIosDevice) {
+                iosBridge?.getBatteryLevel(device.id) ?: 0
+            } else {
+                adb.getBatteryLevel(device.id)
+            }
+            val missedEnd = if (isIosDevice) 0 else adb.getMissedFrames(device.id)
 
             val sorted = fpsHistory.sorted()
             val n = sorted.size

@@ -22,8 +22,9 @@ class CompositeBridge(
     /**
      * Device ID → platform mapping, refreshed on each [listDevices] call.
      * Used by [findBridge] to route per-device calls to the correct bridge.
+     * ConcurrentHashMap for thread safety (polling thread vs UI thread).
      */
-    private val devicePlatformMap = mutableMapOf<String, DevicePlatform>()
+    private val devicePlatformMap = java.util.concurrent.ConcurrentHashMap<String, DevicePlatform>()
 
     override fun isAvailable(): Boolean =
         androidBridge.isAvailable() || (iosBridge?.isAvailable() == true)

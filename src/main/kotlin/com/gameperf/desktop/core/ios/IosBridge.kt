@@ -19,6 +19,41 @@ class IosBridge(
     private val client: SidecarClient,
 ) : DeviceBridgeApi {
 
+    /**
+     * Cached metrics snapshot per device to avoid making 4+ HTTP calls per poll cycle.
+     * The sidecar's metrics endpoint returns ALL metrics in one response — we should
+     * call it ONCE per cycle and serve captureFrames/captureCpu/captureMemory/captureTemperature
+     * from the cache.
+     *
+     * Cache is invalidated on each captureFrames() call (which is always the first
+     * metric the VM's poll loop requests).
+     */
+    @Volatile
+    private var cachedMetrics: Pair<String, SidecarClient.MetricsSnapshot>? = null
+    private val cacheLock = Any()
+
+    /** Fetch metrics from sidecar, caching the result for the current poll cycle. */
+    private fun getMetricsCached(deviceId: String): SidecarClient.MetricsSnapshot? {
+        synchronized(cacheLock) {
+            val cached = cachedMetrics
+            if (cached != null && cached.first == deviceId) {
+                return cached.second
+            }
+        }
+        val fresh = client.getMetrics(deviceId) ?: return null
+        synchronized(cacheLock) {
+            cachedMetrics = deviceId to fresh
+        }
+        return fresh
+    }
+
+    /** Invalidate the cache — called at the start of each poll cycle. */
+    private fun invalidateCache() {
+        synchronized(cacheLock) {
+            cachedMetrics = null
+        }
+    }
+
     /** True if the sidecar is running and healthy. */
     override fun isAvailable(): Boolean = client.isHealthy()
 
@@ -31,22 +66,23 @@ class IosBridge(
     override fun detectGame(deviceId: String): String? {
         // iOS doesn't have a direct equivalent to Android's `dumpsys window`.
         // For now, return null — the user manually selects the game.
-        // TODO Phase 3: Use DVT to detect frontmost app bundle ID.
         return null
     }
 
     override fun getBatteryLevel(deviceId: String): Int {
-        val metrics = client.getMetrics(deviceId)
+        val metrics = getMetricsCached(deviceId)
         return metrics?.batteryLevel ?: -1
     }
 
     override fun resetSessionState() {
-        // No persistent state to reset on the iOS side.
-        // The sidecar manages sessions independently.
+        invalidateCache()
     }
 
     override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
-        val metrics = client.getMetrics(deviceId) ?: return null
+        // captureFrames is always the FIRST metric called in the poll loop —
+        // invalidate cache so we fetch fresh data from the sidecar
+        invalidateCache()
+        val metrics = getMetricsCached(deviceId) ?: return null
         if (metrics.fps < 0) return null
         return FrameSnapshot(
             fps = metrics.fps,
@@ -57,12 +93,12 @@ class IosBridge(
     }
 
     override fun captureCpuPercent(deviceId: String): Int {
-        val metrics = client.getMetrics(deviceId)
+        val metrics = getMetricsCached(deviceId)
         return metrics?.cpuPercent ?: -1
     }
 
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
-        val metrics = client.getMetrics(deviceId) ?: return null
+        val metrics = getMetricsCached(deviceId) ?: return null
         if (metrics.memoryMb < 0) return null
         return MemSnapshot(
             totalMb = metrics.memoryMb,
@@ -72,7 +108,7 @@ class IosBridge(
     }
 
     override fun captureTemperature(deviceId: String): ThermalSnapshot {
-        val metrics = client.getMetrics(deviceId)
+        val metrics = getMetricsCached(deviceId)
             ?: return ThermalSnapshot(-1.0, -1.0, -1.0, -1.0)
         return ThermalSnapshot(
             cpu = metrics.tempCpu,

@@ -34,8 +34,10 @@ class SidecarLifecycle(
         private set
 
     /** The SidecarClient configured to talk to this sidecar instance. */
+    @Volatile
+    private var _client: SidecarClient? = null
     val client: SidecarClient
-        get() = SidecarClient(baseUrl = "http://127.0.0.1:$port")
+        get() = _client ?: SidecarClient(baseUrl = "http://127.0.0.1:$port").also { _client = it }
 
     /**
      * Start the sidecar process. Blocks until the sidecar is healthy or fails.

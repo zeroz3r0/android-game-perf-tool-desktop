@@ -51,7 +51,7 @@ async def shutdown():
     """Graceful shutdown requested by the Kotlin app."""
     logger.info("Shutdown requested via /shutdown endpoint")
     # Schedule shutdown after response is sent
-    asyncio.get_event_loop().call_later(0.5, _force_exit)
+    asyncio.get_running_loop().call_later(0.5, _force_exit)
     return {"status": "shutting_down"}
 
 
