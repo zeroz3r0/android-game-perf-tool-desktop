@@ -148,38 +148,93 @@ def _get_resolution(product_type: str) -> str:
     return res_map.get(product_type, "Unknown")
 
 
+async def _get_installed_apps(udid: str) -> list[dict]:
+    """
+    v4.1.0: List user-installed apps on the device.
+    Works WITHOUT Developer Mode via InstallationProxyService.
+
+    Returns list of {bundleId, name} dicts, filtered to non-system apps.
+    """
+    try:
+        from pymobiledevice3.lockdown import create_using_usbmux
+        from pymobiledevice3.services.installation_proxy import InstallationProxyService
+
+        lockdown = await create_using_usbmux(serial=udid)
+        async with InstallationProxyService(lockdown=lockdown) as proxy:
+            apps = await proxy.get_apps("User")
+            result = []
+            for bundle_id, info in apps.items():
+                name = info.get("CFBundleDisplayName", info.get("CFBundleName", bundle_id))
+                # Skip Apple system-ish apps (but keep user-installed Apple apps like iMovie)
+                if bundle_id.startswith("com.apple.") and bundle_id not in (
+                    "com.apple.store.Jolly",
+                ):
+                    continue
+                result.append({"bundleId": bundle_id, "name": name})
+            result.sort(key=lambda x: x["name"])
+            return result
+    except Exception as e:
+        logger.warning(f"Failed to list apps for {udid}: {e}")
+        return []
+
+
 async def _get_foreground_app(udid: str) -> Optional[str]:
     """
-    v4.1.0: Detect the foreground app bundle ID using SpringBoardServices.
-    Returns the bundle identifier or None if unavailable.
+    v4.1.0: Best-effort foreground app detection WITHOUT Developer Mode.
+
+    Strategy: scan syslog for 4 seconds, match any known user app bundle ID
+    that appears in RunningBoard/SpringBoard state update messages.
+    The most-frequently-mentioned user app is likely the foreground one.
+
+    Falls back to None if no user app is mentioned in the syslog window.
+    This is inherently unreliable — iOS has no public "frontmost app" API
+    without Developer Mode. The Kotlin UI should show a picker fallback
+    using /device/{udid}/apps when this returns null.
     """
+    import time
+
     try:
         from pymobiledevice3.lockdown import create_using_usbmux
-        from pymobiledevice3.services.springboardservices import SpringBoardServicesService
+        from pymobiledevice3.services.os_trace import OsTraceService
+        from pymobiledevice3.services.installation_proxy import InstallationProxyService
 
         lockdown = await create_using_usbmux(serial=udid)
-        async with SpringBoardServicesService(lockdown=lockdown) as sbs:
-            # get_front_board_application_info returns dict with bundleId
-            info = sbs.get_icon_state()
-            # Alternative: use instruments for more reliable detection
-            pass
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.debug(f"SpringBoard detection failed: {e}")
 
-    # Fallback: use instruments DVT to get frontmost app
-    try:
-        from pymobiledevice3.lockdown import create_using_usbmux
-        from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
-
-        lockdown = await create_using_usbmux(serial=udid)
-        async with ProcessControl(lockdown=lockdown) as proc_control:
-            # List running processes and find the frontmost non-system app
-            # This is best-effort — iOS doesn't have a single "foreground app" API like Android
+        # Get user app bundle IDs
+        user_bundles: set[str] = set()
+        try:
+            async with InstallationProxyService(lockdown=lockdown) as proxy:
+                apps = await proxy.get_apps("User")
+                user_bundles = {
+                    b for b in apps.keys()
+                    if not b.startswith("com.apple.")
+                }
+        except Exception:
             pass
+
+        if not user_bundles:
+            return None
+
+        async with OsTraceService(lockdown=lockdown) as trace:
+            seen: dict[str, int] = {}
+            start = time.time()
+            async for entry in trace.syslog():
+                if time.time() - start > 4:
+                    break
+                msg = getattr(entry, "message", "")
+                if not msg:
+                    continue
+                for bundle in user_bundles:
+                    if bundle in msg:
+                        seen[bundle] = seen.get(bundle, 0) + 1
+
+            if seen:
+                top = max(seen, key=seen.get)
+                logger.info(f"Foreground app guess: {top} ({seen[top]} mentions)")
+                return top
+
     except Exception as e:
-        logger.debug(f"ProcessControl detection failed: {e}")
+        logger.warning(f"Foreground app detection failed: {e}")
 
     return None
 
@@ -198,8 +253,15 @@ async def get_device_info(udid: str):
     return info
 
 
+@router.get("/device/{udid}/apps")
+async def get_installed_apps(udid: str):
+    """v4.1.0: List user-installed apps. No Developer Mode needed."""
+    apps = await _get_installed_apps(udid)
+    return {"apps": apps}
+
+
 @router.get("/device/{udid}/foreground-app")
 async def get_foreground_app(udid: str):
-    """v4.1.0: Detect the frontmost app on an iOS device."""
+    """v4.1.0: Best-effort foreground app detection. Falls back to null."""
     bundle_id = await _get_foreground_app(udid)
     return {"bundleId": bundle_id}
