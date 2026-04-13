@@ -82,7 +82,15 @@ object AutoUpdater {
     fun checkForUpdate(): ReleaseInfo? {
         lastCheckError = null
         return try {
-            val url = URL("https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest")
+            // v4.1.0: use /releases (list all) instead of /releases/latest.
+            // GitHub's "latest" endpoint picks by published_at timestamp, NOT by
+            // semver. If an older release gets re-published (edited), it becomes
+            // "latest" even though a newer semver release exists. This caused
+            // v3.1.3 (re-published) to shadow v4.0.0 and block all update banners.
+            //
+            // Now we fetch the first page of releases (up to 30, sorted newest first)
+            // and pick the one with the highest semver tag.
+            val url = URL("https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases?per_page=10")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.setRequestProperty("Accept", "application/vnd.github+json")
@@ -98,24 +106,68 @@ object AutoUpdater {
             val json = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
             conn.disconnect()
 
-            val tagName = extractJsonString(json, "tag_name") ?: run {
-                lastCheckError = "Could not extract tag_name from GitHub response"
+            // Parse the JSON array and find the release with the highest semver tag.
+            // The array format is: [ { "tag_name": "v4.0.0", ... }, { "tag_name": "v3.2.1", ... }, ... ]
+            val tagNames = extractAllJsonStrings(json, "tag_name")
+            if (tagNames.isEmpty()) {
+                lastCheckError = "No releases found"
                 return null
             }
-            val version = tagName.removePrefix("v").removePrefix("V")
-            val name = extractJsonString(json, "name") ?: tagName
-            val body = extractJsonString(json, "body") ?: ""
-            val publishedAt = extractJsonString(json, "published_at") ?: ""
-            val htmlUrl = extractJsonString(json, "html_url") ?: ""
 
-            // Find JAR asset URL — look for .jar in the assets array
-            val jarUrl = extractJarAssetUrl(json)
+            // Find the highest semver tag
+            val highestTag = tagNames.maxWithOrNull { a, b ->
+                val av = a.removePrefix("v").removePrefix("V")
+                val bv = b.removePrefix("v").removePrefix("V")
+                compareVersions(av, bv)
+            } ?: run {
+                lastCheckError = "Could not determine highest version from tags: $tagNames"
+                return null
+            }
 
-            ReleaseInfo(tagName, version, name, body, publishedAt, jarUrl, htmlUrl)
+            // Now fetch that specific release to get full details including assets
+            val releaseUrl = URL("https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/tags/$highestTag")
+            val releaseConn = releaseUrl.openConnection() as HttpURLConnection
+            releaseConn.requestMethod = "GET"
+            releaseConn.setRequestProperty("Accept", "application/vnd.github+json")
+            releaseConn.setRequestProperty("User-Agent", "GamePerfDesktop/${AppVersion.NAME}")
+            releaseConn.connectTimeout = 10_000
+            releaseConn.readTimeout = 10_000
+
+            if (releaseConn.responseCode != 200) {
+                lastCheckError = "HTTP ${releaseConn.responseCode} fetching release $highestTag"
+                return null
+            }
+
+            val releaseJson = BufferedReader(InputStreamReader(releaseConn.inputStream)).use { it.readText() }
+            releaseConn.disconnect()
+
+            val version = highestTag.removePrefix("v").removePrefix("V")
+            val name = extractJsonString(releaseJson, "name") ?: highestTag
+            val body = extractJsonString(releaseJson, "body") ?: ""
+            val publishedAt = extractJsonString(releaseJson, "published_at") ?: ""
+            val htmlUrl = extractJsonString(releaseJson, "html_url") ?: ""
+            val jarUrl = extractJarAssetUrl(releaseJson)
+
+            ReleaseInfo(highestTag, version, name, body, publishedAt, jarUrl, htmlUrl)
         } catch (t: Throwable) {
             lastCheckError = "${t.javaClass.simpleName}: ${t.message ?: "no details"}"
             null
         }
+    }
+
+    /**
+     * Compare two version strings numerically: "4.0.0" > "3.2.1" > "3.1.14".
+     * Returns negative if a < b, zero if equal, positive if a > b.
+     */
+    private fun compareVersions(a: String, b: String): Int {
+        val ap = a.split(".").mapNotNull { it.toIntOrNull() }
+        val bp = b.split(".").mapNotNull { it.toIntOrNull() }
+        for (i in 0 until maxOf(ap.size, bp.size)) {
+            val av = ap.getOrElse(i) { 0 }
+            val bv = bp.getOrElse(i) { 0 }
+            if (av != bv) return av - bv
+        }
+        return 0
     }
 
     /**
