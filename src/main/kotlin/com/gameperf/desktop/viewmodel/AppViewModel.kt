@@ -76,10 +76,15 @@ data class LiveMetrics(
     val memMb: Long = 0,
     val nativeMb: Long = 0,
     val javaMb: Long = 0,
-    val tempCpu: Double = -1.0,
-    val tempGpu: Double = -1.0,
-    val tempBattery: Double = -1.0,
-    val tempSkin: Double = -1.0,
+    // v4.1.0: sentinel changed from -1.0 to NaN for thermal fields.
+    // NaN propagates safely through arithmetic (NaN + x = NaN, max(NaN, x) = NaN)
+    // and is trivially detectable via .isNaN(). The old -1.0 sentinel was dangerous
+    // because -1.0 is a valid Double that silently corrupts averages and comparisons
+    // (e.g. maxOf(-1.0, 40.0) = 40.0 — looks correct but hides the "unavailable" state).
+    val tempCpu: Double = Double.NaN,
+    val tempGpu: Double = Double.NaN,
+    val tempBattery: Double = Double.NaN,
+    val tempSkin: Double = Double.NaN,
     val jankCount: Int = 0,
     val stutterCount: Int = 0,
     val battery: Int = 0,
@@ -210,18 +215,12 @@ class AppViewModel(
     private val _markers = MutableStateFlow<List<SessionMarker>>(emptyList())
     val markers: StateFlow<List<SessionMarker>> = _markers
 
-    // ===== Video Playback State =====
-    private val _videoPosition = MutableStateFlow(0L)
-    val videoPosition: StateFlow<Long> = _videoPosition
-
-    private val _isVideoPlaying = MutableStateFlow(false)
-    val isVideoPlaying: StateFlow<Boolean> = _isVideoPlaying
-
-    private val _videoDuration = MutableStateFlow(0L)
-    val videoDuration: StateFlow<Long> = _videoDuration
-
-    private val _playbackSpeed = MutableStateFlow(1.0)
-    val playbackSpeed: StateFlow<Double> = _playbackSpeed
+    // ===== Video Playback (delegated v4.1.0) =====
+    private val videoDelegate = VideoDelegate()
+    val videoPosition: StateFlow<Long> = videoDelegate.videoPosition
+    val isVideoPlaying: StateFlow<Boolean> = videoDelegate.isVideoPlaying
+    val videoDuration: StateFlow<Long> = videoDelegate.videoDuration
+    val playbackSpeed: StateFlow<Double> = videoDelegate.playbackSpeed
 
     private val _history = MutableStateFlow<List<SessionHistory.HistoryEntry>>(emptyList())
     val history: StateFlow<List<SessionHistory.HistoryEntry>> = _history
@@ -237,15 +236,11 @@ class AppViewModel(
     private val _selectedForComparison = MutableStateFlow<Set<String>>(emptySet())
     val selectedForComparison: StateFlow<Set<String>> = _selectedForComparison
 
-    // ===== Auto-Update =====
-    private val _updateAvailable = MutableStateFlow<AutoUpdater.ReleaseInfo?>(null)
-    val updateAvailable: StateFlow<AutoUpdater.ReleaseInfo?> = _updateAvailable
-
-    private val _updateProgress = MutableStateFlow<Float?>(null)
-    val updateProgress: StateFlow<Float?> = _updateProgress
-
-    private val _updateError = MutableStateFlow<String?>(null)
-    val updateError: StateFlow<String?> = _updateError
+    // ===== Auto-Update (delegated v4.1.0) =====
+    private val updateDelegate = UpdateDelegate(scope) { msg -> _statusMessage.value = msg }
+    val updateAvailable: StateFlow<AutoUpdater.ReleaseInfo?> = updateDelegate.updateAvailable
+    val updateProgress: StateFlow<Float?> = updateDelegate.updateProgress
+    val updateError: StateFlow<String?> = updateDelegate.updateError
 
     // ===== Capture Error (device disconnect, etc.) =====
     private val _captureError = MutableStateFlow<String?>(null)
@@ -255,29 +250,10 @@ class AppViewModel(
     private val _captureWarning = MutableStateFlow<String?>(null)
     val captureWarning: StateFlow<String?> = _captureWarning
 
-    // ===== PDF Export =====
-    /**
-     * Lifecycle of a single PDF export attempt. Drives the [ExportBanner] composable.
-     * The flow is always Idle -> InProgress -> Success | Error -> auto-reset to Idle
-     * by the banner after 3s.
-     *
-     * [Error.actionUrl] / [Error.actionLabel] are optional and used by the banner to
-     * render an inline action button (e.g. "Descargar Chrome" when no browser is
-     * detected). Both must be non-null for the button to appear.
-     */
-    sealed class ExportStatus {
-        object Idle : ExportStatus()
-        object InProgress : ExportStatus()
-        data class Success(val path: String) : ExportStatus()
-        data class Error(
-            val message: String,
-            val actionUrl: String? = null,
-            val actionLabel: String? = null,
-        ) : ExportStatus()
-    }
-
-    private val _exportStatus = MutableStateFlow<ExportStatus>(ExportStatus.Idle)
-    val exportStatus: StateFlow<ExportStatus> = _exportStatus.asStateFlow()
+    // ===== PDF Export (delegated v4.1.0) =====
+    // ExportStatus sealed class moved to ExportDelegate.kt
+    private val exportDelegate = ExportDelegate(scope)
+    val exportStatus: StateFlow<ExportDelegate.ExportStatus> = exportDelegate.exportStatus
 
     /**
      * Tracks comparison HTMLs written to `java.io.tmpdir` during this run so they can
@@ -487,9 +463,7 @@ class AppViewModel(
         // on the USB happy path because it only runs once, on a background
         // dispatcher, and the resulting StateFlow is read only when the WiFi
         // panel is open.
-        scope.launch {
-            _adbVersion.value = withContext(Dispatchers.IO) { adb.getAdbVersion() }
-        }
+        // v4.1.0: adbVersion check moved to WifiDelegate init.
         // v4.0.0 — iOS sidecar: attempt to start the pymobiledevice3 sidecar
         // in background. If Python is missing or sidecar fails to start, iOS
         // is silently unavailable (Android continues working normally).
@@ -549,70 +523,11 @@ class AppViewModel(
         return candidates.firstOrNull { it.isDirectory && java.io.File(it, "gameperf_sidecar/__init__.py").exists() }?.absolutePath
     }
 
-    // ===== Auto-Update =====
+    // ===== Auto-Update (delegated v4.1.0) =====
 
-    fun checkForUpdates() {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val release = AutoUpdater.checkForUpdate()
-                if (release != null && AutoUpdater.isNewer(release.version, CURRENT_VERSION)) {
-                    _updateAvailable.value = release
-                }
-            } catch (_: Exception) {
-                // Silently ignore — update check is non-critical
-            }
-        }
-    }
-
-    fun downloadAndApplyUpdate() {
-        val release = _updateAvailable.value ?: return
-        val downloadUrl = release.jarUrl
-        if (downloadUrl == null) {
-            _updateError.value = "No hay JAR disponible para tu plataforma. Descarga manualmente desde: ${release.htmlUrl}"
-            return
-        }
-        scope.launch(Dispatchers.IO) {
-            _updateProgress.value = 0f
-            _updateError.value = null
-            try {
-                val file = AutoUpdater.downloadUpdate(downloadUrl) { progress ->
-                    _updateProgress.value = progress
-                }
-                if (file != null) {
-                    _updateProgress.value = 1f
-                    delay(500)
-                    val result = AutoUpdater.applyUpdate(file)
-                    if (result.success && result.needsManualRestart) {
-                        // Development mode: JAR saved, show message to user
-                        _updateError.value = null
-                        _updateProgress.value = null
-                        _statusMessage.value = result.message
-                    } else if (!result.success) {
-                        _updateError.value = result.message.ifEmpty { "Error al aplicar la actualización" }
-                        _updateProgress.value = null
-                    }
-                    // If auto-restart succeeded, we'll never reach here (System.exit called)
-                } else {
-                    val reason = AutoUpdater.lastDownloadError
-                    _updateError.value = if (reason.isNullOrBlank()) {
-                        "Error al descargar la actualizacion."
-                    } else {
-                        "Error al descargar: $reason"
-                    }
-                    _updateProgress.value = null
-                }
-            } catch (e: Exception) {
-                _updateError.value = "Error: ${e.message}"
-                _updateProgress.value = null
-            }
-        }
-    }
-
-    fun dismissUpdate() {
-        _updateAvailable.value = null
-        _updateError.value = null
-        _updateProgress.value = null
-    }
+    fun checkForUpdates() = updateDelegate.checkForUpdates()
+    fun downloadAndApplyUpdate() = updateDelegate.downloadAndApplyUpdate()
+    fun dismissUpdate() = updateDelegate.dismissUpdate()
 
     private fun startDevicePolling() {
         pollingJob?.cancel()
@@ -645,9 +560,8 @@ class AppViewModel(
     fun refreshDevices() {
         scope.launch {
             _statusMessage.value = "Buscando dispositivos..."
-            val adbDevs = adb.listDevices()
-            // Convert AdbBridge.Device → shared Device model for UI consumers
-            val androidDevs = adbDevs.map { Device(id = it.id, model = it.model, platform = DevicePlatform.ANDROID, isWifi = it.isWifi) }
+            // v4.1.0: adb.listDevices() now returns core.model.Device directly (no conversion needed)
+            val androidDevs = adb.listDevices()
             // v4.0.0: merge iOS devices if sidecar is available
             val iosDevs = try {
                 iosBridge?.listDevices() ?: emptyList()
@@ -684,18 +598,8 @@ class AppViewModel(
                     else "No se detecto juego. Abre un juego en el iPhone y pulsa Refrescar."
             } else {
                 // Android device — use AdbBridgeApi
-                val adbInfo = adb.getDeviceInfo(device.id)
-                _deviceInfo.value = DeviceInfo(
-                    model = adbInfo.model,
-                    manufacturer = adbInfo.manufacturer,
-                    cpu = adbInfo.cpu,
-                    gpu = adbInfo.gpu,
-                    ram = adbInfo.ram,
-                    cores = adbInfo.cores,
-                    osVersion = adbInfo.sdk.toString(),
-                    resolution = adbInfo.resolution,
-                    platform = DevicePlatform.ANDROID,
-                )
+                // v4.1.0: adb.getDeviceInfo() now returns core.model.DeviceInfo directly
+                _deviceInfo.value = adb.getDeviceInfo(device.id)
                 _statusMessage.value = "Buscando juego en primer plano..."
                 _gamePackage.value = adb.detectGame(device.id)
                 _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar"
@@ -916,7 +820,7 @@ class AppViewModel(
             // the last observed mem/thermal values in locals and re-emit them.
             var iterCount = 0
             var lastMem: com.gameperf.desktop.core.model.MemSnapshot? = null
-            var lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(-1.0, -1.0, -1.0, -1.0)
+            var lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
 
             while (!shouldStop) {
                 val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
@@ -929,15 +833,15 @@ class AppViewModel(
                 if (shouldStop) break
 
                 // === METRICS CAPTURE ===
-                // v4.0.0: platform-aware — iOS uses iosBridge, Android uses adb
-                val frame: AdbBridge.FrameSnapshot?
+                // v4.1.0: both AdbBridgeApi and IosBridge now return core.model.FrameSnapshot
+                // directly — no conversion needed.
+                val frame: com.gameperf.desktop.core.model.FrameSnapshot?
                 val cpu: Int
                 val battery: Int
 
                 if (isIosDevice) {
                     // iOS: all metrics come from the sidecar via iosBridge (single HTTP call per method)
-                    val iosFrame = iosBridge?.captureFrames(device.id, pkg)
-                    frame = if (iosFrame != null) AdbBridge.FrameSnapshot(iosFrame.fps, iosFrame.avgFrameTime, iosFrame.jankCount, iosFrame.stutterCount) else null
+                    frame = iosBridge?.captureFrames(device.id, pkg)
                     if (shouldStop) break
                     cpu = iosBridge?.captureCpuPercent(device.id) ?: 0
                     if (shouldStop) break
@@ -1022,16 +926,18 @@ class AppViewModel(
                     if (cpuHistory.size > MAX_HISTORY_SIZE) cpuHistory.removeFirst()
                 }
                 val shouldRecordThermal = isIosDevice || (iterCount % 4 == 1) // align with runThermal above
+                // v4.1.0: thermal fields use NaN as sentinel. NaN > 0 is false in IEEE 754,
+                // so the guard works identically, but we use !isNaN() for clarity.
                 if (shouldRecordThermal) {
-                    if (lastThermal.cpu > 0) {
+                    if (!lastThermal.cpu.isNaN() && lastThermal.cpu > 0) {
                         tempCpuHistory.add(lastThermal.cpu)
                         if (tempCpuHistory.size > MAX_HISTORY_SIZE) tempCpuHistory.removeFirst()
                     }
-                    if (lastThermal.gpu > 0) {
+                    if (!lastThermal.gpu.isNaN() && lastThermal.gpu > 0) {
                         tempGpuHistory.add(lastThermal.gpu)
                         if (tempGpuHistory.size > MAX_HISTORY_SIZE) tempGpuHistory.removeFirst()
                     }
-                    if (lastThermal.skin > 0) {
+                    if (!lastThermal.skin.isNaN() && lastThermal.skin > 0) {
                         tempSkinHistory.add(lastThermal.skin)
                         if (tempSkinHistory.size > MAX_HISTORY_SIZE) tempSkinHistory.removeFirst()
                     }
@@ -1046,6 +952,12 @@ class AppViewModel(
                 totalStutter += frame?.stutterCount ?: 0
 
                 val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+                // v4.1.0-perf: snapshot history lists only every 2 seconds (4 iterations)
+                // instead of every 500ms. The scalar fields (fps, cpu, temps, etc.) still
+                // update every cycle for responsive UI, but the heavy list copies that the
+                // graphs consume only refresh at 0.5 Hz — imperceptible to the user.
+                val snapshotHistories = iterCount % 4 == 0
+                val prev = _liveMetrics.value
                 _liveMetrics.value = LiveMetrics(
                     elapsed = currentElapsed, fps = fps,
                     avgFps = if (fpsHistory.isNotEmpty()) fpsHistory.average() else 0.0,
@@ -1065,17 +977,17 @@ class AppViewModel(
                     // precision is preserved; the live counter is now "jank count" which
                     // comes for free from the per-frame analysis in captureFrames.
                     frameDrops = totalJank,
-                    fpsHistory = fpsHistory.toList(),
-                    fpsTimed = fpsTimed.toList(),
-                    memHistory = memHistory.toList(),
-                    nativeHistory = nativeHistory.toList(),
-                    javaHistory = javaHistory.toList(),
-                    cpuHistory = cpuHistory.toList(),
-                    tempCpuHistory = tempCpuHistory.toList(),
-                    tempGpuHistory = tempGpuHistory.toList(),
-                    tempSkinHistory = tempSkinHistory.toList(),
-                    frameTimeHistory = frameTimeAvgHistory.toList(),
-                    allFrameTimes = allFrameTimes.toList()
+                    fpsHistory = if (snapshotHistories) fpsHistory.toList() else prev.fpsHistory,
+                    fpsTimed = if (snapshotHistories) fpsTimed.toList() else prev.fpsTimed,
+                    memHistory = if (snapshotHistories) memHistory.toList() else prev.memHistory,
+                    nativeHistory = if (snapshotHistories) nativeHistory.toList() else prev.nativeHistory,
+                    javaHistory = if (snapshotHistories) javaHistory.toList() else prev.javaHistory,
+                    cpuHistory = if (snapshotHistories) cpuHistory.toList() else prev.cpuHistory,
+                    tempCpuHistory = if (snapshotHistories) tempCpuHistory.toList() else prev.tempCpuHistory,
+                    tempGpuHistory = if (snapshotHistories) tempGpuHistory.toList() else prev.tempGpuHistory,
+                    tempSkinHistory = if (snapshotHistories) tempSkinHistory.toList() else prev.tempSkinHistory,
+                    frameTimeHistory = if (snapshotHistories) frameTimeAvgHistory.toList() else prev.frameTimeHistory,
+                    allFrameTimes = if (snapshotHistories) allFrameTimes.toList() else prev.allFrameTimes
                 )
             }
 
@@ -1351,12 +1263,12 @@ class AppViewModel(
         _result.value = _result.value.copy(markers = _markers.value)
     }
 
-    // ===== Video Playback =====
+    // ===== Video Playback (delegated v4.1.0) =====
 
-    fun setVideoPosition(positionMs: Long) { _videoPosition.value = positionMs }
-    fun setVideoPlaying(playing: Boolean) { _isVideoPlaying.value = playing }
-    fun setVideoDuration(durationMs: Long) { _videoDuration.value = durationMs }
-    fun setPlaybackSpeed(speed: Double) { _playbackSpeed.value = speed }
+    fun setVideoPosition(positionMs: Long) = videoDelegate.setVideoPosition(positionMs)
+    fun setVideoPlaying(playing: Boolean) = videoDelegate.setVideoPlaying(playing)
+    fun setVideoDuration(durationMs: Long) = videoDelegate.setVideoDuration(durationMs)
+    fun setPlaybackSpeed(speed: Double) = videoDelegate.setPlaybackSpeed(speed)
 
     private fun openFile(path: String) {
         if (path.isEmpty()) return
@@ -1419,10 +1331,7 @@ class AppViewModel(
         _liveMetrics.value = LiveMetrics()
         _markers.value = emptyList()
         _selectedForComparison.value = emptySet()
-        _videoPosition.value = 0L
-        _isVideoPlaying.value = false
-        _videoDuration.value = 0L
-        _playbackSpeed.value = 1.0
+        videoDelegate.reset()
         recordJob?.cancel()
         adb.stopScreenRecord(recordProcess)
         recordProcess = null
@@ -1480,98 +1389,28 @@ class AppViewModel(
         return path
     }
 
-    /** Reset the export status banner to Idle. Called by [ExportBanner] after auto-dismiss. */
-    fun resetExportStatus() {
-        _exportStatus.value = ExportStatus.Idle
-    }
+    /** Reset the export status banner to Idle. Called by ExportBanner after auto-dismiss. */
+    fun resetExportStatus() = exportDelegate.resetExportStatus()
 
-    // ===== PDF Export — sourced from current session result =====
+    // ===== PDF Export (delegated v4.1.0) =====
 
-    /**
-     * Export the current ResultsScreen report to a user-chosen PDF location. Drives
-     * the [exportStatus] flow through the full lifecycle so the UI can show the
-     * banner / preparing-engine modal at the right moments.
-     */
     fun exportCurrentReportToPdf() {
         val current = _result.value
-        if (current.reportPath.isEmpty()) {
-            _exportStatus.value = ExportStatus.Error("No hay informe HTML para exportar.")
-            return
-        }
+        if (current.reportPath.isEmpty()) return
         val defaultName = "informe_${safePkg(current.gamePackage)}_${safeDevice(current.deviceModel)}_${shortDate(currentDateString())}.pdf"
-        runExportPipeline(current.reportPath, defaultName)
+        exportDelegate.exportToPdf(current.reportPath, defaultName)
     }
 
-    /**
-     * Export a history entry's HTML report to PDF. Same pipeline as
-     * [exportCurrentReportToPdf] but sourced from the entry instead of `_result`.
-     */
     fun exportHistoryEntryToPdf(entry: SessionHistory.HistoryEntry) {
-        if (entry.reportPath.isEmpty()) {
-            _exportStatus.value = ExportStatus.Error("Esta entrada no tiene informe HTML.")
-            return
-        }
+        if (entry.reportPath.isEmpty()) return
         val defaultName = "informe_${safePkg(entry.gamePackage)}_${safeDevice(entry.deviceModel)}_${shortDate(entry.date)}.pdf"
-        runExportPipeline(entry.reportPath, defaultName)
+        exportDelegate.exportToPdf(entry.reportPath, defaultName)
     }
 
-    /**
-     * Export the comparison HTML at [htmlPath] to PDF. The path is typically the one
-     * returned by [generateComparisonReport] (lives in `java.io.tmpdir`).
-     */
     fun exportComparisonToPdf(htmlPath: String) {
-        if (htmlPath.isEmpty()) {
-            _exportStatus.value = ExportStatus.Error("No hay comparativa generada para exportar.")
-            return
-        }
+        if (htmlPath.isEmpty()) return
         val defaultName = "comparativa_${shortDate(LocalDate.now().toString())}.pdf"
-        runExportPipeline(htmlPath, defaultName)
-    }
-
-    /**
-     * Shared export pipeline used by all three exportXxxToPdf entry points.
-     * Handles: status transitions, file picker, blocking PdfExporter call on
-     * Dispatchers.IO, and exhaustive error wrapping. The pipeline goes directly
-     * from Idle -> InProgress -> Success | Error (no intermediate state).
-     *
-     * The "no browser detected" branch maps to an [ExportStatus.Error] with an
-     * inline action button payload so the banner can offer a "Descargar Chrome"
-     * link.
-     */
-    private fun runExportPipeline(htmlPath: String, defaultFileName: String) {
-        scope.launch {
-            _exportStatus.value = ExportStatus.InProgress
-            val target: File? = try {
-                PickerUtils.pickSaveFile(
-                    title = "Guardar informe PDF",
-                    defaultName = defaultFileName,
-                    extension = "pdf"
-                )
-            } catch (t: Throwable) {
-                _exportStatus.value = ExportStatus.Error("No se pudo abrir el selector: ${t.message}")
-                return@launch
-            }
-            if (target == null) {
-                _exportStatus.value = ExportStatus.Idle
-                return@launch
-            }
-            try {
-                withContext(Dispatchers.IO) {
-                    PdfExporter.exportHtmlToPdf(htmlPath, target)
-                }
-                _exportStatus.value = ExportStatus.Success(target.absolutePath)
-            } catch (e: PdfExporter.PdfExportException) {
-                val msg = e.message ?: "Error desconocido al exportar PDF"
-                val isNoBrowser = msg.startsWith("No se encontró")
-                _exportStatus.value = ExportStatus.Error(
-                    message = msg,
-                    actionUrl = if (isNoBrowser) "https://www.google.com/chrome/" else null,
-                    actionLabel = if (isNoBrowser) "Descargar Chrome" else null,
-                )
-            } catch (e: Throwable) {
-                _exportStatus.value = ExportStatus.Error("Error inesperado: ${e.message}")
-            }
-        }
+        exportDelegate.exportToPdf(htmlPath, defaultName)
     }
 
     // ===== Filename helpers =====
@@ -1602,370 +1441,18 @@ class AppViewModel(
     private fun currentDateString(): String =
         java.text.SimpleDateFormat("dd/MM/yyyy HH:mm").format(java.util.Date())
 
-    // ===== v3.2.0 — Wireless ADB (pair WiFi flow for Android 11+) =====
-    //
-    // Design reference: sdd/wireless-adb/design.
-    // Spec reference: sdd/wireless-adb/spec (scenarios WP-1..WP-11).
-    //
-    // This section is additive. It does NOT touch [startDevicePolling],
-    // [selectDevice], [refreshDevices], [refreshGame], or the legacy
-    // [switchToWifi] — those stay byte-for-byte identical to v3.1.14.
-    //
-    // Architecture (D-3): one sealed [WifiPanelState] for the panel UI +
-    // three auxiliary StateFlows ([_mdnsAvailable], [_pairingServiceAlive],
-    // [_adbVersion]) that can change in ANY state and therefore don't live
-    // inside the sealed class.
-    //
-    // Coroutine scoping (D-2): the mDNS polling loop runs in its own Job
-    // ([mdnsPollingJob]) that only exists while the panel is expanded, so
-    // the USB-only happy path pays zero cost.
+    // ===== v3.2.0 — Wireless ADB (delegated v4.1.0) =====
+    private val wifiDelegate = WifiDelegate(adb, scope) { refreshDevices() }
+    val wifiPanel: StateFlow<WifiDelegate.WifiPanelState> = wifiDelegate.wifiPanel
+    val mdnsAvailable: StateFlow<Boolean> = wifiDelegate.mdnsAvailable
+    val pairingServiceAlive: StateFlow<Boolean> = wifiDelegate.pairingServiceAlive
+    val adbVersion: StateFlow<AdbVersion?> = wifiDelegate.adbVersion
 
-    private val _wifiPanel = MutableStateFlow<WifiPanelState>(WifiPanelState.Hidden)
-    val wifiPanel: StateFlow<WifiPanelState> = _wifiPanel
-
-    private val _mdnsAvailable = MutableStateFlow(true)
-    val mdnsAvailable: StateFlow<Boolean> = _mdnsAvailable
-
-    private val _pairingServiceAlive = MutableStateFlow(false)
-    val pairingServiceAlive: StateFlow<Boolean> = _pairingServiceAlive
-
-    private val _adbVersion = MutableStateFlow<AdbVersion?>(null)
-    val adbVersion: StateFlow<AdbVersion?> = _adbVersion
-
-    private var mdnsPollingJob: Job? = null
-
-    /**
-     * State of the "Agregar device WiFi" panel. Only the VM transitions
-     * between these — the UI is a pure projection via `when (state)` and
-     * calls back through [openWifiPanel], [closeWifiPanel],
-     * [selectMdnsDevice], [submitCodeForSelected], [submitManual], and
-     * [retryError].
-     */
-    sealed class WifiPanelState {
-        /** Panel not visible. USB-only happy path — [mdnsPollingJob] is null. */
-        object Hidden : WifiPanelState()
-
-        /** Panel visible but idle (user hasn't opened the mDNS tab yet). */
-        object Closed : WifiPanelState()
-
-        /** First mDNS poll in flight, no results yet. */
-        object DiscoveringMdns : WifiPanelState()
-
-        /** Latest mDNS snapshot (filtered to PAIRING services only). */
-        data class Discovered(val services: List<MdnsService>) : WifiPanelState()
-
-        /** User clicked a PAIRING service; awaiting the 6-digit code. */
-        data class InputtingCode(val selected: MdnsService) : WifiPanelState()
-
-        /** mDNS returned empty for 3+ polls OR mdnsAvailable was false — manual form. */
-        object InputtingManual : WifiPanelState()
-
-        /** `adb pair` call in flight. */
-        object Pairing : WifiPanelState()
-
-        /** `adb connect` call in flight (post-successful pair). */
-        object Connecting : WifiPanelState()
-
-        /** Pair + connect both succeeded. Briefly visible, then auto-dismisses to [Hidden]. */
-        data class Connected(val deviceId: String) : WifiPanelState()
-
-        /**
-         * Anything failed. [message] is a user-facing Spanish string from
-         * [mapPairReasonToMessage] / [mapConnectReasonToMessage] — NEVER the
-         * raw stderr. [recoverable] controls whether the retry button shows.
-         */
-        data class Error(val message: String, val recoverable: Boolean) : WifiPanelState()
-    }
-
-    /**
-     * Map a [PairFailureReason] to the exact Spanish user-facing string defined
-     * in the spec §2 R-WP-5. Literal constants — `equals()` checks in tests.
-     */
-    private fun mapPairReasonToMessage(reason: PairFailureReason): String = when (reason) {
-        PairFailureReason.INVALID_CODE, PairFailureReason.EXPIRED_CODE ->
-            "Codigo incorrecto. Abri nuevamente 'Emparejar dispositivo con codigo' en el movil para generar un codigo nuevo."
-        PairFailureReason.CONNECTION_REFUSED ->
-            "No se puede conectar a esa direccion. Verifica que la IP sea la que muestra el movil y que esten en la misma WiFi."
-        PairFailureReason.TIMEOUT ->
-            "El movil no respondio. Asegurate de que 'Depuracion inalambrica' este activa en el movil."
-        PairFailureReason.UNKNOWN ->
-            "No se pudo emparejar el dispositivo. Volve a abrir el menu de emparejamiento en el movil y probá de nuevo."
-    }
-
-    /** Same contract as [mapPairReasonToMessage], for the connect phase. */
-    private fun mapConnectReasonToMessage(reason: ConnectFailureReason): String = when (reason) {
-        ConnectFailureReason.NO_ROUTE ->
-            "El movil no esta visible en la red. Verifica que tenga WiFi activa y este en la misma red que esta computadora."
-        ConnectFailureReason.REFUSED ->
-            "El movil rechazo la conexion. Abri de nuevo 'Depuracion inalambrica' en el movil y probá de nuevo."
-        ConnectFailureReason.TIMEOUT ->
-            "El movil no respondio al conectar. Verifica que siga en la misma WiFi."
-        ConnectFailureReason.UNKNOWN ->
-            "No se pudo conectar al dispositivo. Volve a parearlo desde el menu del movil."
-    }
-
-    /**
-     * Start the mDNS discovery polling loop. Cancels any previous loop first.
-     * The loop runs only while the panel is in a "discovering" state —
-     * transitioning to Pairing/Connecting/Error/InputtingCode pauses updates,
-     * closing the panel cancels it.
-     *
-     * Per design §4.1:
-     *  - 2.5s cadence (desfasado del 3s `pollingJob` de devices USB)
-     *  - Snapshot wrapped in `withContext(IO)` so the Default dispatcher
-     *    doesn't block on a subprocess
-     *  - `_pairingServiceAlive` reflects whether a PAIRING service was in
-     *    the most recent snapshot (ground truth for the disabled "Parear"
-     *    button — D-9)
-     *  - 3 consecutive empty polls → auto-fallback to InputtingManual
-     *  - If [FakeAdbBridge.mdnsAvailableOverride] or similar signal is false
-     *    → jump straight to InputtingManual without waiting
-     */
-    private fun startMdnsPolling() {
-        mdnsPollingJob?.cancel()
-
-        // D-11 / WP-3 early-exit: if the caller already knows mDNS is not
-        // available on this system, skip the loop entirely and show the
-        // manual form. The fake exposes this via `mdnsAvailableOverride`;
-        // the real bridge would flip this based on an `adb mdns check`
-        // result before opening the panel. For v3.2.0 the real path
-        // leaves `_mdnsAvailable` at its default (true) and relies on the
-        // 3-empty-polls auto-fallback as a safety net.
-        if (!_mdnsAvailable.value) {
-            _wifiPanel.value = WifiPanelState.InputtingManual
-            return
-        }
-
-        mdnsPollingJob = scope.launch {
-            var consecutiveEmpty = 0
-            while (isActive) {
-                val current = _wifiPanel.value
-                // Only discovering-phase states consume mDNS snapshots. If
-                // the user moved to Pairing/Connecting/InputtingCode/etc.,
-                // we keep the loop alive (so the pairing-alive sensor keeps
-                // updating) but don't overwrite the panel state.
-                if (current is WifiPanelState.Hidden ||
-                    current is WifiPanelState.Closed ||
-                    current is WifiPanelState.Connected
-                ) {
-                    break
-                }
-
-                val services = withContext(Dispatchers.IO) {
-                    try { adb.mdnsServices() } catch (_: Throwable) { emptyList() }
-                }
-                val pairingServices = services.filter { it.serviceType == MdnsServiceType.PAIRING }
-                _pairingServiceAlive.value = pairingServices.isNotEmpty()
-
-                when (val s = _wifiPanel.value) {
-                    is WifiPanelState.DiscoveringMdns, is WifiPanelState.Discovered -> {
-                        _wifiPanel.value = WifiPanelState.Discovered(pairingServices)
-                        if (pairingServices.isEmpty()) {
-                            consecutiveEmpty++
-                        } else {
-                            consecutiveEmpty = 0
-                        }
-                        if (consecutiveEmpty >= 3 && _mdnsAvailable.value) {
-                            _wifiPanel.value = WifiPanelState.InputtingManual
-                        }
-                    }
-                    is WifiPanelState.InputtingCode -> {
-                        // Keep polling silently so _pairingServiceAlive
-                        // stays fresh — the user is on the code input screen
-                        // and we want to disable the Parear button the
-                        // instant the pairing popup closes on the phone.
-                        // No state mutation here.
-                        @Suppress("UNUSED_EXPRESSION") s
-                    }
-                    else -> {
-                        // Pairing / Connecting / Error / InputtingManual —
-                        // just keep the sensor updating, no state transitions.
-                    }
-                }
-                delay(2500)
-            }
-        }
-    }
-
-    /** Cancel the mDNS polling loop. Called on panel close and after Connected. */
-    private fun stopMdnsPolling() {
-        mdnsPollingJob?.cancel()
-        mdnsPollingJob = null
-    }
-
-    /**
-     * D-10 re-discover helper: after a successful `adb pair`, the actual
-     * connect port is NOT the pair port — we have to take a fresh mDNS
-     * snapshot and look for the `_adb-tls-connect._tcp` service with the
-     * same instance id. The phone publishes the connect service within
-     * ~200ms post-pair empirically; 1 retry at 500ms is holgado.
-     *
-     * @param instance the pairing service instance to match against
-     * @param retries extra attempts beyond the first (default 1 → total 2 tries)
-     */
-    private suspend fun findConnectServiceForInstance(
-        instance: String,
-        retries: Int = 1,
-    ): MdnsService? {
-        repeat(retries + 1) { attempt ->
-            val snap = withContext(Dispatchers.IO) {
-                try { adb.mdnsServices() } catch (_: Throwable) { emptyList() }
-            }
-            val match = snap.firstOrNull {
-                it.serviceType == MdnsServiceType.CONNECT && it.instance == instance
-            }
-            if (match != null) return match
-            if (attempt < retries) delay(500)
-        }
-        return null
-    }
-
-    /**
-     * Full pair → connect orchestration. Per design §4.2 and D-10.
-     *
-     * @param service the selected mDNS pairing service, OR null if user
-     *                entered IP/port manually
-     * @param ip      IP to pair with
-     * @param pairPort pair-protocol port
-     * @param code    6-digit code from the phone popup
-     */
-    private suspend fun pairAndConnect(
-        service: MdnsService?,
-        ip: String,
-        pairPort: Int,
-        code: String,
-    ) {
-        _wifiPanel.value = WifiPanelState.Pairing
-
-        val pairResult = withContext(Dispatchers.IO) { adb.pair(ip, pairPort, code) }
-        if (pairResult is PairResult.Failure) {
-            _wifiPanel.value = WifiPanelState.Error(
-                message = mapPairReasonToMessage(pairResult.reason),
-                recoverable = true,
-            )
-            return
-        }
-
-        // D-10: re-discover the connect port — pair-port != connect-port on
-        // Android 11+, and the phone only publishes the connect service
-        // AFTER a successful pair. Assuming pair-port==connect-port would
-        // fail in >50% of cases empirically.
-        val connectIp: String
-        val connectPort: Int
-        if (service != null) {
-            val cs = findConnectServiceForInstance(service.instance, retries = 1)
-            if (cs == null) {
-                _wifiPanel.value = WifiPanelState.Error(
-                    message = "No se pudo encontrar el puerto de conexion del dispositivo. Volve a parear desde el menu del movil.",
-                    recoverable = true,
-                )
-                return
-            }
-            connectIp = cs.ip
-            connectPort = cs.port
-        } else {
-            // Manual mode: no instance to match against. Take a fresh
-            // snapshot and match by IP. Last-resort fallback is to reuse
-            // pairPort, which usually fails but at least gives the user a
-            // specific error instead of hanging.
-            val snap = withContext(Dispatchers.IO) {
-                try { adb.mdnsServices() } catch (_: Throwable) { emptyList() }
-            }
-            val byIp = snap.firstOrNull {
-                it.serviceType == MdnsServiceType.CONNECT && it.ip == ip
-            }
-            if (byIp != null) {
-                connectIp = byIp.ip
-                connectPort = byIp.port
-            } else {
-                connectIp = ip
-                connectPort = pairPort
-            }
-        }
-        _wifiPanel.value = WifiPanelState.Connecting
-        val connectResult = withContext(Dispatchers.IO) {
-            adb.connectWireless(connectIp, connectPort)
-        }
-        when (connectResult) {
-            is ConnectResult.Success -> {
-                _wifiPanel.value = WifiPanelState.Connected(connectResult.deviceId)
-                refreshDevices() // D-7: let the existing poll surface the wifi device
-                delay(1000)
-                _wifiPanel.value = WifiPanelState.Hidden
-                stopMdnsPolling()
-            }
-            is ConnectResult.Failure -> {
-                _wifiPanel.value = WifiPanelState.Error(
-                    message = mapConnectReasonToMessage(connectResult.reason),
-                    recoverable = true,
-                )
-            }
-        }
-    }
-
-    // ===== Public entry points for the WiFi panel UI =====
-
-    /**
-     * Test seam (WP-3 / D-11): flip the mDNS-available sensor. Production
-     * code leaves this at its default (true) and relies on the 3-empty-polls
-     * auto-fallback for the "mDNS broken" path; tests can set it to false
-     * BEFORE calling [openWifiPanel] to drive the immediate manual-form
-     * transition without waiting for the 3-poll timeout.
-     */
-    internal fun setMdnsAvailableForTest(available: Boolean) {
-        _mdnsAvailable.value = available
-    }
-
-    /** Open the panel and start mDNS discovery. No-op if already open. */
-    fun openWifiPanel() {
-        if (_wifiPanel.value !is WifiPanelState.Hidden &&
-            _wifiPanel.value !is WifiPanelState.Closed
-        ) return
-        _wifiPanel.value = WifiPanelState.DiscoveringMdns
-        startMdnsPolling()
-    }
-
-    /** Close the panel and cancel the polling loop. */
-    fun closeWifiPanel() {
-        _wifiPanel.value = WifiPanelState.Hidden
-        stopMdnsPolling()
-    }
-
-    /** User clicked a discovered mDNS service → show the code input screen. */
-    fun selectMdnsDevice(service: MdnsService) {
-        _wifiPanel.value = WifiPanelState.InputtingCode(service)
-    }
-
-    /** User submitted the 6-digit code for a previously-selected mDNS service. */
-    fun submitCodeForSelected(code: String) {
-        val state = _wifiPanel.value
-        if (state !is WifiPanelState.InputtingCode) return
-        val service = state.selected
-        scope.launch {
-            pairAndConnect(
-                service = service,
-                ip = service.ip,
-                pairPort = service.port,
-                code = code,
-            )
-        }
-    }
-
-    /** User submitted the manual form (IP + pair port + code). */
-    fun submitManual(ip: String, pairPort: Int, code: String) {
-        scope.launch {
-            pairAndConnect(
-                service = null,
-                ip = ip,
-                pairPort = pairPort,
-                code = code,
-            )
-        }
-    }
-
-    /** Error screen retry → go back to discovery. */
-    fun retryError() {
-        _wifiPanel.value = WifiPanelState.DiscoveringMdns
-        startMdnsPolling()
-    }
+    internal fun setMdnsAvailableForTest(available: Boolean) = wifiDelegate.setMdnsAvailableForTest(available)
+    fun openWifiPanel() = wifiDelegate.openWifiPanel()
+    fun closeWifiPanel() = wifiDelegate.closeWifiPanel()
+    fun selectMdnsDevice(service: MdnsService) = wifiDelegate.selectMdnsDevice(service)
+    fun submitCodeForSelected(code: String) = wifiDelegate.submitCodeForSelected(code)
+    fun submitManual(ip: String, pairPort: Int, code: String) = wifiDelegate.submitManual(ip, pairPort, code)
+    fun retryError() = wifiDelegate.retryError()
 }

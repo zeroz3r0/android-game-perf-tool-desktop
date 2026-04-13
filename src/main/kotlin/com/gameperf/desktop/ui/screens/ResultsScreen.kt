@@ -517,7 +517,7 @@ fun ResultsScreen(vm: AppViewModel) {
 
                 // Export to PDF — disabled while a previous export is still running
                 // (we only allow one PDF export pipeline at a time).
-                val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress
+                val exportingNow = exportStatus is com.gameperf.desktop.viewmodel.ExportDelegate.ExportStatus.InProgress
                 Button(
                     onClick = { vm.exportCurrentReportToPdf() },
                     enabled = !exportingNow,

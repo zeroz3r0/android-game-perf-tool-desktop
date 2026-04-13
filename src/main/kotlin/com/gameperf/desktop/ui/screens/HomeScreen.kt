@@ -33,6 +33,7 @@ import com.gameperf.desktop.ui.components.ExportBanner
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.viewmodel.AppViewModel
+import com.gameperf.desktop.viewmodel.WifiDelegate
 
 @Composable
 fun HomeScreen(vm: AppViewModel) {
@@ -400,8 +401,8 @@ fun HomeScreen(vm: AppViewModel) {
                         Spacer(Modifier.height(4.dp))
                         TextButton(
                             onClick = {
-                                if (wifiPanelState is AppViewModel.WifiPanelState.Hidden ||
-                                    wifiPanelState is AppViewModel.WifiPanelState.Closed
+                                if (wifiPanelState is WifiDelegate.WifiPanelState.Hidden ||
+                                    wifiPanelState is WifiDelegate.WifiPanelState.Closed
                                 ) {
                                     vm.openWifiPanel()
                                 } else {
@@ -423,7 +424,7 @@ fun HomeScreen(vm: AppViewModel) {
                                 fontSize = 12.sp
                             )
                         }
-                        AnimatedVisibility(visible = wifiPanelState !is AppViewModel.WifiPanelState.Hidden) {
+                        AnimatedVisibility(visible = wifiPanelState !is WifiDelegate.WifiPanelState.Hidden) {
                             Column {
                                 Spacer(Modifier.height(8.dp))
                                 WifiPanelContent(vm)
@@ -787,7 +788,7 @@ fun HomeScreen(vm: AppViewModel) {
                                 // Export to PDF — only enabled when the source HTML still exists
                                 // and there is no PDF export already running.
                                 if (entry.reportPath.isNotEmpty()) {
-                                    val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress
+                                    val exportingNow = exportStatus is com.gameperf.desktop.viewmodel.ExportDelegate.ExportStatus.InProgress
                                     IconButton(
                                         onClick = { vm.exportHistoryEntryToPdf(entry) },
                                         enabled = !exportingNow,
@@ -930,16 +931,16 @@ private fun WifiPanelContent(viewModel: AppViewModel) {
         }
 
         when (val s = state) {
-            is AppViewModel.WifiPanelState.Hidden -> {
+            is WifiDelegate.WifiPanelState.Hidden -> {
                 // Nothing to render — caller guards with `if (state != Hidden)`
             }
-            is AppViewModel.WifiPanelState.Closed -> {
+            is WifiDelegate.WifiPanelState.Closed -> {
                 // Same as Hidden from a rendering standpoint
             }
-            is AppViewModel.WifiPanelState.DiscoveringMdns -> {
+            is WifiDelegate.WifiPanelState.DiscoveringMdns -> {
                 DiscoveringMdnsView()
             }
-            is AppViewModel.WifiPanelState.Discovered -> {
+            is WifiDelegate.WifiPanelState.Discovered -> {
                 DiscoveredView(
                     services = s.services,
                     mdnsAvailable = mdnsAvailable,
@@ -960,7 +961,7 @@ private fun WifiPanelContent(viewModel: AppViewModel) {
                     },
                 )
             }
-            is AppViewModel.WifiPanelState.InputtingCode -> {
+            is WifiDelegate.WifiPanelState.InputtingCode -> {
                 InputtingCodeView(
                     selected = s.selected,
                     pairingServiceAlive = pairingServiceAlive,
@@ -968,21 +969,21 @@ private fun WifiPanelContent(viewModel: AppViewModel) {
                     onBack = { viewModel.closeWifiPanel() },
                 )
             }
-            is AppViewModel.WifiPanelState.InputtingManual -> {
+            is WifiDelegate.WifiPanelState.InputtingManual -> {
                 InputtingManualView(
                     onSubmit = { ip, port, code -> viewModel.submitManual(ip, port, code) },
                 )
             }
-            is AppViewModel.WifiPanelState.Pairing -> {
+            is WifiDelegate.WifiPanelState.Pairing -> {
                 PairingView()
             }
-            is AppViewModel.WifiPanelState.Connecting -> {
+            is WifiDelegate.WifiPanelState.Connecting -> {
                 ConnectingView()
             }
-            is AppViewModel.WifiPanelState.Connected -> {
+            is WifiDelegate.WifiPanelState.Connected -> {
                 ConnectedView(deviceId = s.deviceId)
             }
-            is AppViewModel.WifiPanelState.Error -> {
+            is WifiDelegate.WifiPanelState.Error -> {
                 ErrorView(
                     message = s.message,
                     recoverable = s.recoverable,

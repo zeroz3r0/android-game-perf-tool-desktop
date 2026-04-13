@@ -2,6 +2,8 @@ package com.gameperf.desktop.viewmodel
 
 import com.gameperf.desktop.core.AdbBridge
 import com.gameperf.desktop.core.AdbVersion
+import com.gameperf.desktop.core.model.Device
+import com.gameperf.desktop.core.model.DevicePlatform
 import com.gameperf.desktop.core.ConnectFailureReason
 import com.gameperf.desktop.core.ConnectResult
 import com.gameperf.desktop.core.MdnsService
@@ -320,8 +322,8 @@ class AppViewModelTest {
         vm: AppViewModel,
         timeoutMs: Long = 3000,
         message: String,
-        predicate: (AppViewModel.WifiPanelState) -> Boolean,
-    ): AppViewModel.WifiPanelState {
+        predicate: (WifiDelegate.WifiPanelState) -> Boolean,
+    ): WifiDelegate.WifiPanelState {
         val result = withTimeoutOrNull(timeoutMs) {
             while (true) {
                 val s = vm.wifiPanel.value
@@ -372,8 +374,8 @@ class AppViewModelTest {
                 val discovered = awaitWifiPanel(
                     vm,
                     message = "expected Discovered after first poll",
-                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
-                discovered as AppViewModel.WifiPanelState.Discovered
+                ) { it is WifiDelegate.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as WifiDelegate.WifiPanelState.Discovered
                 assertEquals(1, discovered.services.size)
                 assertEquals(MdnsServiceType.PAIRING, discovered.services[0].serviceType)
 
@@ -384,8 +386,8 @@ class AppViewModelTest {
                     vm,
                     timeoutMs = 5000,
                     message = "expected Hidden after Connected",
-                ) { it is AppViewModel.WifiPanelState.Hidden }
-                assertTrue(finalState is AppViewModel.WifiPanelState.Hidden)
+                ) { it is WifiDelegate.WifiPanelState.Hidden }
+                assertTrue(finalState is WifiDelegate.WifiPanelState.Hidden)
 
                 assertEquals(1, fake.pairCalls.size, "should have paired exactly once")
                 assertEquals(Triple("192.168.1.42", 37123, "123456"), fake.pairCalls[0])
@@ -426,8 +428,8 @@ class AppViewModelTest {
                 val discovered = awaitWifiPanel(
                     vm,
                     message = "expected Discovered state",
-                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
-                discovered as AppViewModel.WifiPanelState.Discovered
+                ) { it is WifiDelegate.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as WifiDelegate.WifiPanelState.Discovered
                 vm.selectMdnsDevice(discovered.services[0])
                 vm.submitCodeForSelected("000000")
 
@@ -435,7 +437,7 @@ class AppViewModelTest {
                     vm,
                     timeoutMs = 5000,
                     message = "expected Hidden after Connected",
-                ) { it is AppViewModel.WifiPanelState.Hidden }
+                ) { it is WifiDelegate.WifiPanelState.Hidden }
 
                 assertEquals(1, fake.connectCalls.size)
                 // The key assertion: connect went to 38999, not 37777.
@@ -469,8 +471,8 @@ class AppViewModelTest {
                     vm,
                     timeoutMs = 15_000,
                     message = "expected InputtingManual after 3 empty polls",
-                ) { it is AppViewModel.WifiPanelState.InputtingManual }
-                assertTrue(vm.wifiPanel.value is AppViewModel.WifiPanelState.InputtingManual)
+                ) { it is WifiDelegate.WifiPanelState.InputtingManual }
+                assertTrue(vm.wifiPanel.value is WifiDelegate.WifiPanelState.InputtingManual)
             } finally {
                 vm.cleanup()
             }
@@ -497,10 +499,10 @@ class AppViewModelTest {
                     vm,
                     timeoutMs = 1000,
                     message = "expected immediate InputtingManual when mdns unavailable",
-                ) { it is AppViewModel.WifiPanelState.InputtingManual }
+                ) { it is WifiDelegate.WifiPanelState.InputtingManual }
 
                 assertEquals(false, vm.mdnsAvailable.value)
-                assertTrue(vm.wifiPanel.value is AppViewModel.WifiPanelState.InputtingManual)
+                assertTrue(vm.wifiPanel.value is WifiDelegate.WifiPanelState.InputtingManual)
             } finally {
                 vm.cleanup()
             }
@@ -528,16 +530,16 @@ class AppViewModelTest {
                 val discovered = awaitWifiPanel(
                     vm,
                     message = "expected Discovered",
-                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
-                discovered as AppViewModel.WifiPanelState.Discovered
+                ) { it is WifiDelegate.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as WifiDelegate.WifiPanelState.Discovered
                 vm.selectMdnsDevice(discovered.services[0])
                 vm.submitCodeForSelected("000000")
 
                 val errorState = awaitWifiPanel(
                     vm,
                     message = "expected Error after failed pair",
-                ) { it is AppViewModel.WifiPanelState.Error }
-                errorState as AppViewModel.WifiPanelState.Error
+                ) { it is WifiDelegate.WifiPanelState.Error }
+                errorState as WifiDelegate.WifiPanelState.Error
 
                 assertEquals(
                     "Codigo incorrecto. Abri nuevamente 'Emparejar dispositivo con codigo' en el movil para generar un codigo nuevo.",
@@ -613,8 +615,8 @@ class AppViewModelTest {
                 val discovered = awaitWifiPanel(
                     vm,
                     message = "expected Discovered",
-                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
-                discovered as AppViewModel.WifiPanelState.Discovered
+                ) { it is WifiDelegate.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as WifiDelegate.WifiPanelState.Discovered
                 vm.selectMdnsDevice(discovered.services[0])
                 vm.submitCodeForSelected("123456")
 
@@ -622,8 +624,8 @@ class AppViewModelTest {
                     vm,
                     timeoutMs = 5000,
                     message = "expected Error after failed connect",
-                ) { it is AppViewModel.WifiPanelState.Error }
-                errorState as AppViewModel.WifiPanelState.Error
+                ) { it is WifiDelegate.WifiPanelState.Error }
+                errorState as WifiDelegate.WifiPanelState.Error
 
                 assertEquals(
                     "El movil no esta visible en la red. Verifica que tenga WiFi activa y este en la misma red que esta computadora.",
@@ -647,13 +649,14 @@ class AppViewModelTest {
     @Test
     fun previouslyPairedDeviceAppearsInListOnNextSessionWithoutInteraction() {
         runBlocking {
-            val wifiDevice = AdbBridge.Device(
+            val wifiDevice = Device(
                 id = "192.168.1.42:38145",
                 model = "Pixel_7a",
+                platform = DevicePlatform.ANDROID,
                 isWifi = true,
             )
             val fake = object : FakeAdbBridge() {
-                override fun listDevices(): List<AdbBridge.Device> = listOf(wifiDevice)
+                override fun listDevices(): List<Device> = listOf(wifiDevice)
             }
 
             val vm = AppViewModel(adb = fake)
@@ -676,7 +679,7 @@ class AppViewModelTest {
                 // WP-7 invariant: the panel stayed Hidden and the VM NEVER
                 // consulted mDNS services because the panel is closed.
                 assertTrue(
-                    vm.wifiPanel.value is AppViewModel.WifiPanelState.Hidden,
+                    vm.wifiPanel.value is WifiDelegate.WifiPanelState.Hidden,
                     "expected Hidden, got ${vm.wifiPanel.value::class.simpleName}",
                 )
                 assertEquals(
@@ -698,13 +701,14 @@ class AppViewModelTest {
     @Test
     fun usbHappyPathZeroExtraClicksRegressionVsV3114() {
         runBlocking {
-            val usbDevice = AdbBridge.Device(
+            val usbDevice = Device(
                 id = "32211JEHN02977",
                 model = "Pixel_7a",
+                platform = DevicePlatform.ANDROID,
                 isWifi = false,
             )
             val fake = object : FakeAdbBridge() {
-                override fun listDevices(): List<AdbBridge.Device> = listOf(usbDevice)
+                override fun listDevices(): List<Device> = listOf(usbDevice)
             }
 
             val vm = AppViewModel(adb = fake)
@@ -718,7 +722,7 @@ class AppViewModelTest {
                 assertEquals("32211JEHN02977", vm.selectedDevice.value?.id)
                 assertEquals(false, vm.isWifi.value)
                 assertTrue(
-                    vm.wifiPanel.value is AppViewModel.WifiPanelState.Hidden,
+                    vm.wifiPanel.value is WifiDelegate.WifiPanelState.Hidden,
                     "expected Hidden, got ${vm.wifiPanel.value::class.simpleName}",
                 )
                 // The killer assertion: zero mDNS calls on the USB happy path.
@@ -742,15 +746,16 @@ class AppViewModelTest {
     @Test
     fun switchToWifiLegacyBehaviorIsIdenticalToV3114() {
         runBlocking {
-            val usbDevice = AdbBridge.Device(
+            val usbDevice = Device(
                 id = "32211JEHN02977",
                 model = "Pixel_7a",
+                platform = DevicePlatform.ANDROID,
                 isWifi = false,
             )
             // The fake returns null for switchToWifi (the legacy path only
             // needs to execute without side effects on the new state).
             val fake = object : FakeAdbBridge() {
-                override fun listDevices(): List<AdbBridge.Device> = listOf(usbDevice)
+                override fun listDevices(): List<Device> = listOf(usbDevice)
                 override fun switchToWifi(usbDeviceId: String, port: Int): String? = null
             }
 
@@ -776,7 +781,7 @@ class AppViewModelTest {
                     vm.wifiPanel.value::class.simpleName,
                     "legacy switchToWifi must not touch _wifiPanel",
                 )
-                assertTrue(vm.wifiPanel.value is AppViewModel.WifiPanelState.Hidden)
+                assertTrue(vm.wifiPanel.value is WifiDelegate.WifiPanelState.Hidden)
                 assertEquals(mdnsAvailableBefore, vm.mdnsAvailable.value)
                 assertEquals(pairingServiceAliveBefore, vm.pairingServiceAlive.value)
             } finally {
@@ -806,16 +811,16 @@ class AppViewModelTest {
                 val discovered = awaitWifiPanel(
                     vm,
                     message = "expected Discovered",
-                ) { it is AppViewModel.WifiPanelState.Discovered && it.services.isNotEmpty() }
-                discovered as AppViewModel.WifiPanelState.Discovered
+                ) { it is WifiDelegate.WifiPanelState.Discovered && it.services.isNotEmpty() }
+                discovered as WifiDelegate.WifiPanelState.Discovered
                 vm.selectMdnsDevice(discovered.services[0])
                 vm.submitCodeForSelected("123456")
 
                 val errorState = awaitWifiPanel(
                     vm,
                     message = "expected Error after timeout",
-                ) { it is AppViewModel.WifiPanelState.Error }
-                errorState as AppViewModel.WifiPanelState.Error
+                ) { it is WifiDelegate.WifiPanelState.Error }
+                errorState as WifiDelegate.WifiPanelState.Error
 
                 assertEquals(
                     "El movil no respondio. Asegurate de que 'Depuracion inalambrica' este activa en el movil.",

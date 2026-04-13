@@ -2,7 +2,11 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
     kotlin("jvm") version "1.9.22"
+    kotlin("plugin.serialization") version "1.9.22"
     id("org.jetbrains.compose") version "1.6.1"
+    // v4.1.0: static analysis — catches common Kotlin issues at build time.
+    // Run: ./gradlew detekt (or it runs automatically on `check`)
+    id("io.gitlab.arturbosch.detekt") version "1.23.7"
 }
 
 val appVersion: String by project
@@ -56,6 +60,8 @@ dependencies {
     implementation(compose.materialIconsExtended)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.7.3")
+    // v4.1.0: replaces hand-rolled JSON parsing in SessionHistory and SidecarClient.
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 }
@@ -93,4 +99,15 @@ compose.desktop {
 
 kotlin {
     jvmToolchain(17)
+}
+
+// v4.1.0: detekt configuration — lenient baseline for an existing project.
+// Start with defaults, suppress known high-count rules that require large refactors.
+// Tighten thresholds gradually over time.
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(files("detekt.yml"))
+    // Don't fail the build on findings yet — report only.
+    // Change to `true` once the codebase is below threshold.
+    ignoreFailures = true
 }

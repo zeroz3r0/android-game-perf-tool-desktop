@@ -450,7 +450,7 @@ fun ComparisonScreen(vm: AppViewModel) {
         // PDF export action — separate row so it does not visually compete with
         // the primary "generate" button. Generates the HTML on demand if the user
         // hasn't done so yet, then forwards the path to the ViewModel.
-        val exportingNow = exportStatus is AppViewModel.ExportStatus.InProgress
+        val exportingNow = exportStatus is com.gameperf.desktop.viewmodel.ExportDelegate.ExportStatus.InProgress
         Button(
             onClick = {
                 // If the user clicks PDF without having generated the HTML first,

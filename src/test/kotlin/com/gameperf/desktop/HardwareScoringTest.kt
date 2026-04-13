@@ -249,6 +249,72 @@ class HardwareScoringTest {
         }
     }
 
+    // ===== v4.1.0 — Additional edge cases for GPU normalization =====
+
+    @Test
+    fun `detectTier handles Adreno without spaces before number`() {
+        // Known gap: `Adreno(TM)530` (no space between TM) and number)
+        assertEquals(DeviceTier.LOWER_MID, HardwareScoring.detectTier("Adreno(TM)530"))
+    }
+
+    @Test
+    fun `detectTier handles Mali without hyphen`() {
+        // Known gap: `Mali(TM) G710` (space instead of hyphen before model)
+        assertEquals(DeviceTier.HIGH, HardwareScoring.detectTier("Mali G710 MC10"))
+    }
+
+    @Test
+    fun `detectTier handles Mali with TM and no hyphen`() {
+        assertEquals(DeviceTier.HIGH, HardwareScoring.detectTier("ARM Mali(TM) G710"))
+    }
+
+    @Test
+    fun `detectTier empty string returns UNKNOWN`() {
+        assertEquals(DeviceTier.UNKNOWN, HardwareScoring.detectTier(""))
+    }
+
+    @Test
+    fun `detectTier gibberish returns UNKNOWN`() {
+        assertEquals(DeviceTier.UNKNOWN, HardwareScoring.detectTier("FooBar GPU 9000"))
+    }
+
+    @Test
+    fun `detectTier Apple GPU strings match tier map entries`() {
+        // Apple GPU strings like "Apple GPU (A17 Pro)" contain "a17 pro" after normalization,
+        // which IS in the gpuTierMap (added for iOS hardware scoring in v4.0.0).
+        assertEquals(DeviceTier.HIGH, HardwareScoring.detectTier("Apple GPU (A17 Pro)"))
+        assertEquals(DeviceTier.ULTRA_HIGH, HardwareScoring.detectTier("Apple GPU (A18 Pro)"))
+    }
+
+    @Test
+    fun `calculateDeviceGrade negative avgFps returns F`() {
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = -5, p1Fps = -5, tier = DeviceTier.MID, problems = emptyList()
+        )
+        assertEquals('F', grade)
+        assertEquals(0, score)
+    }
+
+    @Test
+    fun `calculateDeviceGrade perfect score for tier ceiling`() {
+        // Device hitting exactly its expectedFps with no problems → score 100
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 60, p1Fps = 55, tier = DeviceTier.HIGH, problems = emptyList()
+        )
+        assertEquals('A', grade)
+        assertEquals(100, score)
+    }
+
+    @Test
+    fun `calculateDeviceGrade multiple problems stack penalties`() {
+        val (_, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 60, p1Fps = 55, tier = DeviceTier.HIGH,
+            problems = listOf("Temperatura CPU alta", "Memoria alta: 1800MB", "CPU saturada 90%")
+        )
+        // 3 problems should each reduce the score
+        assert(score < 80) { "3 problems should reduce score below 80, got $score" }
+    }
+
     @Test
     fun `avgFps zero returns capture failure sentinel grade F score 0`() {
         // v3.1.11: distinguish "device is bad" from "tool failed to measure".

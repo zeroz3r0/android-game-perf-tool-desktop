@@ -9,19 +9,54 @@ import java.util.concurrent.TimeUnit
  */
 object AdbBridge {
 
+    // ===== Pre-compiled regex patterns (v4.1.0-perf) =====
+    // Moved from inline Regex(...) to top-level compiled constants.
+    // Avoids re-compilation on every call in hot paths (captureFrames, captureMemory, etc.).
+
+    private val RE_VALID_PACKAGE = Regex("^[a-zA-Z0-9._]+$")
+    private val RE_VALID_DEVICE_ID = Regex("^[a-zA-Z0-9.:_-]+$")
+    private val RE_VALID_SESSION_ID = Regex("^[a-zA-Z0-9_-]+$")
+    private val RE_DEVICE_LINE = "\\s+".toRegex()
+    private val RE_MODEL = Regex("model:(\\S+)")
+    private val RE_MEM_TOTAL = Regex("MemTotal:\\s+(\\d+)")
+    private val RE_PROCESSOR = Regex("processor\\s*:\\s*(\\d+)")
+    private val RE_GLES = Regex("GLES:\\s*(.+)")
+    private val RE_BATTERY_LEVEL = Regex("level: (\\d+)")
+    private val RE_BATTERY_TEMP = Regex("temperature: (\\d+)")
+    private val RE_PACKAGE_NAME = Regex("packageName=([\\w.]+)")
+    private val RE_CMP = Regex("cmp=([\\w.]+)/")
+    private val RE_INET = Regex("inet (\\d+\\.\\d+\\.\\d+\\.\\d+)")
+    private val RE_TOTAL_PSS = Regex("TOTAL PSS:\\s+(\\d+)")
+    private val RE_TOTAL_FALLBACK = Regex("TOTAL\\s+(\\d+)")
+    private val RE_NATIVE_HEAP = Regex("Native Heap\\s+(\\d+)")
+    private val RE_JAVA_HEAP = Regex("(?:Dalvik|Java) Heap\\s+(\\d+)")
+    private val RE_MISSED_FRAMES = Regex("Total missed frame count:\\s*(\\d+)")
+    private val RE_THERMAL_TEMP = Regex("Temperature\\{mValue=([\\d.]+),\\s*mType=\\d+,\\s*mName=([^,]+),")
+    private val RE_SF_MODERN = Regex("RequestedLayerState\\{(.+?)\\s+parentId=")
+    private val RE_ADB_VERSION = Regex("Version (\\d+)\\.(\\d+)\\.(\\d+)")
+    private val RE_MDNS_LINE = Regex("\\s+")
+    private val RE_IPV4 = Regex("\\d{1,3}(\\.\\d{1,3}){3}")
+
+    // ===== Cached tool paths (v4.1.0-perf) =====
+    // findFfmpeg/findFfprobe were called on every concatSegments/isValidVideoFile invocation.
+    // Now cached via lazy so the PATH lookup happens at most once per JVM lifetime.
+
+    private val cachedFfmpegPath: String? by lazy { findFfmpegImpl() }
+    private val cachedFfprobePath: String? by lazy { findFfprobeImpl() }
+
     // ===== Input validation (v3.2.1-security) =====
 
     /** Validates an Android package name: only alphanumeric, dots, and underscores. */
     private fun isValidPackageName(pkg: String): Boolean =
-        pkg.isNotEmpty() && pkg.matches(Regex("^[a-zA-Z0-9._]+$"))
+        pkg.isNotEmpty() && pkg.matches(RE_VALID_PACKAGE)
 
     /** Validates a device ID: alphanumeric, dots, colons, underscores, dashes (covers USB serial + IP:port). */
     private fun isValidDeviceId(id: String): Boolean =
-        id.isNotEmpty() && id.matches(Regex("^[a-zA-Z0-9.:_-]+$"))
+        id.isNotEmpty() && id.matches(RE_VALID_DEVICE_ID)
 
     /** Validates a session ID: alphanumeric, underscores, dashes. */
     private fun isValidSessionId(id: String): Boolean =
-        id.isNotEmpty() && id.matches(Regex("^[a-zA-Z0-9_-]+$"))
+        id.isNotEmpty() && id.matches(RE_VALID_SESSION_ID)
 
     /**
      * Resolve ADB path. macOS packaged apps don't inherit terminal PATH,
@@ -89,10 +124,10 @@ object AdbBridge {
         return output.lines()
             .filter { it.contains("device") && !it.contains("List") && !it.startsWith("*") }
             .mapNotNull { line ->
-                val parts = line.split("\\s+".toRegex())
+                val parts = line.split(RE_DEVICE_LINE)
                 if (parts.size >= 2 && parts[1] == "device") {
                     val id = parts[0]
-                    val model = Regex("model:(\\S+)").find(line)?.groupValues?.get(1) ?: "Unknown"
+                    val model = RE_MODEL.find(line)?.groupValues?.get(1) ?: "Unknown"
                     Device(id, model, id.contains(":"))
                 } else null
             }
@@ -100,7 +135,7 @@ object AdbBridge {
 
     fun switchToWifi(usbDeviceId: String, port: Int = 5555): String? {
         val ipOutput = shell(usbDeviceId, "ip addr show wlan0")
-        val ip = Regex("inet (\\d+\\.\\d+\\.\\d+\\.\\d+)").find(ipOutput)?.groupValues?.get(1) ?: return null
+        val ip = RE_INET.find(ipOutput)?.groupValues?.get(1) ?: return null
         exec("adb", "-s", usbDeviceId, "tcpip", "$port", timeoutMs = 5000)
         Thread.sleep(2000)
         val connectOutput = exec("adb", "connect", "$ip:$port", timeoutMs = 5000)
@@ -124,23 +159,23 @@ object AdbBridge {
         val plat = shell(deviceId, "getprop ro.board.platform").trim()
         val sdk = shell(deviceId, "getprop ro.build.version.sdk").trim().toIntOrNull() ?: 0
         val res = shell(deviceId, "wm size").trim()
-        val ramKb = Regex("MemTotal:\\s+(\\d+)").find(shell(deviceId, "cat /proc/meminfo"))
+        val ramKb = RE_MEM_TOTAL.find(shell(deviceId, "cat /proc/meminfo"))
             ?.groupValues?.get(1)?.toLongOrNull() ?: 0L
         val ramGb = String.format(java.util.Locale.US, "%.1f GB", ramKb * 1024.0 / (1024 * 1024 * 1024))
-        val cores = Regex("processor\\s*:\\s*(\\d+)").findAll(shell(deviceId, "cat /proc/cpuinfo")).count().let { if (it > 0) it else 4 }
+        val cores = RE_PROCESSOR.findAll(shell(deviceId, "cat /proc/cpuinfo")).count().let { if (it > 0) it else 4 }
         val sf = shell(deviceId, "dumpsys SurfaceFlinger", timeoutMs = 3000)
-        val gpu = Regex("GLES:\\s*(.+)").find(sf)?.groupValues?.get(1)?.trim()?.take(60) ?: shell(deviceId, "getprop ro.hardware.egl").trim().ifEmpty { "Unknown" }
+        val gpu = RE_GLES.find(sf)?.groupValues?.get(1)?.trim()?.take(60) ?: shell(deviceId, "getprop ro.hardware.egl").trim().ifEmpty { "Unknown" }
         return DeviceInfo(model.ifEmpty { "Unknown" }, mfr.ifEmpty { "Unknown" }, "$hw $plat".trim().ifEmpty { "Unknown" }, gpu, ramGb, cores, sdk, res.ifEmpty { "Unknown" })
     }
 
     fun getBatteryLevel(deviceId: String): Int {
         val output = shell(deviceId, "dumpsys battery")
-        return Regex("level: (\\d+)").find(output)?.groupValues?.get(1)?.toIntOrNull() ?: -1
+        return RE_BATTERY_LEVEL.find(output)?.groupValues?.get(1)?.toIntOrNull() ?: -1
     }
 
     fun getBatteryTemp(deviceId: String): Float {
         val output = shell(deviceId, "dumpsys battery")
-        return Regex("temperature: (\\d+)").find(output)?.groupValues?.get(1)?.toFloatOrNull()?.div(10f) ?: 0f
+        return RE_BATTERY_TEMP.find(output)?.groupValues?.get(1)?.toFloatOrNull()?.div(10f) ?: 0f
     }
 
     // ===== Game Detection =====
@@ -149,7 +184,7 @@ object AdbBridge {
         val output = shell(deviceId, "dumpsys activity activities")
         val systemPrefixes = listOf("com.android.", "com.google.android.", "android.", "com.motorola.", "com.samsung.", "com.huawei.", "com.xiaomi.", "com.oppo.", "com.bbk.", "com.coloros.", "com.miui.")
         val systemKeywords = listOf("launcher", "systemui", "settings", "keyboard", "inputmethod")
-        for (pattern in listOf(Regex("packageName=([\\w.]+)"), Regex("cmp=([\\w.]+)/"))) {
+        for (pattern in listOf(RE_PACKAGE_NAME, RE_CMP)) {
             for (match in pattern.findAll(output)) {
                 val pkg = match.groupValues[1]
                 if (pkg.contains(".") && systemPrefixes.none { pkg.startsWith(it) } && systemKeywords.none { pkg.contains(it, true) })
@@ -225,7 +260,7 @@ object AdbBridge {
             val trimmed = line.trim()
             if (trimmed.isEmpty()) return@mapNotNull null
             // Android 12+ format: `RequestedLayerState{<name>  parentId=<n>}`
-            val modern = Regex("RequestedLayerState\\{(.+?)\\s+parentId=").find(trimmed)
+            val modern = RE_SF_MODERN.find(trimmed)
             if (modern != null) {
                 modern.groupValues[1].trim().takeIf { it.isNotBlank() }
             } else {
@@ -251,7 +286,7 @@ object AdbBridge {
         if (lines.size < 3) return null
         val times = mutableListOf<Long>()
         for (i in 1 until lines.size) {
-            val parts = lines[i].trim().split("\\s+".toRegex())
+            val parts = lines[i].trim().split(RE_DEVICE_LINE)
             if (parts.size >= 2) {
                 val ts = parts[1].toLongOrNull() ?: continue
                 if (ts > 0 && ts < Long.MAX_VALUE / 2 && (times.isEmpty() || ts >= times.last())) times.add(ts)
@@ -278,17 +313,17 @@ object AdbBridge {
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
         require(isValidPackageName(pkg)) { "Invalid package name: $pkg" }
         val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "meminfo", pkg, timeoutMs = 8000)
-        val total = (Regex("TOTAL PSS:\\s+(\\d+)").find(output) ?: Regex("TOTAL\\s+(\\d+)").find(output))
+        val total = (RE_TOTAL_PSS.find(output) ?: RE_TOTAL_FALLBACK.find(output))
             ?.groupValues?.get(1)?.toLongOrNull() ?: return null
-        val native = Regex("Native Heap\\s+(\\d+)").find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
-        val java = Regex("(?:Dalvik|Java) Heap\\s+(\\d+)").find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
+        val native = RE_NATIVE_HEAP.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
+        val java = RE_JAVA_HEAP.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
         return MemSnapshot(total / 1024, native / 1024, java / 1024)
     }
 
     fun captureCpuPercent(deviceId: String): Int {
         val output = shell(deviceId, "cat /proc/stat")
         val line = output.lines().firstOrNull { it.startsWith("cpu ") } ?: return -1
-        val p = line.trim().split("\\s+".toRegex())
+        val p = line.trim().split(RE_DEVICE_LINE)
         if (p.size < 8) return -1
         val busy = (1..3).sumOf { p[it].toLongOrNull() ?: 0L } + (6..7).sumOf { p[it].toLongOrNull() ?: 0L }
         val total = (1..7).sumOf { p[it].toLongOrNull() ?: 0L }
@@ -328,7 +363,7 @@ object AdbBridge {
         // Fallback: thermalservice
         if (cpu < 0 || gpu < 0) {
             val dump = shell(deviceId, "dumpsys thermalservice", timeoutMs = 3000)
-            for (m in Regex("Temperature\\{mValue=([\\d.]+),\\s*mType=\\d+,\\s*mName=([^,]+),").findAll(dump)) {
+            for (m in RE_THERMAL_TEMP.findAll(dump)) {
                 val v = m.groupValues[1].toDoubleOrNull() ?: continue
                 val n = m.groupValues[2].trim().lowercase()
                 when {
@@ -344,7 +379,7 @@ object AdbBridge {
 
     fun getMissedFrames(deviceId: String): Int {
         val output = shell(deviceId, "dumpsys SurfaceFlinger", timeoutMs = 3000)
-        return Regex("Total missed frame count:\\s*(\\d+)").find(output)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        return RE_MISSED_FRAMES.find(output)?.groupValues?.get(1)?.toIntOrNull() ?: 0
     }
 
     fun disableCharging(deviceId: String) = shell(deviceId, "dumpsys battery unplug")
@@ -438,12 +473,17 @@ object AdbBridge {
 
     // ===== Video Segment Concatenation =====
 
+    /** Return cached ffmpeg path. Lookup happens at most once per JVM lifetime. */
+    private fun findFfmpeg(): String? = cachedFfmpegPath
+
     /**
      * Resolve ffmpeg path. Same lookup as EmbeddedVideoPlayer.findFfmpeg, duplicated here
      * to avoid coupling core/ to ui/components/. ffmpeg is a soft dependency: if absent,
      * concat falls back to leaving segments as separate files.
+     *
+     * v4.1.0: Renamed to `Impl` and invoked once via `cachedFfmpegPath` lazy.
      */
-    private fun findFfmpeg(): String? {
+    private fun findFfmpegImpl(): String? {
         try {
             val p = ProcessBuilder("which", "ffmpeg").start()
             val result = p.inputStream.bufferedReader().readText().trim()
@@ -623,9 +663,14 @@ object AdbBridge {
         }
     }
 
+    /** Return cached ffprobe path. Lookup happens at most once per JVM lifetime. */
+    private fun findFfprobe(): String? = cachedFfprobePath
+
     /** Find the local ffprobe binary. Mirrors EmbeddedVideoPlayer.findFfprobe() so core/
-     *  doesn't depend on ui/components/. */
-    private fun findFfprobe(): String? {
+     *  doesn't depend on ui/components/.
+     *
+     *  v4.1.0: Renamed to `Impl` and invoked once via `cachedFfprobePath` lazy. */
+    private fun findFfprobeImpl(): String? {
         try {
             val p = ProcessBuilder("which", "ffprobe").start()
             val result = p.inputStream.bufferedReader().readText().trim()
@@ -974,8 +1019,11 @@ internal fun parseMdnsServicesOutput(text: String): List<MdnsService> {
  * structurally malformed, the service type is unknown, the IP is not a
  * literal IPv4, or the port is out of range.
  */
+private val RE_MDNS_SPLIT = Regex("\\s+")
+private val RE_MDNS_IPV4 = Regex("\\d{1,3}(\\.\\d{1,3}){3}")
+
 internal fun parseMdnsServiceLine(line: String): MdnsService? {
-    val parts = line.split(Regex("\\s+"))
+    val parts = line.split(RE_MDNS_SPLIT)
     if (parts.size < 3) return null
     val instance = parts[0]
     val rawType = parts[1].trimEnd('.')
@@ -988,7 +1036,7 @@ internal fun parseMdnsServiceLine(line: String): MdnsService? {
     val colonIdx = addr.lastIndexOf(':')
     if (colonIdx <= 0) return null
     val ip = addr.substring(0, colonIdx)
-    if (!ip.matches(Regex("\\d{1,3}(\\.\\d{1,3}){3}"))) return null
+    if (!ip.matches(RE_MDNS_IPV4)) return null
     val port = addr.substring(colonIdx + 1).toIntOrNull() ?: return null
     if (port !in 1..65535) return null
     return MdnsService(instance, serviceType, ip, port)
@@ -1040,9 +1088,10 @@ internal fun parseConnectStderr(stderr: String, timedOut: Boolean): ConnectFailu
  * version or null if the output doesn't contain a canonical `Version X.Y.Z`
  * line. Pure: no IO.
  */
+private val RE_ADB_VER = Regex("Version (\\d+)\\.(\\d+)\\.(\\d+)")
+
 internal fun parseAdbVersion(output: String): AdbVersion? {
-    val regex = Regex("Version (\\d+)\\.(\\d+)\\.(\\d+)")
-    val match = regex.find(output) ?: return null
+    val match = RE_ADB_VER.find(output) ?: return null
     val (maj, min, patch) = match.destructured
     return AdbVersion(maj.toInt(), min.toInt(), patch.toInt())
 }

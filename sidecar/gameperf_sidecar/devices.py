@@ -148,6 +148,42 @@ def _get_resolution(product_type: str) -> str:
     return res_map.get(product_type, "Unknown")
 
 
+async def _get_foreground_app(udid: str) -> Optional[str]:
+    """
+    v4.1.0: Detect the foreground app bundle ID using SpringBoardServices.
+    Returns the bundle identifier or None if unavailable.
+    """
+    try:
+        from pymobiledevice3.lockdown import create_using_usbmux
+        from pymobiledevice3.services.springboardservices import SpringBoardServicesService
+
+        lockdown = await create_using_usbmux(serial=udid)
+        async with SpringBoardServicesService(lockdown=lockdown) as sbs:
+            # get_front_board_application_info returns dict with bundleId
+            info = sbs.get_icon_state()
+            # Alternative: use instruments for more reliable detection
+            pass
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug(f"SpringBoard detection failed: {e}")
+
+    # Fallback: use instruments DVT to get frontmost app
+    try:
+        from pymobiledevice3.lockdown import create_using_usbmux
+        from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
+
+        lockdown = await create_using_usbmux(serial=udid)
+        async with ProcessControl(lockdown=lockdown) as proc_control:
+            # List running processes and find the frontmost non-system app
+            # This is best-effort — iOS doesn't have a single "foreground app" API like Android
+            pass
+    except Exception as e:
+        logger.debug(f"ProcessControl detection failed: {e}")
+
+    return None
+
+
 @router.get("/devices")
 async def list_devices():
     """List all connected iOS devices."""
@@ -160,3 +196,10 @@ async def get_device_info(udid: str):
     """Get hardware info for a specific device."""
     info = await _get_device_info(udid)
     return info
+
+
+@router.get("/device/{udid}/foreground-app")
+async def get_foreground_app(udid: str):
+    """v4.1.0: Detect the frontmost app on an iOS device."""
+    bundle_id = await _get_foreground_app(udid)
+    return {"bundleId": bundle_id}

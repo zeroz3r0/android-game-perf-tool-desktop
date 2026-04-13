@@ -211,4 +211,65 @@ class SidecarClientTest {
         val result = SidecarClient.extractArray(json, "items")
         assertEquals(2, result.size)
     }
+
+    // ===== v4.1.0 — Additional edge cases =====
+
+    @Test
+    fun `extractString null for completely unrelated key`() {
+        assertNull(SidecarClient.extractString("""{"foo": "bar"}""", "baz"))
+    }
+
+    @Test
+    fun `extractInt returns default for missing key`() {
+        assertEquals(42, SidecarClient.extractInt("""{"foo": 1}""", "bar", 42))
+    }
+
+    @Test
+    fun `extractDouble returns default for missing key`() {
+        assertEquals(-1.0, SidecarClient.extractDouble("""{"foo": 1.5}""", "bar", -1.0))
+    }
+
+    @Test
+    fun `extractBool returns default for missing key`() {
+        assertEquals(false, SidecarClient.extractBool("""{"foo": true}""", "bar", false))
+    }
+
+    @Test
+    fun `extractBool parses true`() {
+        assertEquals(true, SidecarClient.extractBool("""{"active": true}""", "active"))
+    }
+
+    @Test
+    fun `extractBool parses false`() {
+        assertEquals(false, SidecarClient.extractBool("""{"active": false}""", "active"))
+    }
+
+    @Test
+    fun `parseMetrics handles all sentinel values`() {
+        val json = """{"fps": -1, "avgFrameTime": -1.0, "jankCount": 0, "stutterCount": 0, "cpuPercent": -1, "memoryMb": -1, "nativeMb": 0, "javaMb": 0, "tempCpu": -1.0, "tempGpu": -1.0, "tempBattery": -1.0, "tempSkin": -1.0, "batteryLevel": -1}"""
+        val metrics = client.parseMetrics(json)
+        assertEquals(-1, metrics.fps)
+        assertEquals(-1.0, metrics.avgFrameTime)
+        assertEquals(-1, metrics.cpuPercent)
+        assertEquals(-1, metrics.batteryLevel)
+        assertEquals(-1.0, metrics.tempSkin)
+    }
+
+    @Test
+    fun `parseDeviceList handles malformed JSON gracefully`() {
+        val json = """{"devices": "not_an_array"}"""
+        val devices = client.parseDeviceList(json)
+        assertTrue(devices.isEmpty())
+    }
+
+    @Test
+    fun `extractArray handles missing key`() {
+        val result = SidecarClient.extractArray("""{"other": [1,2]}""", "devices")
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun `extractLong parses large values`() {
+        assertEquals(999999999L, SidecarClient.extractLong("""{"big": 999999999}""", "big"))
+    }
 }

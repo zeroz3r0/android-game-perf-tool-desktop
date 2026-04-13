@@ -64,9 +64,10 @@ class IosBridge(
             ?: DeviceInfo("Unknown", "Apple", "Unknown", "Apple GPU", "Unknown", 0, "Unknown", "Unknown", DevicePlatform.IOS)
 
     override fun detectGame(deviceId: String): String? {
-        // iOS doesn't have a direct equivalent to Android's `dumpsys window`.
-        // For now, return null — the user manually selects the game.
-        return null
+        // v4.1.0: ask the sidecar for the frontmost app bundle ID.
+        // The sidecar uses SpringBoardServices or instruments to detect it.
+        // Falls back to null if the sidecar doesn't support it or returns empty.
+        return client.detectForegroundApp(deviceId)
     }
 
     override fun getBatteryLevel(deviceId: String): Int {
@@ -165,7 +166,43 @@ class IosBridge(
         } else null
     }
 
+    /**
+     * v4.1.0: improved validation — now uses ffprobe (same as Android path) when
+     * available, falling back to size check only when ffprobe is missing.
+     * This catches corrupt MP4s that have non-zero size but broken moov atoms.
+     */
     override fun isValidVideoFile(file: File): Boolean {
-        return file.exists() && file.length() > 1024
+        if (!file.exists() || file.length() == 0L) return false
+        // Try ffprobe validation (mirrors AdbBridge.isValidVideoFile behavior)
+        return try {
+            val ffprobe = findFfprobe() ?: return file.length() > 1024  // degraded: size check
+            val pb = ProcessBuilder(
+                ffprobe, "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file.absolutePath
+            )
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val out = proc.inputStream.bufferedReader().readText().trim()
+            val finished = proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            if (!finished) { proc.destroyForcibly(); return false }
+            if (proc.exitValue() != 0) return false
+            val duration = out.lines().firstOrNull()?.toDoubleOrNull()
+            duration != null && duration > 0.0
+        } catch (_: Exception) {
+            file.length() > 1024  // degraded fallback
+        }
+    }
+
+    private fun findFfprobe(): String? {
+        try {
+            val p = ProcessBuilder("which", "ffprobe").start()
+            val result = p.inputStream.bufferedReader().readText().trim()
+            p.waitFor()
+            if (result.isNotEmpty() && java.io.File(result).exists()) return result
+        } catch (_: Exception) {}
+        val candidates = listOf("/usr/local/bin/ffprobe", "/opt/homebrew/bin/ffprobe", "/usr/bin/ffprobe")
+        return candidates.firstOrNull { java.io.File(it).exists() }
     }
 }

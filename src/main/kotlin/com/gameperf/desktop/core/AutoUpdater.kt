@@ -643,6 +643,12 @@ echo "=== [${'$'}(date '+%Y-%m-%d %H:%M:%S')] Update script done ==="
      * Windows equivalent of [createUnixUpdateScript]. Uses `.bat` syntax with logging
      * to `%USERPROFILE%\GamePerf Reports\updates\last-update.log`.
      */
+    /**
+     * v4.1.0-security: Windows paths are now double-quoted consistently to handle
+     * paths with spaces (e.g. `C:\Program Files\GamePerf\app\GamePerf.jar`).
+     * Previously, paths were embedded without quotes — any space in the path would
+     * break the batch script silently.
+     */
     private fun createWindowsUpdateScript(
         currentJar: File,
         newJar: File,
@@ -650,39 +656,45 @@ echo "=== [${'$'}(date '+%Y-%m-%d %H:%M:%S')] Update script done ==="
         relaunchCommand: String
     ) {
         val script = File(currentJar.parentFile, "gameperf-update.bat")
+        // Windows double-quote escaping: batch scripts use `"` for paths with spaces.
+        // No backtick/$ expansion risk in cmd.exe, so double quotes are sufficient.
+        val qCurrent = "\"${currentJar.absolutePath}\""
+        val qNew = "\"${newJar.absolutePath}\""
+        val qBak = "\"${bakJar.absolutePath}\""
+        val qScript = "\"${script.absolutePath}\""
         script.writeText(
             """@echo off
 setlocal
 set "LOG=%USERPROFILE%\GamePerf Reports\updates\last-update.log"
 if not exist "%USERPROFILE%\GamePerf Reports\updates" mkdir "%USERPROFILE%\GamePerf Reports\updates" 2>nul
 echo === [%DATE% %TIME%] Update script started >> "%LOG%"
-echo Current JAR: ${currentJar.absolutePath} >> "%LOG%"
-echo New JAR:     ${newJar.absolutePath} >> "%LOG%"
-echo Backup:      ${bakJar.absolutePath} >> "%LOG%"
+echo Current JAR: $qCurrent >> "%LOG%"
+echo New JAR:     $qNew >> "%LOG%"
+echo Backup:      $qBak >> "%LOG%"
 
 timeout /t 2 /nobreak >nul
 
-if not exist "${newJar.absolutePath}" (
+if not exist $qNew (
   echo FATAL: new JAR does not exist >> "%LOG%"
   exit /b 1
 )
 
-if exist "${bakJar.absolutePath}" (
+if exist $qBak (
   echo Removing old backup... >> "%LOG%"
-  del /f "${bakJar.absolutePath}" >> "%LOG%" 2>&1
+  del /f $qBak >> "%LOG%" 2>&1
 )
 echo Backing up current JAR... >> "%LOG%"
-move /y "${currentJar.absolutePath}" "${bakJar.absolutePath}" >> "%LOG%" 2>&1
+move /y $qCurrent $qBak >> "%LOG%" 2>&1
 
 echo Installing new JAR... >> "%LOG%"
-move /y "${newJar.absolutePath}" "${currentJar.absolutePath}" >> "%LOG%" 2>&1
+move /y $qNew $qCurrent >> "%LOG%" 2>&1
 
 echo Relaunching: $relaunchCommand >> "%LOG%"
 $relaunchCommand
 
 timeout /t 1 /nobreak >nul
 echo === [%DATE% %TIME%] Update script done >> "%LOG%"
-del /f "${script.absolutePath}"
+del /f $qScript
 """
         )
         ProcessBuilder("cmd", "/c", "start", "/min", "", script.absolutePath)

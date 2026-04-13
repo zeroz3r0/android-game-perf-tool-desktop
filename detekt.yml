@@ -1,0 +1,46 @@
+# detekt configuration for GamePerf Desktop
+# Start lenient, tighten over time.
+
+complexity:
+  LongMethod:
+    threshold: 100  # AppViewModel.startCapture is ~300 lines — will fix in delegate refactor
+  LongParameterList:
+    functionThreshold: 12  # ReportGenerator.generate has many params
+    constructorThreshold: 10
+  TooManyFunctions:
+    thresholdInClasses: 40  # AppViewModel has ~35 public functions — will fix in delegate refactor
+    thresholdInFiles: 30
+  CyclomaticComplexMethod:
+    threshold: 25
+  LargeClass:
+    threshold: 2000  # AppViewModel is 1971 lines — will shrink with delegate refactor
+  NestedBlockDepth:
+    threshold: 6
+
+style:
+  MagicNumber:
+    active: false  # Too noisy for a project with many numeric constants (FPS, timeouts, etc.)
+  MaxLineLength:
+    maxLineLength: 160
+  WildcardImport:
+    active: false  # Compose and coroutines heavily use wildcard imports
+  ReturnCount:
+    max: 6
+
+naming:
+  FunctionNaming:
+    active: true
+  VariableNaming:
+    active: true
+  PackageNaming:
+    active: true
+
+potential-bugs:
+  UnsafeCast:
+    active: true
+  LateinitUsage:
+    active: false  # We prefer nullable + lazy over lateinit
+
+performance:
+  SpreadOperator:
+    active: false  # Used in ProcessBuilder varargs — unavoidable

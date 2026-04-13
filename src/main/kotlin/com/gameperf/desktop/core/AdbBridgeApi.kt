@@ -1,36 +1,24 @@
 package com.gameperf.desktop.core
 
+import com.gameperf.desktop.core.model.Device
+import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.DevicePlatform
+import com.gameperf.desktop.core.model.FrameSnapshot
+import com.gameperf.desktop.core.model.MemSnapshot
+import com.gameperf.desktop.core.model.ThermalSnapshot
 import java.io.File
 
 /**
- * v3.1.14 — Interface extracted from [AdbBridge] so callers that need to be
- * unit-tested (primarily [com.gameperf.desktop.viewmodel.AppViewModel]) can be
- * exercised against a fake implementation instead of the live `adb` binary.
- *
- * **Scope discipline**: only the surface area consumed by `AppViewModel` is
- * included here. `AdbBridge` still exposes more helpers (e.g. `exec`, `shell`,
- * `findLayer`, `parseSurfaceFlingerListOutput`, `getBatteryTemp`) that other
- * callers and tests use directly — those remain on the `object AdbBridge` and
- * are NOT part of this interface. The goal is "make AppViewModel testable",
- * not "refactor AdbBridge end-to-end".
- *
- * **Nested types** (`Device`, `DeviceInfo`, `FrameSnapshot`, `MemSnapshot`,
- * `ThermalSnapshot`, `ScreenRecordProfile`) continue to live on the
- * `AdbBridge` object. The interface methods reference them directly so that
- * no existing call-site (`ReportGenerator`, `HomeScreen`, `AppViewModel`
- * field declarations) has to move its imports around.
- *
- * The production implementation is [RealAdbBridge], a thin delegating class
- * that forwards every call to the existing `object AdbBridge` singleton.
- * That way the underlying state (resolved adb path, CPU deltas, layer cache)
- * is still global — the interface is a seam for testing, NOT a refactor of
- * AdbBridge's internal state model.
+ * v3.1.14 — Interface extracted from [AdbBridge] for testability.
+ * v4.1.0 — Return types migrated from deprecated AdbBridge.* nested classes
+ *           to platform-agnostic core.model.* types. This eliminates the
+ *           deprecated type layer and aligns AdbBridgeApi with DeviceBridgeApi.
  */
 interface AdbBridgeApi {
     fun isAvailable(): Boolean
 
-    fun listDevices(): List<AdbBridge.Device>
-    fun getDeviceInfo(deviceId: String): AdbBridge.DeviceInfo
+    fun listDevices(): List<Device>
+    fun getDeviceInfo(deviceId: String): DeviceInfo
     fun detectGame(deviceId: String): String?
     fun switchToWifi(usbDeviceId: String, port: Int = 5555): String?
 
@@ -41,10 +29,10 @@ interface AdbBridgeApi {
 
     fun resetSessionState()
 
-    fun captureFrames(deviceId: String, pkg: String): AdbBridge.FrameSnapshot?
+    fun captureFrames(deviceId: String, pkg: String): FrameSnapshot?
     fun captureCpuPercent(deviceId: String): Int
-    fun captureMemory(deviceId: String, pkg: String): AdbBridge.MemSnapshot?
-    fun captureTemperature(deviceId: String): AdbBridge.ThermalSnapshot
+    fun captureMemory(deviceId: String, pkg: String): MemSnapshot?
+    fun captureTemperature(deviceId: String): ThermalSnapshot
 
     fun startScreenRecord(
         deviceId: String,
@@ -65,65 +53,35 @@ interface AdbBridgeApi {
     fun isValidVideoFile(file: File): Boolean
 
     // ===== v3.2.0 — Wireless ADB =====
-    //
-    // Four new blocking, thread-safe, never-throws methods for the adb pair
-    // WiFi flow (Android 11+). See [PairResult] / [ConnectResult] / [MdnsService]
-    // top-level types in AdbBridge.kt for the data contracts.
 
-    /**
-     * Run `adb pair ip:port` with [code] piped to stdin. Blocks for up to 10
-     * seconds wall-clock. Never throws — all error conditions (timeout, exit
-     * code != 0, unreadable stderr) are mapped to [PairResult.Failure].
-     */
     fun pair(ip: String, port: Int, code: String): PairResult
-
-    /**
-     * Run `adb connect ip:port`. Blocks for up to 5 seconds wall-clock.
-     * On success, the returned [ConnectResult.Success.deviceId] is `"ip:port"`
-     * and a subsequent `listDevices()` call should include it with `isWifi=true`.
-     */
     fun connectWireless(ip: String, port: Int): ConnectResult
-
-    /**
-     * Snapshot `adb mdns services`. Blocks for up to 3 seconds. Returns an
-     * empty list if `adb mdns` is not compiled in or the OS mDNS daemon is
-     * down. Never throws. Results are sorted: PAIRING first, then CONNECT,
-     * internally by `instance` ascending.
-     */
     fun mdnsServices(): List<MdnsService>
-
-    /**
-     * Run `adb disconnect id`. Blocks for up to 3 seconds. Returns `true` only
-     * if the subprocess exited with code 0; any other outcome (timeout, error,
-     * not-found) returns `false` without side effects on VM state.
-     */
     fun disconnect(id: String): Boolean
-
-    /**
-     * Run `adb --version` and parse the result. Blocks for up to 2 seconds.
-     * Returns `null` if the binary is missing, times out, or the output
-     * doesn't match the canonical `"Version X.Y.Z"` line.
-     */
     fun getAdbVersion(): AdbVersion?
 }
 
 /**
- * Default production implementation. Every method delegates 1:1 to the
- * existing [AdbBridge] singleton so behavior is identical to v3.1.13.
- *
- * A single shared instance is fine — the underlying `object AdbBridge` holds
- * the real state (cachedLayer, prevCpuBusy/Total, adbPath lazy) and this
- * class is stateless. Constructing multiple `RealAdbBridge()` instances just
- * gives you multiple handles pointing at the same underlying singleton,
- * which is exactly what we want for the "constructor-default injection"
- * pattern in AppViewModel.
+ * Production implementation. Delegates to [AdbBridge] singleton and converts
+ * the deprecated nested types to core.model types.
  */
 class RealAdbBridge : AdbBridgeApi {
     override fun isAvailable(): Boolean = AdbBridge.isAvailable()
 
-    override fun listDevices(): List<AdbBridge.Device> = AdbBridge.listDevices()
-    override fun getDeviceInfo(deviceId: String): AdbBridge.DeviceInfo =
-        AdbBridge.getDeviceInfo(deviceId)
+    override fun listDevices(): List<Device> = AdbBridge.listDevices().map { d ->
+        Device(id = d.id, model = d.model, platform = DevicePlatform.ANDROID, isWifi = d.isWifi)
+    }
+
+    override fun getDeviceInfo(deviceId: String): DeviceInfo {
+        val d = AdbBridge.getDeviceInfo(deviceId)
+        return DeviceInfo(
+            model = d.model, manufacturer = d.manufacturer, cpu = d.cpu,
+            gpu = d.gpu, ram = d.ram, cores = d.cores,
+            osVersion = d.sdk.toString(), resolution = d.resolution,
+            platform = DevicePlatform.ANDROID,
+        )
+    }
+
     override fun detectGame(deviceId: String): String? = AdbBridge.detectGame(deviceId)
     override fun switchToWifi(usbDeviceId: String, port: Int): String? =
         AdbBridge.switchToWifi(usbDeviceId, port)
@@ -135,28 +93,32 @@ class RealAdbBridge : AdbBridgeApi {
 
     override fun resetSessionState() = AdbBridge.resetSessionState()
 
-    override fun captureFrames(deviceId: String, pkg: String): AdbBridge.FrameSnapshot? =
-        AdbBridge.captureFrames(deviceId, pkg)
+    override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
+        val f = AdbBridge.captureFrames(deviceId, pkg) ?: return null
+        return FrameSnapshot(fps = f.fps, avgFrameTime = f.avgFrameTime, jankCount = f.jankCount, stutterCount = f.stutterCount)
+    }
+
     override fun captureCpuPercent(deviceId: String): Int = AdbBridge.captureCpuPercent(deviceId)
-    override fun captureMemory(deviceId: String, pkg: String): AdbBridge.MemSnapshot? =
-        AdbBridge.captureMemory(deviceId, pkg)
-    override fun captureTemperature(deviceId: String): AdbBridge.ThermalSnapshot =
-        AdbBridge.captureTemperature(deviceId)
+
+    override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
+        val m = AdbBridge.captureMemory(deviceId, pkg) ?: return null
+        return MemSnapshot(totalMb = m.totalMb, nativeMb = m.nativeMb, javaMb = m.javaMb)
+    }
+
+    override fun captureTemperature(deviceId: String): ThermalSnapshot {
+        val t = AdbBridge.captureTemperature(deviceId)
+        return ThermalSnapshot(cpu = t.cpu, gpu = t.gpu, battery = t.battery, skin = t.skin)
+    }
 
     override fun startScreenRecord(
-        deviceId: String,
-        sessionId: String,
-        segment: Int,
+        deviceId: String, sessionId: String, segment: Int,
         profile: AdbBridge.ScreenRecordProfile,
     ): Process? = AdbBridge.startScreenRecord(deviceId, sessionId, segment, profile)
 
     override fun stopScreenRecord(process: Process?) = AdbBridge.stopScreenRecord(process)
 
     override fun pullRecordings(
-        deviceId: String,
-        sessionId: String,
-        localDir: File,
-        maxSegments: Int,
+        deviceId: String, sessionId: String, localDir: File, maxSegments: Int,
     ): List<File> = AdbBridge.pullRecordings(deviceId, sessionId, localDir, maxSegments)
 
     override fun cleanRecordings(deviceId: String) = AdbBridge.cleanRecordings(deviceId)
@@ -166,17 +128,11 @@ class RealAdbBridge : AdbBridgeApi {
 
     override fun isValidVideoFile(file: File): Boolean = AdbBridge.isValidVideoFile(file)
 
-    // ===== v3.2.0 — Wireless ADB (1:1 delegations to the singleton) =====
-
     override fun pair(ip: String, port: Int, code: String): PairResult =
         AdbBridge.pair(ip, port, code)
-
     override fun connectWireless(ip: String, port: Int): ConnectResult =
         AdbBridge.connectWireless(ip, port)
-
     override fun mdnsServices(): List<MdnsService> = AdbBridge.mdnsServices()
-
     override fun disconnect(id: String): Boolean = AdbBridge.disconnect(id)
-
     override fun getAdbVersion(): AdbVersion? = AdbBridge.getAdbVersion()
 }

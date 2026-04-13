@@ -2,20 +2,29 @@ package com.gameperf.desktop.core
 
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 
 /**
  * Persists the last N test sessions to a JSON file in ~/GamePerf Reports/history.json.
- * Simple manual JSON serialization (no external dependencies).
  *
- * Retention policy: hard cap of [MAX_ENTRIES] sessions. When a new entry pushes the
- * list over the limit, [addEntry] returns the evicted entries so the caller can delete
- * their physical files via FileCleanup. Below the limit, [addEntry] returns an empty list.
+ * v4.1.0: Migrated from hand-rolled regex-based JSON parser to kotlinx.serialization.
+ * The on-disk format is identical (same field names, same types), so existing history.json
+ * files are read seamlessly. The `ignoreUnknownKeys = true` setting ensures forward
+ * compatibility if future versions add fields.
  *
+ * Retention policy: hard cap of [MAX_ENTRIES] sessions.
  * Thread-safety: all write operations are `@Synchronized` on the SessionHistory singleton.
- * Reads are lock-free (filesystem consistency is enough for read-only callers).
  */
 object SessionHistory {
 
@@ -27,8 +36,88 @@ object SessionHistory {
     private val historyFile: File
         get() = historyFileOverride ?: File(System.getProperty("user.home"), "GamePerf Reports/history.json")
 
+    /** Lenient JSON config: ignores unknown keys for forward compat, pretty prints for readability. */
+    private val json = Json {
+        ignoreUnknownKeys = true
+        prettyPrint = true
+        encodeDefaults = true
+        isLenient = true
+    }
+
     /** Tag to classify sessions as our game or a competitor's game. */
     enum class SessionTag { OUR_GAME, COMPETITION }
+
+    // ===== Custom serializers for non-@Serializable types =====
+
+    /** Serialize [MarkerType] as its enum name string. */
+    object MarkerTypeSerializer : KSerializer<MarkerType> {
+        override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("MarkerType", PrimitiveKind.STRING)
+        override fun serialize(encoder: Encoder, value: MarkerType) = encoder.encodeString(value.name)
+        override fun deserialize(decoder: Decoder): MarkerType {
+            val name = decoder.decodeString()
+            return try { MarkerType.valueOf(name) } catch (_: Exception) { MarkerType.CUSTOM }
+        }
+    }
+
+    @Serializable
+    data class SerializableMarker(
+        val id: String = "",
+        val tsMs: Long = 0,
+        val ts: Int = 0,
+        @Serializable(with = MarkerTypeSerializer::class)
+        val type: MarkerType = MarkerType.CUSTOM,
+        val title: String = "",
+        val note: String = "",
+        val color: String = "#FF0000",
+    ) {
+        fun toSessionMarker(): SessionMarker = SessionMarker(
+            id = id.ifEmpty { java.util.UUID.randomUUID().toString() },
+            timestampMs = if (tsMs > 0) tsMs else ts.toLong() * 1000,
+            type = type,
+            title = title.ifEmpty { type.label },
+            note = note,
+            colorHex = color,
+        )
+
+        companion object {
+            fun from(m: SessionMarker) = SerializableMarker(
+                id = m.id,
+                tsMs = m.timestampMs,
+                ts = m.timestampSeconds,
+                type = m.type,
+                title = m.title,
+                note = m.note,
+                color = m.colorHex,
+            )
+        }
+    }
+
+    @Serializable
+    data class SerializableEntry(
+        val id: String = "",
+        val name: String = "",
+        val gamePackage: String = "",
+        val deviceModel: String = "",
+        val grade: String = "F",
+        val deviceGrade: String = " ",
+        val avgFps: Int = 0,
+        val duration: Int = 0,
+        val date: String = "",
+        val reportPath: String = "",
+        val videoPath: String = "",
+        val tag: String = "OUR_GAME",
+        val competitorName: String = "",
+        val p1Fps: Int = 0,
+        val p5Fps: Int = 0,
+        val avgFrameTime: Double = 0.0,
+        val p95FrameTime: Double = 0.0,
+        val p99FrameTime: Double = 0.0,
+        val peakMemMb: Long = 0,
+        val avgCpu: Int = 0,
+        val maxTemp: Double = 0.0,
+        val score: Int = 0,
+        val markers: List<SerializableMarker> = emptyList(),
+    )
 
     data class HistoryEntry(
         val id: String,
@@ -56,13 +145,41 @@ object SessionHistory {
         val markers: List<SessionMarker> = emptyList()
     )
 
+    // ===== Conversion =====
+
+    private fun HistoryEntry.toSerializable() = SerializableEntry(
+        id = id, name = name, gamePackage = gamePackage, deviceModel = deviceModel,
+        grade = grade.toString(), deviceGrade = deviceGrade.toString(), avgFps = avgFps, duration = duration,
+        date = date, reportPath = reportPath, videoPath = videoPath,
+        tag = tag.name, competitorName = competitorName,
+        p1Fps = p1Fps, p5Fps = p5Fps, avgFrameTime = avgFrameTime,
+        p95FrameTime = p95FrameTime, p99FrameTime = p99FrameTime,
+        peakMemMb = peakMemMb, avgCpu = avgCpu, maxTemp = maxTemp, score = score,
+        markers = markers.map { SerializableMarker.from(it) },
+    )
+
+    private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
+        id = id, name = name, gamePackage = gamePackage, deviceModel = deviceModel,
+        grade = grade.firstOrNull() ?: 'F', deviceGrade = deviceGrade.firstOrNull() ?: ' ',
+        avgFps = avgFps, duration = duration,
+        date = date, reportPath = reportPath, videoPath = videoPath,
+        tag = try { SessionTag.valueOf(tag) } catch (_: Exception) { SessionTag.OUR_GAME },
+        competitorName = competitorName,
+        p1Fps = p1Fps, p5Fps = p5Fps, avgFrameTime = avgFrameTime,
+        p95FrameTime = p95FrameTime, p99FrameTime = p99FrameTime,
+        peakMemMb = peakMemMb, avgCpu = avgCpu, maxTemp = maxTemp, score = score,
+        markers = markers.map { it.toSessionMarker() },
+    )
+
+    // ===== Public API (unchanged contract) =====
+
     fun load(): List<HistoryEntry> {
         if (!historyFile.exists()) return emptyList()
         return try {
             val text = historyFile.readText()
-            parseEntries(text)
+            val entries = json.decodeFromString<List<SerializableEntry>>(text)
+            entries.map { it.toHistoryEntry() }
         } catch (e: Exception) {
-            // M-3: log instead of silently swallowing — aids debugging corrupt history files.
             System.err.println("[GamePerf] Failed to load session history: ${e.message}")
             emptyList()
         }
@@ -72,25 +189,17 @@ object SessionHistory {
     fun save(entries: List<HistoryEntry>) {
         try {
             historyFile.parentFile?.mkdirs()
-            // M-3: atomic write pattern — write to .tmp first, then rename. Prevents
-            // corruption if the JVM crashes or disk fills mid-write.
+            val serializable = entries.take(MAX_ENTRIES).map { it.toSerializable() }
+            val text = json.encodeToString(ListSerializer(SerializableEntry.serializer()), serializable)
+            // Atomic write: write to .tmp first, then rename.
             val tmpFile = File(historyFile.parentFile, "${historyFile.name}.tmp")
-            tmpFile.writeText(toJson(entries.take(MAX_ENTRIES)))
+            tmpFile.writeText(text)
             tmpFile.renameTo(historyFile)
         } catch (e: Exception) {
-            // M-3: log instead of silently swallowing — aids debugging disk-full / permission errors.
             System.err.println("[GamePerf] Failed to save session history: ${e.message}")
         }
     }
 
-    /**
-     * Insert a pre-built [HistoryEntry] at index 0 and enforce the retention limit.
-     *
-     * @return the entries that were evicted from the end of the list because the new
-     *         insertion pushed the size over [MAX_ENTRIES]. Empty list if below the limit.
-     *         Callers should delete the physical files of the returned entries via
-     *         `FileCleanup.deleteSessionFiles`.
-     */
     @Synchronized
     fun addEntry(entry: HistoryEntry): List<HistoryEntry> {
         val all = load().toMutableList()
@@ -101,14 +210,6 @@ object SessionHistory {
         return evicted
     }
 
-    /**
-     * Legacy overload that accepts field parameters, builds the [HistoryEntry] internally,
-     * and delegates to the entry-based [addEntry]. Retained to keep existing callers
-     * in AppViewModel source-compatible.
-     *
-     * @return the evicted entries (see entry-based overload). Callers that previously
-     *         discarded the Unit return can use `val _ = addEntry(...)`.
-     */
     fun addEntry(
         gamePackage: String, deviceModel: String, grade: Char, deviceGrade: Char,
         avgFps: Int, duration: Int, reportPath: String, videoPath: String,
@@ -152,11 +253,6 @@ object SessionHistory {
         }
     }
 
-    /**
-     * Replace the entry with matching id, preserving its index in the list.
-     * No-op if the id is not found. Used by `FileCleanup.pruneOrphans` repair path
-     * to persist entries whose `reportPath` or `videoPath` were cleared.
-     */
     @Synchronized
     fun updateEntry(entry: HistoryEntry) {
         val entries = load().toMutableList()
@@ -167,13 +263,6 @@ object SessionHistory {
         }
     }
 
-    /**
-     * Remove the entry with matching id from the history file.
-     *
-     * @return the removed [HistoryEntry], or null if no entry matched. Callers should
-     *         pass the returned entry to `FileCleanup.deleteSessionFiles` to also remove
-     *         the physical files.
-     */
     @Synchronized
     fun deleteEntry(id: String): HistoryEntry? {
         val entries = load().toMutableList()
@@ -183,149 +272,5 @@ object SessionHistory {
             save(entries)
         }
         return removed
-    }
-
-    // ===== Simple JSON serialization (no dependencies) =====
-
-    private fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
-
-    private fun markersToJson(markers: List<SessionMarker>): String {
-        if (markers.isEmpty()) return "[]"
-        return markers.joinToString(",", "[", "]") { m ->
-            """{"id":"${esc(m.id)}","tsMs":${m.timestampMs},"ts":${m.timestampSeconds},"type":"${m.type.name}","title":"${esc(m.title)}","note":"${esc(m.note)}","color":"${esc(m.colorHex)}"}"""
-        }
-    }
-
-    private fun toJson(entries: List<HistoryEntry>): String {
-        val sb = StringBuilder("[\n")
-        entries.forEachIndexed { i, e ->
-            sb.append("""  {
-    "id": "${esc(e.id)}",
-    "name": "${esc(e.name)}",
-    "gamePackage": "${esc(e.gamePackage)}",
-    "deviceModel": "${esc(e.deviceModel)}",
-    "grade": "${e.grade}",
-    "deviceGrade": "${e.deviceGrade}",
-    "avgFps": ${e.avgFps},
-    "duration": ${e.duration},
-    "date": "${esc(e.date)}",
-    "reportPath": "${esc(e.reportPath)}",
-    "videoPath": "${esc(e.videoPath)}",
-    "tag": "${e.tag.name}",
-    "competitorName": "${esc(e.competitorName)}",
-    "p1Fps": ${e.p1Fps},
-    "p5Fps": ${e.p5Fps},
-    "avgFrameTime": ${e.avgFrameTime},
-    "p95FrameTime": ${e.p95FrameTime},
-    "p99FrameTime": ${e.p99FrameTime},
-    "peakMemMb": ${e.peakMemMb},
-    "avgCpu": ${e.avgCpu},
-    "maxTemp": ${e.maxTemp},
-    "score": ${e.score},
-    "markers": ${markersToJson(e.markers)}
-  }""")
-            if (i < entries.size - 1) sb.append(",")
-            sb.append("\n")
-        }
-        sb.append("]")
-        return sb.toString()
-    }
-
-    private fun parseMarkers(obj: String): List<SessionMarker> {
-        val markersMatch = Regex("\"markers\"\\s*:\\s*\\[([^\\]]*)\\]").find(obj) ?: return emptyList()
-        val inner = markersMatch.groupValues[1].trim()
-        if (inner.isEmpty()) return emptyList()
-        val result = mutableListOf<SessionMarker>()
-        for (m in Regex("\\{[^}]*\\}").findAll(inner)) {
-            try {
-                val mObj = m.value
-                // Read tsMs first (new format), fallback to ts * 1000 (legacy)
-                val tsMs = Regex("\"tsMs\"\\s*:\\s*(\\d+)").find(mObj)?.groupValues?.get(1)?.toLongOrNull()
-                val tsLegacy = Regex("\"ts\"\\s*:\\s*(\\d+)").find(mObj)?.groupValues?.get(1)?.toIntOrNull()
-                val timestampMs = tsMs ?: ((tsLegacy ?: continue).toLong() * 1000)
-                // M-4: use escape-aware regex for all string fields (handles \" in values)
-                val typeName = Regex("\"type\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1) ?: continue
-                val type = try { MarkerType.valueOf(typeName) } catch (_: Exception) { MarkerType.CUSTOM }
-                val id = Regex("\"id\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1)
-                    ?: java.util.UUID.randomUUID().toString()
-                val title = Regex("\"title\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1)
-                    ?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: type.label
-                val note = Regex("\"note\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1)
-                    ?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
-                val colorHex = Regex("\"color\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(mObj)?.groupValues?.get(1) ?: type.colorHex
-                result.add(SessionMarker(
-                    id = id,
-                    timestampMs = timestampMs,
-                    type = type,
-                    title = title,
-                    note = note,
-                    colorHex = colorHex
-                ))
-            } catch (_: Exception) {}
-        }
-        return result
-    }
-
-    private fun parseEntries(json: String): List<HistoryEntry> {
-        val entries = mutableListOf<HistoryEntry>()
-        // Parse top-level objects — handles nested markers array by matching balanced braces
-        val topObjects = mutableListOf<String>()
-        var depth = 0; var start = -1
-        for (i in json.indices) {
-            when (json[i]) {
-                '{' -> { if (depth == 0) start = i; depth++ }
-                '}' -> { depth--; if (depth == 0 && start >= 0) { topObjects.add(json.substring(start, i + 1)); start = -1 } }
-            }
-        }
-        for (obj in topObjects) {
-            try {
-                // M-4: use a parser that handles escaped quotes (\" inside values)
-                // instead of [^\"]* which breaks on game names like My "Cool" Game.
-                fun field(name: String): String {
-                    val r = Regex("\"$name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-                    return r.find(obj)?.groupValues?.get(1)?.replace("\\\\", "\\")?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
-                }
-                fun intField(name: String): Int {
-                    val r = Regex("\"$name\"\\s*:\\s*(\\d+)")
-                    return r.find(obj)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                }
-                fun longField(name: String): Long {
-                    val r = Regex("\"$name\"\\s*:\\s*(\\d+)")
-                    return r.find(obj)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                }
-                fun doubleField(name: String): Double {
-                    val r = Regex("\"$name\"\\s*:\\s*([\\d.]+)")
-                    return r.find(obj)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
-                }
-                val tagStr = field("tag")
-                val tag = try { SessionTag.valueOf(tagStr) } catch (_: Exception) { SessionTag.OUR_GAME }
-                entries.add(HistoryEntry(
-                    id = field("id"),
-                    name = field("name"),
-                    gamePackage = field("gamePackage"),
-                    deviceModel = field("deviceModel"),
-                    grade = field("grade").firstOrNull() ?: 'F',
-                    deviceGrade = field("deviceGrade").firstOrNull() ?: ' ',
-                    avgFps = intField("avgFps"),
-                    duration = intField("duration"),
-                    date = field("date"),
-                    reportPath = field("reportPath"),
-                    videoPath = field("videoPath"),
-                    tag = tag,
-                    competitorName = field("competitorName"),
-                    p1Fps = intField("p1Fps"),
-                    p5Fps = intField("p5Fps"),
-                    avgFrameTime = doubleField("avgFrameTime"),
-                    p95FrameTime = doubleField("p95FrameTime"),
-                    p99FrameTime = doubleField("p99FrameTime"),
-                    peakMemMb = longField("peakMemMb"),
-                    avgCpu = intField("avgCpu"),
-                    maxTemp = doubleField("maxTemp"),
-                    score = intField("score"),
-                    markers = parseMarkers(obj)
-                ))
-            } catch (_: Exception) {}
-        }
-        return entries
     }
 }

@@ -163,8 +163,10 @@ object HardwareScoring {
      */
     fun detectTier(gpuString: String): DeviceTier {
         val gpu = gpuString.lowercase()
-            .replace(Regex("\\(tm\\)"), "")
-            .replace(Regex("\\(r\\)"), "")
+            // v4.1.0: replace with space (not empty) so `Adreno(TM)530` → `adreno 530`
+            // instead of `adreno530` which wouldn't match the map key.
+            .replace(Regex("\\(tm\\)"), " ")
+            .replace(Regex("\\(r\\)"), " ")
             .replace(Regex("[,;]"), " ")
             // v3.1.11: strip vendor brand prefixes that never appear in the map
             .replace(Regex("\\bqualcomm\\b"), "")
@@ -178,6 +180,9 @@ object HardwareScoring {
             .replace(Regex("\\bfamily\\b"), "")
             .replace(Regex("\\bopengl es \\d+(\\.\\d+)?\\b"), "")  // strip OpenGL version suffix
             .replace(Regex("[,;]"), " ")
+            // v4.1.0: normalize `mali g710` → `mali-g710` so it matches the map key.
+            // Handles `Mali(TM) G710` which after (TM) strip becomes `mali  g710` → `mali g710`.
+            .replace(Regex("\\bmali\\s+([gmt])"), "mali-$1")
             .replace(Regex("\\s+"), " ")
             .trim()
         for ((key, tier) in gpuTierMap) {

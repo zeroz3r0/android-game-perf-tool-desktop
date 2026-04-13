@@ -1,0 +1,92 @@
+package com.gameperf.desktop.viewmodel
+
+import com.gameperf.desktop.core.AutoUpdater
+import com.gameperf.desktop.core.CURRENT_VERSION
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * v4.1.0 — Manages auto-update check, download, and apply.
+ *
+ * Extracted from AppViewModel. Owns the update-related StateFlows and
+ * the coroutine logic for checking/downloading/applying updates.
+ */
+class UpdateDelegate(
+    private val scope: CoroutineScope,
+    private val onStatusMessage: (String) -> Unit,
+) {
+
+    private val _updateAvailable = MutableStateFlow<AutoUpdater.ReleaseInfo?>(null)
+    val updateAvailable: StateFlow<AutoUpdater.ReleaseInfo?> = _updateAvailable
+
+    private val _updateProgress = MutableStateFlow<Float?>(null)
+    val updateProgress: StateFlow<Float?> = _updateProgress
+
+    private val _updateError = MutableStateFlow<String?>(null)
+    val updateError: StateFlow<String?> = _updateError
+
+    fun checkForUpdates() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val release = AutoUpdater.checkForUpdate()
+                if (release != null && AutoUpdater.isNewer(release.version, CURRENT_VERSION)) {
+                    _updateAvailable.value = release
+                }
+            } catch (_: Exception) {
+                // Silently ignore — update check is non-critical
+            }
+        }
+    }
+
+    fun downloadAndApplyUpdate() {
+        val release = _updateAvailable.value ?: return
+        val downloadUrl = release.jarUrl
+        if (downloadUrl == null) {
+            _updateError.value = "No hay JAR disponible para tu plataforma. Descarga manualmente desde: ${release.htmlUrl}"
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            _updateProgress.value = 0f
+            _updateError.value = null
+            try {
+                val file = AutoUpdater.downloadUpdate(downloadUrl) { progress ->
+                    _updateProgress.value = progress
+                }
+                if (file != null) {
+                    _updateProgress.value = 1f
+                    delay(500)
+                    val result = AutoUpdater.applyUpdate(file)
+                    if (result.success && result.needsManualRestart) {
+                        _updateError.value = null
+                        _updateProgress.value = null
+                        onStatusMessage(result.message)
+                    } else if (!result.success) {
+                        _updateError.value = result.message.ifEmpty { "Error al aplicar la actualización" }
+                        _updateProgress.value = null
+                    }
+                } else {
+                    val reason = AutoUpdater.lastDownloadError
+                    _updateError.value = if (reason.isNullOrBlank()) {
+                        "Error al descargar la actualizacion."
+                    } else {
+                        "Error al descargar: $reason"
+                    }
+                    _updateProgress.value = null
+                }
+            } catch (e: Exception) {
+                _updateError.value = "Error: ${e.message}"
+                _updateProgress.value = null
+            }
+        }
+    }
+
+    fun dismissUpdate() {
+        _updateAvailable.value = null
+        _updateError.value = null
+        _updateProgress.value = null
+    }
+}

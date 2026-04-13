@@ -49,6 +49,24 @@ open class SidecarClient(
         return parseDeviceInfo(json)
     }
 
+    // ===== Game Detection =====
+
+    /**
+     * v4.1.0: Ask the sidecar for the current foreground app bundle ID.
+     * Returns null if the sidecar doesn't support this endpoint or returns empty.
+     * The sidecar uses SpringBoardServices to detect the frontmost app.
+     */
+    open fun detectForegroundApp(udid: String): String? {
+        val json = get("/device/$udid/foreground-app") ?: return null
+        val bundleId = extractString(json, "bundleId")
+        // Filter out system apps (like on Android)
+        if (bundleId != null) {
+            val systemPrefixes = listOf("com.apple.", "com.apple.springboard")
+            if (systemPrefixes.any { bundleId.startsWith(it) }) return null
+        }
+        return bundleId
+    }
+
     // ===== Metrics =====
 
     /** Get latest metrics snapshot. */

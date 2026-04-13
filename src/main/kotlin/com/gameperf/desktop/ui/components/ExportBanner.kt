@@ -18,7 +18,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.gameperf.desktop.viewmodel.AppViewModel
+import com.gameperf.desktop.viewmodel.ExportDelegate
 import kotlinx.coroutines.delay
 import java.awt.Desktop
 import java.net.URI
@@ -27,8 +27,8 @@ import java.net.URI
  * Inline status banner consumed by HomeScreen, ResultsScreen and ComparisonScreen to
  * provide unobtrusive feedback for the PDF export pipeline.
  *
- * Visible only for [AppViewModel.ExportStatus.InProgress], [AppViewModel.ExportStatus.Success]
- * and [AppViewModel.ExportStatus.Error]. Auto-dismisses after 3 seconds for terminal
+ * Visible only for [ExportDelegate.ExportStatus.InProgress], [ExportDelegate.ExportStatus.Success]
+ * and [ExportDelegate.ExportStatus.Error]. Auto-dismisses after 3 seconds for terminal
  * states (Success / Error) by calling [onDismiss], which the screen wires to
  * `vm.resetExportStatus()`.
  *
@@ -38,18 +38,18 @@ import java.net.URI
  */
 @Composable
 fun ExportBanner(
-    status: AppViewModel.ExportStatus,
+    status: ExportDelegate.ExportStatus,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     LaunchedEffect(status) {
-        if (status is AppViewModel.ExportStatus.Success || status is AppViewModel.ExportStatus.Error) {
+        if (status is ExportDelegate.ExportStatus.Success || status is ExportDelegate.ExportStatus.Error) {
             delay(3000)
             onDismiss()
         }
     }
     when (status) {
-        is AppViewModel.ExportStatus.InProgress -> {
+        is ExportDelegate.ExportStatus.InProgress -> {
             Surface(
                 color = Color(0xFF1E3A8A), // deep blue
                 modifier = modifier.fillMaxWidth(),
@@ -73,7 +73,7 @@ fun ExportBanner(
                 }
             }
         }
-        is AppViewModel.ExportStatus.Success -> {
+        is ExportDelegate.ExportStatus.Success -> {
             Surface(
                 color = Color(0xFF10B981), // green
                 modifier = modifier.fillMaxWidth(),
@@ -100,7 +100,7 @@ fun ExportBanner(
                 }
             }
         }
-        is AppViewModel.ExportStatus.Error -> {
+        is ExportDelegate.ExportStatus.Error -> {
             Surface(
                 color = Color(0xFFEF4444), // red
                 modifier = modifier.fillMaxWidth(),
