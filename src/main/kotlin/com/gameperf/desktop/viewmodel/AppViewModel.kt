@@ -511,16 +511,55 @@ class AppViewModel(
      * 2. Project root (development)
      * 3. ~/.gameperf/sidecar/ (installed)
      */
+    /**
+     * Find the sidecar/ directory containing the Python package.
+     *
+     * v4.1.0: expanded search paths to cover all installation types:
+     * - macOS .app bundle: Contents/app/sidecar/ (next to the JARs)
+     * - macOS .app bundle: Contents/Resources/sidecar/ (jpackage resources)
+     * - Fat JAR standalone: sidecar/ next to the JAR
+     * - Development: sidecar/ in the project root (CWD)
+     * - User install: ~/.gameperf/sidecar/
+     */
     private fun findSidecarDir(): String? {
-        val candidates = listOf(
-            // Development: project root
-            java.io.File("sidecar"),
-            // Production: next to the JAR
-            java.io.File(System.getProperty("user.dir"), "sidecar"),
-            // User install
-            java.io.File(System.getProperty("user.home"), ".gameperf/sidecar"),
-        )
-        return candidates.firstOrNull { it.isDirectory && java.io.File(it, "gameperf_sidecar/__init__.py").exists() }?.absolutePath
+        val candidates = mutableListOf<java.io.File>()
+
+        // macOS .app bundle: the JAR lives in Contents/app/, sidecar can be sibling
+        // Also check Contents/Resources/ which is the jpackage resource dir
+        val appBundlePath = System.getProperty("jpackage.app-path")
+        if (appBundlePath != null) {
+            val contentsDir = java.io.File(appBundlePath).parentFile?.parentFile // Contents/
+            if (contentsDir != null) {
+                candidates += java.io.File(contentsDir, "app/sidecar")
+                candidates += java.io.File(contentsDir, "Resources/sidecar")
+                candidates += java.io.File(contentsDir, "sidecar")
+            }
+        }
+
+        // Development: project root (CWD)
+        candidates += java.io.File("sidecar")
+        // Production: next to user.dir
+        candidates += java.io.File(System.getProperty("user.dir"), "sidecar")
+        // User home install
+        candidates += java.io.File(System.getProperty("user.home"), ".gameperf/sidecar")
+        // Next to the JAR (from java.class.path)
+        val classPath = System.getProperty("java.class.path", "")
+        val jarDir = classPath.split(java.io.File.pathSeparator)
+            .firstOrNull { it.endsWith(".jar") }
+            ?.let { java.io.File(it).parentFile }
+        if (jarDir != null) {
+            candidates += java.io.File(jarDir, "sidecar")
+        }
+
+        val found = candidates.firstOrNull {
+            it.isDirectory && java.io.File(it, "gameperf_sidecar/__init__.py").exists()
+        }
+        if (found != null) {
+            System.err.println("AppViewModel: sidecar found at ${found.absolutePath}")
+        } else {
+            System.err.println("AppViewModel: sidecar NOT found. Searched: ${candidates.map { it.absolutePath }}")
+        }
+        return found?.absolutePath
     }
 
     // ===== Auto-Update (delegated v4.1.0) =====

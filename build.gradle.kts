@@ -101,6 +101,23 @@ kotlin {
     jvmToolchain(17)
 }
 
+// v4.1.0: copy sidecar Python package next to the uber JAR so iOS support
+// works in production. The sidecar/ directory ends up beside the .jar files
+// in build/compose/jars/sidecar/ — from there, findSidecarDir() picks it up.
+tasks.register<Copy>("copySidecarToJars") {
+    from("sidecar") {
+        include("gameperf_sidecar/**")
+        include("pyproject.toml")
+        include("requirements.txt")
+        include("requirements-lock.txt")
+    }
+    into(layout.buildDirectory.dir("compose/jars/sidecar"))
+}
+
+tasks.matching { it.name.startsWith("packageUberJar") }.configureEach {
+    finalizedBy("copySidecarToJars")
+}
+
 // v4.1.0: detekt configuration — lenient baseline for an existing project.
 // Start with defaults, suppress known high-count rules that require large refactors.
 // Tighten thresholds gradually over time.
