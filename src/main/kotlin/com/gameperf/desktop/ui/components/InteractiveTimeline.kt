@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -69,18 +70,16 @@ fun InteractiveTimeline(
     val yAxisWidth = 32.dp
 
     // ── v3.1.11: Viewport state for zoom + pan ──
-    //
-    // The viewport is the visible time window, in milliseconds. By default it covers
-    // the full session [0, durationMs]. Ctrl+scroll narrows it (zoom in) or widens it
-    // (zoom out) anchored to the cursor X position. The viewport is clamped to the
-    // session bounds and to a minimum width of 1 second so the user can't zoom into a
-    // sub-frame range.
-    //
-    // viewStartMs is reset whenever durationMs changes (different session loaded).
     var viewStartMs by remember(durationMs) { mutableStateOf(0L) }
     var viewEndMs by remember(durationMs) { mutableStateOf(durationMs) }
     val viewDurationMs = (viewEndMs - viewStartMs).coerceAtLeast(1L)
     val isZoomed = viewStartMs > 0L || viewEndMs < durationMs
+
+    // ── Hover tooltip + pan state ──
+    // hoverX: canvas-X of the mouse cursor (-1 = not hovering)
+    // isPanMode: true when Shift is held → drag pans the viewport instead of scrubbing
+    var hoverX by remember { mutableStateOf(-1f) }
+    var isPanMode by remember { mutableStateOf(false) }
 
     // Helper: convert a session-time-ms to canvas-X-pixels (clamped 0..w).
     fun timeMsToX(timeMs: Long, w: Float): Float =
@@ -131,23 +130,35 @@ fun InteractiveTimeline(
                         .pointerInput(durationMs) {
                             detectDragGestures(
                                 onDragStart = { offset ->
+                                    if (isPanMode) return@detectDragGestures // pan: no scrub
                                     onScrubStart()
-                                    // v3.1.11: respect viewport when seeking by drag.
                                     val seekMs = (viewStartMs + (offset.x / size.width * viewDurationMs).toLong())
                                         .coerceIn(viewStartMs, viewEndMs)
                                     onSeek(seekMs)
                                 },
-                                onDrag = { change, _ ->
+                                onDrag = { change, delta ->
                                     change.consume()
-                                    val seekMs = (viewStartMs + (change.position.x / size.width * viewDurationMs).toLong())
-                                        .coerceIn(viewStartMs, viewEndMs)
-                                    onSeek(seekMs)
+                                    if (isPanMode && isZoomed) {
+                                        // Pan: translate the viewport by the drag delta
+                                        val w = size.width.toFloat()
+                                        if (w > 0f) {
+                                            val deltaMs = -(delta.x / w * viewDurationMs).toLong()
+                                            val newStart = (viewStartMs + deltaMs)
+                                                .coerceIn(0L, durationMs - viewDurationMs)
+                                            viewStartMs = newStart
+                                            viewEndMs = newStart + viewDurationMs
+                                        }
+                                    } else {
+                                        val seekMs = (viewStartMs + (change.position.x / size.width * viewDurationMs).toLong())
+                                            .coerceIn(viewStartMs, viewEndMs)
+                                        onSeek(seekMs)
+                                    }
                                 },
                                 onDragEnd = {
-                                    onScrubEnd()
+                                    if (!isPanMode) onScrubEnd()
                                 },
                                 onDragCancel = {
-                                    onScrubEnd()
+                                    if (!isPanMode) onScrubEnd()
                                 }
                             )
                         }
@@ -165,47 +176,51 @@ fun InteractiveTimeline(
                                 }
                             )
                         }
-                        // v3.1.11: Ctrl + mouse scroll zoom, anchored to cursor position.
-                        // Without Ctrl the scroll is forwarded to ancestor scroll containers.
+                        // Ctrl+scroll zoom, Shift state tracking, and hover position.
                         .pointerInput(durationMs) {
                             awaitPointerEventScope {
                                 while (true) {
                                     val event = awaitPointerEvent()
-                                    if (event.type != PointerEventType.Scroll) continue
-                                    val ctrl = event.keyboardModifiers.isCtrlPressed
-                                    if (!ctrl) continue
                                     val change = event.changes.firstOrNull() ?: continue
-                                    // Negative scrollDelta.y = scroll up = zoom IN.
-                                    // Positive = scroll down = zoom OUT.
-                                    val scrollY = change.scrollDelta.y
-                                    if (scrollY == 0f) continue
                                     val w = size.width.toFloat()
-                                    if (w <= 0f) continue
 
-                                    // The cursor X tells us the time-pivot to keep stationary
-                                    // during zoom (so the time under the cursor stays under
-                                    // the cursor after zoom).
-                                    val cursorX = change.position.x.coerceIn(0f, w)
-                                    val pivotMs = (viewStartMs + (cursorX / w * viewDurationMs).toLong())
-                                        .coerceIn(0L, durationMs)
+                                    when (event.type) {
+                                        // ── Hover tracking ──
+                                        PointerEventType.Move -> {
+                                            hoverX = change.position.x.coerceIn(0f, w)
+                                            isPanMode = event.keyboardModifiers.isShiftPressed && isZoomed
+                                        }
+                                        PointerEventType.Enter -> {
+                                            hoverX = change.position.x.coerceIn(0f, w)
+                                        }
+                                        PointerEventType.Exit -> {
+                                            hoverX = -1f
+                                            isPanMode = false
+                                        }
+                                        // ── Ctrl + scroll zoom (unchanged) ──
+                                        PointerEventType.Scroll -> {
+                                            if (!event.keyboardModifiers.isCtrlPressed) continue
+                                            val scrollY = change.scrollDelta.y
+                                            if (scrollY == 0f || w <= 0f) continue
 
-                                    // Zoom factor: 0.85 per scroll tick in (zoom in by 15%),
-                                    // 1.18 per scroll tick out (= 1/0.85 so it's symmetric).
-                                    val zoomFactor = if (scrollY < 0) 0.85f else 1.18f
-                                    val newDuration = (viewDurationMs * zoomFactor).toLong()
-                                        .coerceIn(1000L, durationMs)  // min 1s, max full
+                                            val cursorX = change.position.x.coerceIn(0f, w)
+                                            val pivotMs = (viewStartMs + (cursorX / w * viewDurationMs).toLong())
+                                                .coerceIn(0L, durationMs)
 
-                                    // Reposition viewport so pivotMs stays at the same fractional
-                                    // X position. The pivot's fraction along the new viewport
-                                    // should equal its fraction along the old viewport.
-                                    val pivotFraction = cursorX / w
-                                    val newStart = (pivotMs - (pivotFraction * newDuration).toLong())
-                                        .coerceIn(0L, durationMs - newDuration)
-                                    val newEnd = newStart + newDuration
+                                            val zoomFactor = if (scrollY < 0) 0.85f else 1.18f
+                                            val newDuration = (viewDurationMs * zoomFactor).toLong()
+                                                .coerceIn(1000L, durationMs)
 
-                                    viewStartMs = newStart
-                                    viewEndMs = newEnd
-                                    change.consume()
+                                            val pivotFraction = cursorX / w
+                                            val newStart = (pivotMs - (pivotFraction * newDuration).toLong())
+                                                .coerceIn(0L, durationMs - newDuration)
+
+                                            viewStartMs = newStart
+                                            viewEndMs = newStart + newDuration
+                                            change.consume()
+                                        }
+                                        else -> {}
+                                    }
                                 }
                             }
                         }
@@ -369,6 +384,60 @@ fun InteractiveTimeline(
                         }
                     }
 
+                    // ── 5b. Hover tooltip — FPS at cursor position ──
+                    // Shows the exact FPS value at the hovered time, independent of playhead.
+                    if (hoverX >= 0f && fpsData.isNotEmpty()) {
+                        val hoverMs = (viewStartMs + (hoverX / w * viewDurationMs).toLong())
+                            .coerceIn(viewStartMs, viewEndMs)
+                        val hoverSec = (hoverMs / 1000.0).toFloat()
+                        val hoverClosest = fpsData.minByOrNull { kotlin.math.abs(it.first - hoverSec) }
+                        if (hoverClosest != null) {
+                            val hovFps = hoverClosest.second
+                            val maxFps = 65f
+                            val hovY = (fpsAreaHeight - (hovFps.coerceIn(0, 65).toFloat() / maxFps * fpsAreaHeight))
+                                .coerceIn(0f, fpsAreaHeight)
+
+                            // Vertical cursor line (dim, so it doesn't compete with playhead)
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.20f),
+                                start = Offset(hoverX, 0f),
+                                end = Offset(hoverX, fpsAreaHeight),
+                                strokeWidth = 1f,
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 3f))
+                            )
+
+                            // Dot on FPS line at hover position
+                            drawCircle(
+                                color = Color.White.copy(alpha = 0.75f),
+                                radius = 3.5f,
+                                center = Offset(hoverX, hovY)
+                            )
+
+                            // FPS + time label box
+                            val fpsColor = when {
+                                hovFps >= 55 -> Color(0xFF00FF88)
+                                hovFps >= 30 -> Color(0xFFFFAA00)
+                                else -> Color(0xFFFF4466)
+                            }
+                            drawContext.canvas.nativeCanvas.apply {
+                                val paint = org.jetbrains.skia.Paint().apply {
+                                    color = org.jetbrains.skia.Color.makeARGB(
+                                        (fpsColor.alpha * 255).toInt(),
+                                        (fpsColor.red * 255).toInt(),
+                                        (fpsColor.green * 255).toInt(),
+                                        (fpsColor.blue * 255).toInt()
+                                    )
+                                }
+                                val font = org.jetbrains.skia.Font(null, 10.5f)
+                                val label = String.format(Locale.US, "%d fps", hovFps)
+                                // Flip label side to avoid overflow at right edge
+                                val labelX = if (hoverX > w - 55f) hoverX - 50f else hoverX + 6f
+                                val labelY = if (hovY > 18f) hovY - 6f else hovY + 14f
+                                drawString(label, labelX, labelY, font, paint)
+                            }
+                        }
+                    }
+
                     // ── 6. FPS reference lines ──
                     val maxFps = 65f
                     // 30 FPS line
@@ -454,9 +523,9 @@ fun InteractiveTimeline(
         Spacer(Modifier.height(2.dp))
         Text(
             text = if (isZoomed) {
-                "Zoom: ${formatTimeMs(viewDurationMs)} visible • Doble clic para resetear • Ctrl+rueda para zoom"
+                "Zoom: ${formatTimeMs(viewDurationMs)} visible • Shift+arrastrar para mover vista • Doble clic para resetear • Ctrl+rueda para zoom"
             } else {
-                "Ctrl + rueda del raton para zoom • Clic para posicionar • Arrastrar para scrub • Mantener pulsado para marcador"
+                "Ctrl+rueda para zoom • Clic para posicionar • Arrastrar para scrub • Mantener pulsado para marcador"
             },
             color = if (isZoomed) Cyan.copy(alpha = 0.7f) else TextDim,
             fontSize = 9.sp,
