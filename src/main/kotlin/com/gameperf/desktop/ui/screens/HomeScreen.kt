@@ -719,7 +719,7 @@ private fun HistoryEntryRow(
     vm: AppViewModel,
     exportStatus: com.gameperf.desktop.viewmodel.ExportDelegate.ExportStatus,
 ) {
-    var isEditing by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     var editName by remember { mutableStateOf(entry.name) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     val isSelectedForComp = entry.id in comparisonSelection
@@ -782,23 +782,7 @@ private fun HistoryEntryRow(
 
             // ── Name + info ──
             Column(Modifier.weight(1f)) {
-                if (isEditing) {
-                    TextField(
-                        value = editName,
-                        onValueChange = { editName = it },
-                        modifier = Modifier.fillMaxWidth().height(40.dp),
-                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Cyan,
-                            cursorColor = Cyan
-                        )
-                    )
-                } else {
-                    Text(entry.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                }
+                Text(entry.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 Text(
                     "${entry.date}  |  ${entry.avgFps} FPS  |  ${entry.duration / 60}m ${entry.duration % 60}s" +
                         if (entry.competitorName.isNotEmpty()) "  |  ${entry.competitorName}" else "",
@@ -806,18 +790,12 @@ private fun HistoryEntryRow(
                 )
             }
 
-            // ── Edit/Save name ──
+            // ── Edit name (opens dialog) ──
             IconButton(
-                onClick = {
-                    if (isEditing) { vm.renameHistoryEntry(entry.id, editName); isEditing = false }
-                    else { editName = entry.name; isEditing = true }
-                },
+                onClick = { editName = entry.name; showRenameDialog = true },
                 modifier = Modifier.size(28.dp)
             ) {
-                Icon(
-                    if (isEditing) Icons.Default.Check else Icons.Default.Edit,
-                    null, tint = if (isEditing) Green else TextDim, modifier = Modifier.size(16.dp)
-                )
+                Icon(Icons.Default.Edit, "Renombrar", tint = TextDim, modifier = Modifier.size(16.dp))
             }
 
             // ── Open report ──
@@ -869,6 +847,67 @@ private fun HistoryEntryRow(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirmation = false }) { Text("Cancelar") }
+            },
+            containerColor = DarkCard,
+            titleContentColor = Color.White,
+            textContentColor = TextSecondary
+        )
+    }
+
+    // ── Rename dialog ──
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Renombrar sesión", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Nombre actual:", color = TextDim, fontSize = 11.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = Color.White, fontSize = 14.sp
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Cyan,
+                            unfocusedBorderColor = TextDim,
+                            cursorColor = Cyan,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                        ),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                            onDone = {
+                                if (editName.isNotBlank()) {
+                                    vm.renameHistoryEntry(entry.id, editName.trim())
+                                    showRenameDialog = false
+                                }
+                            }
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (editName.isNotBlank()) {
+                            vm.renameHistoryEntry(entry.id, editName.trim())
+                            showRenameDialog = false
+                        }
+                    },
+                    enabled = editName.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Cyan)
+                ) {
+                    Text("Guardar", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("Cancelar") }
             },
             containerColor = DarkCard,
             titleContentColor = Color.White,
