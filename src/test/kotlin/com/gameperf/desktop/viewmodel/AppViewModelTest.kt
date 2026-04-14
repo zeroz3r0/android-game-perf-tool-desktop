@@ -11,6 +11,7 @@ import com.gameperf.desktop.core.MdnsServiceType
 import com.gameperf.desktop.core.PairFailureReason
 import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.testing.FakeAdbBridge
+import com.gameperf.desktop.testing.ProcessTestUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -67,9 +68,7 @@ class AppViewModelTest {
                 // immediately with non-zero status and writes a diagnostic line.
                 // Because AdbBridge.startScreenRecord uses redirectErrorStream(true),
                 // we mirror that here so the validator reads from the inputStream.
-                val proc = ProcessBuilder("sh", "-c", "echo 'encoder rejected' >&2; exit 1")
-                    .redirectErrorStream(true)
-                    .start()
+                val proc = ProcessTestUtils.spawnFastFail("encoder rejected", exitCode = 1)
 
                 val result = vm.validateScreenRecordProcess(proc, warmupMs = 200)
 
@@ -95,9 +94,7 @@ class AppViewModelTest {
             val vm = AppViewModel()
             try {
                 // A process that sleeps longer than the warm-up window — survives the check.
-                val proc = ProcessBuilder("sh", "-c", "sleep 2")
-                    .redirectErrorStream(true)
-                    .start()
+                val proc = ProcessTestUtils.spawnSleeping(seconds = 2)
 
                 val result = vm.validateScreenRecordProcess(proc, warmupMs = 200)
 

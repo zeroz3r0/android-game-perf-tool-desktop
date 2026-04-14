@@ -1,5 +1,6 @@
 package com.gameperf.desktop.core.model
 
+import com.gameperf.desktop.testing.ProcessTestUtils
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -184,8 +185,7 @@ class ModelSerializationTest {
 
     @Test
     fun `ScreenCaptureHandle ProcessHandle wraps Process`() {
-        // Use a dummy process (cat /dev/null exits immediately)
-        val process = ProcessBuilder("cat", "/dev/null").start()
+        val process = ProcessTestUtils.spawnImmediate()
         val handle = ScreenCaptureHandle.ProcessHandle(process)
         assertTrue(handle is ScreenCaptureHandle)
         assertEquals(process, handle.process)
@@ -201,7 +201,7 @@ class ModelSerializationTest {
 
     @Test
     fun `ScreenCaptureHandle subclasses dispatch correctly`() {
-        val process = ProcessBuilder("cat", "/dev/null").start()
+        val process = ProcessTestUtils.spawnImmediate()
         val handles: List<ScreenCaptureHandle> = listOf(
             ScreenCaptureHandle.ProcessHandle(process),
             ScreenCaptureHandle.SidecarHandle("abc", udid = "device-udid"),

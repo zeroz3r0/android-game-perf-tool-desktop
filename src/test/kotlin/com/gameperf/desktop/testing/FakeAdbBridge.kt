@@ -39,15 +39,12 @@ open class FakeAdbBridge(
     val startCalls: MutableList<StartCall> = mutableListOf()
 
     fun queueFastFail(stderr: String = "encoder rejected"): FakeAdbBridge {
-        val safe = stderr.replace("'", "'\\''")
-        scriptedStarts += ScriptedStart.Spawn(
-            listOf("sh", "-c", "echo '$safe' >&2; echo '$safe'; exit 1")
-        )
+        scriptedStarts += ScriptedStart.Spawn(ProcessTestUtils.fastFailCommand(stderr))
         return this
     }
 
     fun queueAlive(seconds: Int = 2): FakeAdbBridge {
-        scriptedStarts += ScriptedStart.Spawn(listOf("sh", "-c", "sleep $seconds"))
+        scriptedStarts += ScriptedStart.Spawn(ProcessTestUtils.sleepCommand(seconds))
         return this
     }
 

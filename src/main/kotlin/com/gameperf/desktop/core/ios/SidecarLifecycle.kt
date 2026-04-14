@@ -238,17 +238,24 @@ class SidecarLifecycle(
             return candidates.firstOrNull { it.exists() && it.canExecute() }
         }
 
-        /** Check if python3 is available on PATH. */
+        /**
+         * Check if Python 3 is available on PATH.
+         * Tries `python3` first (macOS/Linux standard), then `python` as fallback (Windows).
+         */
         internal fun isPythonAvailable(): Boolean {
-            return try {
-                val proc = ProcessBuilder("python3", "--version")
-                    .redirectErrorStream(true)
-                    .start()
-                val exited = proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
-                exited && proc.exitValue() == 0
-            } catch (_: Exception) {
-                false
+            for (cmd in listOf("python3", "python")) {
+                try {
+                    val proc = ProcessBuilder(cmd, "--version")
+                        .redirectErrorStream(true)
+                        .start()
+                    val output = proc.inputStream.bufferedReader().readText()
+                    val exited = proc.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+                    if (exited && proc.exitValue() == 0 && output.contains("Python 3", ignoreCase = true)) {
+                        return true
+                    }
+                } catch (_: Exception) { /* try next */ }
             }
+            return false
         }
 
         /** Returns true if running on Windows. */

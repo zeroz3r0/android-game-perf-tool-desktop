@@ -12,6 +12,8 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.text.SimpleDateFormat
 import java.util.Date
 
@@ -191,10 +193,12 @@ object SessionHistory {
             historyFile.parentFile?.mkdirs()
             val serializable = entries.take(MAX_ENTRIES).map { it.toSerializable() }
             val text = json.encodeToString(ListSerializer(SerializableEntry.serializer()), serializable)
-            // Atomic write: write to .tmp first, then rename.
+            // Atomic write: write to .tmp first, then move.
+            // File.renameTo() silently fails on Windows when the destination already exists.
+            // Files.move with REPLACE_EXISTING is atomic on most OS and works cross-platform.
             val tmpFile = File(historyFile.parentFile, "${historyFile.name}.tmp")
             tmpFile.writeText(text)
-            tmpFile.renameTo(historyFile)
+            Files.move(tmpFile.toPath(), historyFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
         } catch (e: Exception) {
             System.err.println("[GamePerf] Failed to save session history: ${e.message}")
         }

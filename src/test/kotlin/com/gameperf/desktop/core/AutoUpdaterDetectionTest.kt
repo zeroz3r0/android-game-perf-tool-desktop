@@ -2,6 +2,7 @@ package com.gameperf.desktop.core
 
 import java.io.File
 import java.nio.file.Files
+import org.junit.Assume
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -21,6 +22,7 @@ import kotlin.test.assertTrue
  */
 class AutoUpdaterDetectionTest {
 
+    private val isWindows = System.getProperty("os.name")?.lowercase()?.contains("win") == true
     private lateinit var tempDir: File
 
     @BeforeTest
@@ -111,6 +113,8 @@ class AutoUpdaterDetectionTest {
 
     @Test
     fun `detectInstallation falls back to FAT_JAR when launcher exists but is not executable`() {
+        // setExecutable(false) has no effect on Windows (no Unix permission bits) — skip.
+        Assume.assumeFalse("Windows does not support setExecutable(false)", isWindows)
         val bundleRoot = File(tempDir, "Bar.app").apply { mkdirs() }
         val macOSDir = File(bundleRoot, "Contents/MacOS").apply { mkdirs() }
         // Launcher exists as a regular file but is NOT executable.
@@ -167,6 +171,8 @@ class AutoUpdaterDetectionTest {
 
     @Test
     fun `detectInstallation returns LINUX_NATIVE_PACKAGE when path contains lib slash app`() {
+        // Linux detection uses forward-slash paths (/lib/app/); Windows temp dirs use backslashes.
+        Assume.assumeFalse("Linux package detection not applicable on Windows", isWindows)
         // Build a fake install root anywhere — we trigger the detector via the "/lib/app/"
         // substring, which is independent of the temp dir's absolute prefix.
         val installRoot = File(tempDir, "myapp").apply { mkdirs() }
@@ -189,6 +195,7 @@ class AutoUpdaterDetectionTest {
 
     @Test
     fun `detectInstallation returns LINUX_NATIVE_PACKAGE without launcher when bin script missing`() {
+        Assume.assumeFalse("Linux package detection not applicable on Windows", isWindows)
         val installRoot = File(tempDir, "noargs").apply { mkdirs() }
         val libDir = File(installRoot, "lib").apply { mkdirs() }
         val appDir = File(libDir, "app").apply { mkdirs() }
