@@ -125,16 +125,13 @@ class IosBridge(
         config: ScreenCaptureConfig,
     ): ScreenCaptureHandle? {
         val captureId = client.startScreenRecord(deviceId, sessionId) ?: return null
-        return ScreenCaptureHandle.SidecarHandle(captureId)
+        return ScreenCaptureHandle.SidecarHandle(captureId, udid = deviceId)
     }
 
     override fun stopScreenCapture(handle: ScreenCaptureHandle) {
         when (handle) {
             is ScreenCaptureHandle.SidecarHandle -> {
-                // The sidecar handles stopping via the capture ID
-                // We need the device ID too — stored in the handle isn't ideal
-                // but for now the sidecar uses the capture_id to find the session
-                client.stopScreenRecord("_", handle.captureId)
+                client.stopScreenRecord(handle.udid, handle.captureId)
             }
             is ScreenCaptureHandle.ProcessHandle -> {
                 // This shouldn't happen — iOS bridge doesn't produce ProcessHandles

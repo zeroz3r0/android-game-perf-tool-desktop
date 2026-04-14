@@ -194,7 +194,7 @@ class ModelSerializationTest {
 
     @Test
     fun `ScreenCaptureHandle SidecarHandle wraps captureId`() {
-        val handle = ScreenCaptureHandle.SidecarHandle(captureId = "session-abc-123")
+        val handle = ScreenCaptureHandle.SidecarHandle(captureId = "session-abc-123", udid = "test-udid")
         assertTrue(handle is ScreenCaptureHandle)
         assertEquals("session-abc-123", handle.captureId)
     }
@@ -204,7 +204,7 @@ class ModelSerializationTest {
         val process = ProcessBuilder("cat", "/dev/null").start()
         val handles: List<ScreenCaptureHandle> = listOf(
             ScreenCaptureHandle.ProcessHandle(process),
-            ScreenCaptureHandle.SidecarHandle("abc"),
+            ScreenCaptureHandle.SidecarHandle("abc", udid = "device-udid"),
         )
         var processCount = 0
         var sidecarCount = 0

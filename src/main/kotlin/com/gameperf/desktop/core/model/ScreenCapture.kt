@@ -24,6 +24,6 @@ sealed class ScreenCaptureHandle {
     /** Android: wraps the `adb screenrecord` subprocess. */
     data class ProcessHandle(val process: Process) : ScreenCaptureHandle()
 
-    /** iOS: wraps the sidecar-managed capture session identifier. */
-    data class SidecarHandle(val captureId: String) : ScreenCaptureHandle()
+    /** iOS: wraps the sidecar-managed capture session identifier + the device UDID. */
+    data class SidecarHandle(val captureId: String, val udid: String) : ScreenCaptureHandle()
 }
