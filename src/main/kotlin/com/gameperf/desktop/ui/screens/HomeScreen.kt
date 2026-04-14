@@ -600,6 +600,9 @@ fun HomeScreen(vm: AppViewModel) {
 
         if (historyEntries.isNotEmpty()) {
             Spacer(Modifier.height(24.dp))
+            val favoriteEntries = historyEntries.filter { it.isFavorite }
+            val recentEntries = historyEntries.filter { !it.isFavorite }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = DarkCard),
@@ -609,240 +612,70 @@ fun HomeScreen(vm: AppViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.History, null, tint = Cyan, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Pruebas recientes", color = Cyan, fontWeight = FontWeight.Bold)
+                        Text("Sesiones", color = Cyan, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.weight(1f))
-                        // v3.1.13: discreet button to manually re-run the legacy video
-                        // repair logic. Useful after a power loss / crash that left
-                        // segments un-concatenated. The same logic runs once on app
-                        // startup automatically, this is just the on-demand version.
-                        // Kept small + secondary so it doesn't compete with the main
-                        // capture flow.
                         TextButton(
                             onClick = { vm.repairOldVideos() },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                         ) {
-                            Icon(
-                                Icons.Default.Build,
-                                contentDescription = null,
-                                tint = TextDim,
-                                modifier = Modifier.size(14.dp)
-                            )
+                            Icon(Icons.Default.Build, contentDescription = null, tint = TextDim, modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text(
-                                "Reparar videos",
-                                color = TextDim,
-                                fontSize = 11.sp
-                            )
+                            Text("Reparar videos", color = TextDim, fontSize = 11.sp)
                         }
                         if (comparisonSelection.isNotEmpty()) {
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                "${comparisonSelection.size} seleccionadas",
-                                color = Purple, fontSize = 11.sp, fontWeight = FontWeight.SemiBold
-                            )
+                            Text("${comparisonSelection.size} seleccionadas", color = Purple, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.width(8.dp))
-                            IconButton(
-                                onClick = { vm.clearComparisonSelection() },
-                                modifier = Modifier.size(24.dp)
-                            ) {
+                            IconButton(onClick = { vm.clearComparisonSelection() }, modifier = Modifier.size(24.dp)) {
                                 Icon(Icons.Default.Close, "Limpiar", tint = TextDim, modifier = Modifier.size(14.dp))
                             }
                         }
                     }
 
-                    // Passive capacity hint: appears only when the history is at the
-                    // hard 5/5 retention limit. Tells the user that the next capture
-                    // will silently replace the oldest entry, so they can choose to
-                    // export to PDF first if they care about persisting it.
-                    if (historyEntries.size == SessionHistory.MAX_ENTRIES) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Historial: 5/5 - la próxima captura reemplazará la más antigua",
-                            color = TextSecondary.copy(alpha = 0.7f),
-                            fontSize = 11.sp
-                        )
-                    }
-                    Spacer(Modifier.height(12.dp))
-
-                    historyEntries.forEach { entry ->
-                        var isEditing by remember { mutableStateOf(false) }
-                        var editName by remember { mutableStateOf(entry.name) }
-                        var showDeleteConfirmation by remember { mutableStateOf(false) }
-                        val isSelectedForComp = entry.id in comparisonSelection
-
-                        Card(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isSelectedForComp) Purple.copy(alpha = 0.12f) else DarkSurface
-                            ),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Row(
-                                Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Comparison checkbox
-                                Checkbox(
-                                    checked = isSelectedForComp,
-                                    onCheckedChange = { vm.toggleComparisonSelection(entry.id) },
-                                    modifier = Modifier.size(20.dp),
-                                    colors = CheckboxDefaults.colors(
-                                        checkedColor = Purple,
-                                        uncheckedColor = TextDim
-                                    )
-                                )
-                                Spacer(Modifier.width(8.dp))
-
-                                // Grade badge
-                                Text(
-                                    "${entry.grade}",
-                                    color = gradeColor(entry.grade),
-                                    fontSize = 24.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.width(32.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-
-                                // Tag indicator
-                                val tagColor = if (entry.tag == SessionHistory.SessionTag.COMPETITION) Orange else Cyan
-                                val tagLabel = if (entry.tag == SessionHistory.SessionTag.COMPETITION) "COMP" else "NUESTRO"
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(tagColor.copy(alpha = 0.15f))
-                                        .border(1.dp, tagColor.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text(tagLabel, color = tagColor, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(Modifier.width(8.dp))
-
-                                // Name + info
-                                Column(Modifier.weight(1f)) {
-                                    if (isEditing) {
-                                        TextField(
-                                            value = editName,
-                                            onValueChange = { editName = it },
-                                            modifier = Modifier.fillMaxWidth().height(40.dp),
-                                            textStyle = androidx.compose.ui.text.TextStyle(
-                                                color = Color.White, fontSize = 13.sp
-                                            ),
-                                            singleLine = true,
-                                            colors = TextFieldDefaults.colors(
-                                                focusedContainerColor = Color.Transparent,
-                                                unfocusedContainerColor = Color.Transparent,
-                                                focusedIndicatorColor = Cyan,
-                                                cursorColor = Cyan
-                                            )
-                                        )
-                                    } else {
-                                        Text(entry.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                    }
-                                    Text(
-                                        "${entry.date}  |  ${entry.avgFps} FPS  |  ${entry.duration / 60}m ${entry.duration % 60}s" +
-                                            if (entry.competitorName.isNotEmpty()) "  |  ${entry.competitorName}" else "",
-                                        color = TextDim, fontSize = 10.sp
-                                    )
-                                }
-
-                                // Edit/Save name
-                                IconButton(
-                                    onClick = {
-                                        if (isEditing) {
-                                            vm.renameHistoryEntry(entry.id, editName)
-                                            isEditing = false
-                                        } else {
-                                            editName = entry.name
-                                            isEditing = true
-                                        }
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        if (isEditing) Icons.Default.Check else Icons.Default.Edit,
-                                        null, tint = if (isEditing) Green else TextDim,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-
-                                // Open report
-                                if (entry.reportPath.isNotEmpty()) {
-                                    IconButton(
-                                        onClick = { vm.openHistoryReport(entry) },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(Icons.Default.Description, "Informe", tint = Green, modifier = Modifier.size(16.dp))
-                                    }
-                                }
-
-                                // Open video
-                                if (entry.videoPath.isNotEmpty()) {
-                                    IconButton(
-                                        onClick = { vm.openHistoryVideo(entry) },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(Icons.Default.Videocam, "Video", tint = Purple, modifier = Modifier.size(16.dp))
-                                    }
-                                }
-
-                                // Export to PDF — only enabled when the source HTML still exists
-                                // and there is no PDF export already running.
-                                if (entry.reportPath.isNotEmpty()) {
-                                    val exportingNow = exportStatus is com.gameperf.desktop.viewmodel.ExportDelegate.ExportStatus.InProgress
-                                    IconButton(
-                                        onClick = { vm.exportHistoryEntryToPdf(entry) },
-                                        enabled = !exportingNow,
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.PictureAsPdf,
-                                            "Exportar PDF",
-                                            tint = if (exportingNow) TextDim else Cyan,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-
-                                // Delete entry
-                                IconButton(
-                                    onClick = { showDeleteConfirmation = true },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(Icons.Default.Delete, "Eliminar", tint = Red.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
-                                }
-                            }
+                    // ── Favoritos ──
+                    if (favoriteEntries.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Star, null, tint = Color(0xFFFFD700), modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Favoritos", color = Color(0xFFFFD700), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(6.dp))
+                            Text("(nunca se borran automáticamente)", color = TextDim, fontSize = 10.sp)
                         }
+                        Spacer(Modifier.height(6.dp))
+                        favoriteEntries.forEach { entry ->
+                            HistoryEntryRow(entry, comparisonSelection, vm, exportStatus)
+                        }
+                    }
 
-                        // Delete confirmation dialog
-                        if (showDeleteConfirmation) {
-                            AlertDialog(
-                                onDismissRequest = { showDeleteConfirmation = false },
-                                title = { Text("Eliminar sesión", fontWeight = FontWeight.Bold) },
-                                text = { Text("Se eliminarán la entrada del historial, el video y el informe. Esta acción no se puede deshacer.") },
-                                confirmButton = {
-                                    Button(
-                                        onClick = {
-                                            showDeleteConfirmation = false
-                                            vm.deleteHistoryEntry(entry.id)
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Red)
-                                    ) {
-                                        Text("Eliminar", fontWeight = FontWeight.Bold)
-                                    }
-                                },
-                                dismissButton = {
-                                    TextButton(onClick = { showDeleteConfirmation = false }) {
-                                        Text("Cancelar")
-                                    }
-                                },
-                                containerColor = DarkCard,
-                                titleContentColor = Color.White,
-                                textContentColor = TextSecondary
+                    // ── Recientes ──
+                    if (recentEntries.isNotEmpty()) {
+                        Spacer(Modifier.height(if (favoriteEntries.isNotEmpty()) 16.dp else 12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.History, null, tint = TextDim, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Recientes", color = TextDim, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "${recentEntries.size}/${SessionHistory.MAX_ENTRIES}",
+                                color = if (recentEntries.size == SessionHistory.MAX_ENTRIES) Red.copy(alpha = 0.8f) else TextDim,
+                                fontSize = 10.sp
                             )
                         }
+                        if (recentEntries.size == SessionHistory.MAX_ENTRIES) {
+                            Text(
+                                "La próxima captura reemplazará la más antigua · marca como ⭐ para conservar",
+                                color = TextSecondary.copy(alpha = 0.7f),
+                                fontSize = 10.sp
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        recentEntries.forEach { entry ->
+                            HistoryEntryRow(entry, comparisonSelection, vm, exportStatus)
+                        }
                     }
 
-                    // Comparison button
+                    // ── Botón comparar ──
                     if (comparisonSelection.size >= 2) {
                         Spacer(Modifier.height(16.dp))
                         val canCompare = vm.canCompare()
@@ -871,6 +704,176 @@ fun HomeScreen(vm: AppViewModel) {
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// ===== History entry row (v4.2): extracted composable shared by favorites   =
+// ===== and recents sections                                                  =
+// ============================================================================
+
+@Composable
+private fun HistoryEntryRow(
+    entry: SessionHistory.HistoryEntry,
+    comparisonSelection: Set<String>,
+    vm: AppViewModel,
+    exportStatus: com.gameperf.desktop.viewmodel.ExportDelegate.ExportStatus,
+) {
+    var isEditing by remember { mutableStateOf(false) }
+    var editName by remember { mutableStateOf(entry.name) }
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
+    val isSelectedForComp = entry.id in comparisonSelection
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                entry.isFavorite -> Color(0xFFFFD700).copy(alpha = 0.06f)
+                isSelectedForComp -> Purple.copy(alpha = 0.12f)
+                else -> DarkSurface
+            }
+        ),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+
+            // ── Favorite toggle ──
+            IconButton(onClick = { vm.toggleFavorite(entry.id) }, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    if (entry.isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
+                    contentDescription = if (entry.isFavorite) "Quitar favorito" else "Marcar favorito",
+                    tint = if (entry.isFavorite) Color(0xFFFFD700) else TextDim,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+
+            // ── Comparison checkbox ──
+            Checkbox(
+                checked = isSelectedForComp,
+                onCheckedChange = { vm.toggleComparisonSelection(entry.id) },
+                modifier = Modifier.size(20.dp),
+                colors = CheckboxDefaults.colors(checkedColor = Purple, uncheckedColor = TextDim)
+            )
+            Spacer(Modifier.width(8.dp))
+
+            // ── Grade badge ──
+            Text(
+                "${entry.grade}",
+                color = gradeColor(entry.grade),
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(32.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+
+            // ── Tag indicator ──
+            val tagColor = if (entry.tag == SessionHistory.SessionTag.COMPETITION) Orange else Cyan
+            val tagLabel = if (entry.tag == SessionHistory.SessionTag.COMPETITION) "COMP" else "NUESTRO"
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(tagColor.copy(alpha = 0.15f))
+                    .border(1.dp, tagColor.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(tagLabel, color = tagColor, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(8.dp))
+
+            // ── Name + info ──
+            Column(Modifier.weight(1f)) {
+                if (isEditing) {
+                    TextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        modifier = Modifier.fillMaxWidth().height(40.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Cyan,
+                            cursorColor = Cyan
+                        )
+                    )
+                } else {
+                    Text(entry.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    "${entry.date}  |  ${entry.avgFps} FPS  |  ${entry.duration / 60}m ${entry.duration % 60}s" +
+                        if (entry.competitorName.isNotEmpty()) "  |  ${entry.competitorName}" else "",
+                    color = TextDim, fontSize = 10.sp
+                )
+            }
+
+            // ── Edit/Save name ──
+            IconButton(
+                onClick = {
+                    if (isEditing) { vm.renameHistoryEntry(entry.id, editName); isEditing = false }
+                    else { editName = entry.name; isEditing = true }
+                },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    if (isEditing) Icons.Default.Check else Icons.Default.Edit,
+                    null, tint = if (isEditing) Green else TextDim, modifier = Modifier.size(16.dp)
+                )
+            }
+
+            // ── Open report ──
+            if (entry.reportPath.isNotEmpty()) {
+                IconButton(onClick = { vm.openHistoryReport(entry) }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Description, "Informe", tint = Green, modifier = Modifier.size(16.dp))
+                }
+            }
+
+            // ── Open video ──
+            if (entry.videoPath.isNotEmpty()) {
+                IconButton(onClick = { vm.openHistoryVideo(entry) }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Videocam, "Video", tint = Purple, modifier = Modifier.size(16.dp))
+                }
+            }
+
+            // ── Export PDF ──
+            if (entry.reportPath.isNotEmpty()) {
+                val exportingNow = exportStatus is com.gameperf.desktop.viewmodel.ExportDelegate.ExportStatus.InProgress
+                IconButton(
+                    onClick = { vm.exportHistoryEntryToPdf(entry) },
+                    enabled = !exportingNow,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.PictureAsPdf, "Exportar PDF",
+                        tint = if (exportingNow) TextDim else Cyan, modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            // ── Delete ──
+            IconButton(onClick = { showDeleteConfirmation = true }, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Delete, "Eliminar", tint = Red.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
+            }
+        }
+    }
+
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = { Text("Eliminar sesión", fontWeight = FontWeight.Bold) },
+            text = { Text("Se eliminarán la entrada del historial, el video y el informe. Esta acción no se puede deshacer.") },
+            confirmButton = {
+                Button(
+                    onClick = { showDeleteConfirmation = false; vm.deleteHistoryEntry(entry.id) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Red)
+                ) { Text("Eliminar", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmation = false }) { Text("Cancelar") }
+            },
+            containerColor = DarkCard,
+            titleContentColor = Color.White,
+            textContentColor = TextSecondary
+        )
     }
 }
 

@@ -1342,6 +1342,11 @@ class AppViewModel(
 
     fun openVideo() { openFile(_result.value.videoPath) }
 
+    fun toggleFavorite(id: String) {
+        SessionHistory.toggleFavorite(id)
+        _history.value = SessionHistory.load()
+    }
+
     fun renameHistoryEntry(id: String, newName: String) {
         SessionHistory.updateName(id, newName)
         _history.value = SessionHistory.load()

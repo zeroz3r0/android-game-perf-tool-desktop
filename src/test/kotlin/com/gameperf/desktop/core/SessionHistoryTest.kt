@@ -140,6 +140,55 @@ class SessionHistoryTest {
         assertEquals(listOf("a", "b", "c"), SessionHistory.load().map { it.id })
     }
 
+    // ===== favoritos =====
+
+    @Test
+    fun `toggleFavorite sets isFavorite true then false`() {
+        SessionHistory.save(listOf(makeEntry("x")))
+        assertFalse(SessionHistory.load().first().isFavorite)
+
+        SessionHistory.toggleFavorite("x")
+        assertTrue(SessionHistory.load().first().isFavorite, "should be favorite after first toggle")
+
+        SessionHistory.toggleFavorite("x")
+        assertFalse(SessionHistory.load().first().isFavorite, "should not be favorite after second toggle")
+    }
+
+    @Test
+    fun `favorites are never evicted when recents reach MAX_ENTRIES`() {
+        // 1 favorite + MAX_ENTRIES recents
+        val favorite = makeEntry("fav").copy(isFavorite = true)
+        SessionHistory.save(listOf(favorite) + (1..SessionHistory.MAX_ENTRIES).map { makeEntry("r$it") })
+
+        // Add one more recent — should evict r5, NOT the favorite
+        SessionHistory.addEntry(makeEntry("new-recent"))
+
+        val all = SessionHistory.load()
+        assertTrue(all.any { it.id == "fav" }, "favorite must survive eviction")
+        assertTrue(all.any { it.id == "new-recent" }, "new recent must be added")
+        assertEquals(1, all.count { it.isFavorite })
+        assertTrue(all.count { !it.isFavorite } <= SessionHistory.MAX_ENTRIES)
+    }
+
+    @Test
+    fun `save persists isFavorite field round-trip`() {
+        val entry = makeEntry("fav-rt").copy(isFavorite = true)
+        SessionHistory.save(listOf(entry))
+        val loaded = SessionHistory.load().first()
+        assertTrue(loaded.isFavorite, "isFavorite must survive JSON round-trip")
+        assertEquals("fav-rt", loaded.id)
+    }
+
+    @Test
+    fun `favorites appear before recents after save`() {
+        val fav = makeEntry("fav").copy(isFavorite = true)
+        val rec = makeEntry("rec")
+        SessionHistory.save(listOf(rec, fav)) // save recents-first
+        val loaded = SessionHistory.load()
+        // After save(), favorites are stored first
+        assertEquals("fav", loaded.first().id, "favorite must come first after save")
+    }
+
     // ===== concurrency =====
 
     @Test

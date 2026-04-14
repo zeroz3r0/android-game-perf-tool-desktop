@@ -119,6 +119,8 @@ object SessionHistory {
         val maxTemp: Double = 0.0,
         val score: Int = 0,
         val markers: List<SerializableMarker> = emptyList(),
+        // v4.2: favoritos — default false preserva compatibilidad con history.json existente
+        val isFavorite: Boolean = false,
     )
 
     data class HistoryEntry(
@@ -144,7 +146,9 @@ object SessionHistory {
         val avgCpu: Int = 0,
         val maxTemp: Double = 0.0,
         val score: Int = 0,
-        val markers: List<SessionMarker> = emptyList()
+        val markers: List<SessionMarker> = emptyList(),
+        /** Favoritos nunca se auto-evictan. Solo se borran manualmente. */
+        val isFavorite: Boolean = false,
     )
 
     // ===== Conversion =====
@@ -158,6 +162,7 @@ object SessionHistory {
         p95FrameTime = p95FrameTime, p99FrameTime = p99FrameTime,
         peakMemMb = peakMemMb, avgCpu = avgCpu, maxTemp = maxTemp, score = score,
         markers = markers.map { SerializableMarker.from(it) },
+        isFavorite = isFavorite,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -171,6 +176,7 @@ object SessionHistory {
         p95FrameTime = p95FrameTime, p99FrameTime = p99FrameTime,
         peakMemMb = peakMemMb, avgCpu = avgCpu, maxTemp = maxTemp, score = score,
         markers = markers.map { it.toSessionMarker() },
+        isFavorite = isFavorite,
     )
 
     // ===== Public API (unchanged contract) =====
@@ -191,7 +197,10 @@ object SessionHistory {
     fun save(entries: List<HistoryEntry>) {
         try {
             historyFile.parentFile?.mkdirs()
-            val serializable = entries.take(MAX_ENTRIES).map { it.toSerializable() }
+            // Favorites are always persisted. Recents are capped at MAX_ENTRIES.
+            val favorites = entries.filter { it.isFavorite }
+            val recents = entries.filter { !it.isFavorite }.take(MAX_ENTRIES)
+            val serializable = (favorites + recents).map { it.toSerializable() }
             val text = json.encodeToString(ListSerializer(SerializableEntry.serializer()), serializable)
             // Atomic write: write to .tmp first, then move.
             // File.renameTo() silently fails on Windows when the destination already exists.
@@ -208,10 +217,24 @@ object SessionHistory {
     fun addEntry(entry: HistoryEntry): List<HistoryEntry> {
         val all = load().toMutableList()
         all.add(0, entry)
-        val top = all.take(MAX_ENTRIES)
-        val evicted = if (all.size > MAX_ENTRIES) all.drop(MAX_ENTRIES) else emptyList()
-        save(top)
+        // Favorites are never evicted — only recents respect MAX_ENTRIES.
+        val favorites = all.filter { it.isFavorite }
+        val recents = all.filter { !it.isFavorite }
+        val topRecents = recents.take(MAX_ENTRIES)
+        val evicted = if (recents.size > MAX_ENTRIES) recents.drop(MAX_ENTRIES) else emptyList()
+        save(favorites + topRecents)
         return evicted
+    }
+
+    /** Toggle the favorite flag for a session. Favorited sessions are never auto-evicted. */
+    @Synchronized
+    fun toggleFavorite(id: String) {
+        val entries = load().toMutableList()
+        val idx = entries.indexOfFirst { it.id == id }
+        if (idx >= 0) {
+            entries[idx] = entries[idx].copy(isFavorite = !entries[idx].isFavorite)
+            save(entries)
+        }
     }
 
     fun addEntry(
