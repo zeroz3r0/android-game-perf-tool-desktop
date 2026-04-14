@@ -1,3 +1,4 @@
+@file:Suppress("MaxLineLength") // JSON test fixtures are inherently long
 package com.gameperf.desktop.core.ios
 
 import com.gameperf.desktop.core.model.DevicePlatform

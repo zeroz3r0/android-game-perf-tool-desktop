@@ -205,5 +205,5 @@ class FakeSidecarClient(
     override fun startScreenRecord(udid: String, sessionId: String): String? = captureId
     override fun stopScreenRecord(udid: String, captureId: String): String? = null
     override fun takeScreenshot(udid: String): ByteArray? = null
-    override fun shutdown() {}
+    override fun shutdown() { /* no-op stub */ }
 }

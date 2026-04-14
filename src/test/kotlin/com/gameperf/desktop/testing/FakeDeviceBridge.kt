@@ -38,9 +38,9 @@ open class FakeDeviceBridge(
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? = memSnapshot
     override fun captureTemperature(deviceId: String): ThermalSnapshot = thermalSnapshot
     override fun startScreenCapture(deviceId: String, sessionId: String, config: ScreenCaptureConfig): ScreenCaptureHandle? = null
-    override fun stopScreenCapture(handle: ScreenCaptureHandle) {}
+    override fun stopScreenCapture(handle: ScreenCaptureHandle) { /* no-op fake */ }
     override fun pullRecordings(deviceId: String, sessionId: String, localDir: File, maxSegments: Int): List<File> = emptyList()
-    override fun cleanRecordings(deviceId: String) {}
+    override fun cleanRecordings(deviceId: String) { /* no-op fake */ }
     override fun concatSegments(segments: List<File>, output: File): File? = null
     override fun isValidVideoFile(file: File): Boolean = false
 }

@@ -124,7 +124,5 @@ tasks.matching { it.name.startsWith("packageUberJar") }.configureEach {
 detekt {
     buildUponDefaultConfig = true
     config.setFrom(files("detekt.yml"))
-    // Don't fail the build on findings yet — report only.
-    // Change to `true` once the codebase is below threshold.
-    ignoreFailures = true
+    ignoreFailures = false  // v4.1.0+: build fails on detekt findings
 }

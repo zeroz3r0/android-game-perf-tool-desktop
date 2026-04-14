@@ -33,9 +33,6 @@ object AdbBridge {
     private val RE_MISSED_FRAMES = Regex("Total missed frame count:\\s*(\\d+)")
     private val RE_THERMAL_TEMP = Regex("Temperature\\{mValue=([\\d.]+),\\s*mType=\\d+,\\s*mName=([^,]+),")
     private val RE_SF_MODERN = Regex("RequestedLayerState\\{(.+?)\\s+parentId=")
-    private val RE_ADB_VERSION = Regex("Version (\\d+)\\.(\\d+)\\.(\\d+)")
-    private val RE_MDNS_LINE = Regex("\\s+")
-    private val RE_IPV4 = Regex("\\d{1,3}(\\.\\d{1,3}){3}")
 
     // ===== Cached tool paths (v4.1.0-perf) =====
     // findFfmpeg/findFfprobe were called on every concatSegments/isValidVideoFile invocation.
@@ -182,7 +179,11 @@ object AdbBridge {
 
     fun detectGame(deviceId: String): String? {
         val output = shell(deviceId, "dumpsys activity activities")
-        val systemPrefixes = listOf("com.android.", "com.google.android.", "android.", "com.motorola.", "com.samsung.", "com.huawei.", "com.xiaomi.", "com.oppo.", "com.bbk.", "com.coloros.", "com.miui.")
+        val systemPrefixes = listOf(
+            "com.android.", "com.google.android.", "android.",
+            "com.motorola.", "com.samsung.", "com.huawei.",
+            "com.xiaomi.", "com.oppo.", "com.bbk.", "com.coloros.", "com.miui.",
+        )
         val systemKeywords = listOf("launcher", "systemui", "settings", "keyboard", "inputmethod")
         for (pattern in listOf(RE_PACKAGE_NAME, RE_CMP)) {
             for (match in pattern.findAll(output)) {

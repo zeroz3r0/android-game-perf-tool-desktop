@@ -1,3 +1,4 @@
+@file:Suppress("MaxLineLength") // HTML template strings are inherently long
 package com.gameperf.desktop.report
 
 import com.gameperf.desktop.core.AppVersion
