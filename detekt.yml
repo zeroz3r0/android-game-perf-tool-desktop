@@ -10,7 +10,7 @@ complexity:
     functionThreshold: 42  # ReportGenerator.generate has 40+ metrics params
     constructorThreshold: 10
   TooManyFunctions:
-    thresholdInClasses: 65   # AppViewModel has ~60 public functions
+    thresholdInClasses: 70   # AppViewModel has ~67 functions (Drive sync added v4.2)
     thresholdInFiles: 40
     thresholdInObjects: 40   # AdbBridge singleton has 38 functions
     thresholdInInterfaces: 27  # AdbBridgeApi/DeviceBridgeApi have 16-25

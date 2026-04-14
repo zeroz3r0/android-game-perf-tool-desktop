@@ -62,6 +62,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.7.3")
     // v4.1.0: replaces hand-rolled JSON parsing in SessionHistory and SidecarClient.
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    // v4.2: Google Drive API — session pack sync across team
+    implementation("com.google.api-client:google-api-client:2.4.1")
+    implementation("com.google.oauth-client:google-oauth-client-jetty:1.36.0")
+    implementation("com.google.apis:google-api-services-drive:v3-rev20260405-2.0.0")
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 }
@@ -72,6 +76,7 @@ compose.desktop {
 
         jvmArgs += listOf(
             "--add-opens=java.base/java.lang=ALL-UNNAMED",
+            "--add-opens=java.base/java.util=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED"
         )

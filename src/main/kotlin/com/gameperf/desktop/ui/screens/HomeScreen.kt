@@ -704,6 +704,297 @@ fun HomeScreen(vm: AppViewModel) {
                 }
             }
         }
+
+        // ── Google Drive sync panel ──
+        Spacer(Modifier.height(16.dp))
+        DriveSyncPanel(vm)
+    }
+}
+
+// ============================================================================
+// ===== Google Drive sync panel (v4.2)                                        =
+// ============================================================================
+
+@Composable
+private fun DriveSyncPanel(vm: AppViewModel) {
+    val driveState by vm.driveState.collectAsState()
+    val remoteSessions by vm.remoteSessions.collectAsState()
+    val driveOp by vm.driveOp.collectAsState()
+    var showFolderDialog by remember { mutableStateOf(false) }
+    var folderIdInput by remember { mutableStateOf(vm.driveTeamFolderId) }
+    var expanded by remember { mutableStateOf(true) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = DarkCard),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(Modifier.padding(20.dp)) {
+
+            // ── Header ──
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Cloud,
+                    contentDescription = null,
+                    tint = when (driveState) {
+                        is AppViewModel.DriveSyncState.Connected -> Color(0xFF4CAF50)
+                        is AppViewModel.DriveSyncState.Connecting -> Yellow
+                        is AppViewModel.DriveSyncState.Error -> Red
+                        else -> TextDim
+                    },
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Google Drive",
+                    color = when (driveState) {
+                        is AppViewModel.DriveSyncState.Connected -> Color(0xFF4CAF50)
+                        else -> TextDim
+                    },
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.width(8.dp))
+                when (val s = driveState) {
+                    is AppViewModel.DriveSyncState.Connected ->
+                        Text(s.email, color = TextDim, fontSize = 11.sp)
+                    is AppViewModel.DriveSyncState.Connecting ->
+                        Text("Conectando...", color = Yellow, fontSize = 11.sp)
+                    is AppViewModel.DriveSyncState.Error ->
+                        Text("Error", color = Red, fontSize = 11.sp)
+                    else -> {}
+                }
+                Spacer(Modifier.weight(1f))
+
+                // Progress indicator
+                if (driveOp !is AppViewModel.DriveOp.Idle) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Cyan)
+                    Spacer(Modifier.width(8.dp))
+                    val opText = when (val op = driveOp) {
+                        is AppViewModel.DriveOp.Uploading -> "Subiendo ${op.sessionName.take(20)}…"
+                        is AppViewModel.DriveOp.Downloading -> "Descargando…"
+                        is AppViewModel.DriveOp.Refreshing -> "Actualizando…"
+                        else -> ""
+                    }
+                    Text(opText, color = TextDim, fontSize = 10.sp)
+                    Spacer(Modifier.width(8.dp))
+                }
+
+                // Collapse/expand
+                if (driveState is AppViewModel.DriveSyncState.Connected) {
+                    IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            null, tint = TextDim, modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+
+            // ── Not connected state ──
+            if (driveState is AppViewModel.DriveSyncState.Disconnected ||
+                driveState is AppViewModel.DriveSyncState.Error) {
+
+                Spacer(Modifier.height(12.dp))
+
+                if (!vm.driveHasCredentials) {
+                    // Setup instructions
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Yellow.copy(alpha = 0.08f))
+                            .border(1.dp, Yellow.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                            .padding(12.dp)
+                    ) {
+                        Column {
+                            Text("⚙️ Configuración necesaria (una sola vez)", color = Yellow, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(8.dp))
+                            Text("1. Ve a console.cloud.google.com", color = TextSecondary, fontSize = 11.sp)
+                            Text("2. Crea proyecto → habilita 'Google Drive API'", color = TextSecondary, fontSize = 11.sp)
+                            Text("3. Credenciales → OAuth2 → Aplicación de escritorio", color = TextSecondary, fontSize = 11.sp)
+                            Text("4. Descarga el JSON → guárdalo como:", color = TextSecondary, fontSize = 11.sp)
+                            Text("   ~/.gameperf/credentials.json", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                            Text("5. Vuelve aquí y pulsa Conectar", color = TextSecondary, fontSize = 11.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                if (driveState is AppViewModel.DriveSyncState.Error) {
+                    Text(
+                        "Error: ${(driveState as AppViewModel.DriveSyncState.Error).message}",
+                        color = Red, fontSize = 11.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                Button(
+                    onClick = { vm.connectDrive() },
+                    enabled = vm.driveHasCredentials && driveState !is AppViewModel.DriveSyncState.Connecting,
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4285F4))
+                ) {
+                    Icon(Icons.Default.Cloud, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Conectar Google Drive", fontWeight = FontWeight.Bold)
+                }
+            }
+
+            // ── Connected state ──
+            if (driveState is AppViewModel.DriveSyncState.Connected && expanded) {
+                Spacer(Modifier.height(12.dp))
+
+                // Folder ID row
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Folder, null, tint = Yellow, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    val fid = vm.driveTeamFolderId
+                    Text(
+                        if (fid.isEmpty()) "Sin carpeta configurada" else "Carpeta: …${fid.takeLast(12)}",
+                        color = if (fid.isEmpty()) Red.copy(alpha = 0.8f) else TextDim,
+                        fontSize = 10.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { folderIdInput = vm.driveTeamFolderId; showFolderDialog = true },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(if (vm.driveTeamFolderId.isEmpty()) "Configurar" else "Cambiar", color = Cyan, fontSize = 10.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
+                Spacer(Modifier.height(10.dp))
+
+                // Remote sessions list
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Sesiones del equipo", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { vm.refreshRemoteSessions() }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Refresh, "Actualizar", tint = Cyan, modifier = Modifier.size(14.dp))
+                    }
+                }
+
+                if (vm.driveTeamFolderId.isEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Configura la carpeta compartida para ver las sesiones del equipo.", color = TextDim, fontSize = 11.sp)
+                } else if (remoteSessions.isEmpty() && driveOp is AppViewModel.DriveOp.Idle) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("No hay sesiones en la carpeta del equipo.", color = TextDim, fontSize = 11.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Sube la primera con el botón ☁️ de cualquier sesión local.", color = TextDim, fontSize = 10.sp)
+                } else {
+                    Spacer(Modifier.height(6.dp))
+                    remoteSessions.forEach { remote ->
+                        RemoteSessionRow(remote, vm)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = { vm.disconnectDrive() },
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                ) {
+                    Icon(Icons.Default.LinkOff, null, tint = TextDim, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Desconectar Drive", color = TextDim, fontSize = 10.sp)
+                }
+            }
+        }
+    }
+
+    // ── Folder ID dialog ──
+    if (showFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showFolderDialog = false },
+            title = { Text("Carpeta compartida del equipo", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "Pega el ID de la carpeta de Drive compartida por tu equipo.\n" +
+                        "Se encuentra al final de la URL cuando abres la carpeta:\n" +
+                        "drive.google.com/drive/folders/",
+                        color = TextDim, fontSize = 11.sp
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text("→ ID de carpeta:", color = TextDim, fontSize = 11.sp)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = folderIdInput,
+                        onValueChange = { folderIdInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs", color = TextDim, fontSize = 11.sp) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Cyan, unfocusedBorderColor = TextDim,
+                            cursorColor = Cyan, focusedTextColor = Color.White, unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { vm.setDriveTeamFolder(folderIdInput); showFolderDialog = false },
+                    enabled = folderIdInput.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Cyan)
+                ) { Text("Guardar", color = Color.Black, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { showFolderDialog = false }) { Text("Cancelar") } },
+            containerColor = DarkCard, titleContentColor = Color.White, textContentColor = TextSecondary
+        )
+    }
+}
+
+@Composable
+private fun RemoteSessionRow(
+    remote: com.gameperf.desktop.cloud.DriveSync.RemoteSession,
+    vm: AppViewModel,
+) {
+    val localIds = vm.history.collectAsState().value.map { it.id }.toSet()
+    val alreadyImported = remote.sessionId in localIds
+    val driveOp by vm.driveOp.collectAsState()
+    val isBusy = driveOp !is AppViewModel.DriveOp.Idle
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Grade
+        Text(
+            "${remote.grade}",
+            color = gradeColor(remote.grade),
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(26.dp)
+        )
+        Spacer(Modifier.width(6.dp))
+
+        // Info column
+        Column(Modifier.weight(1f)) {
+            Text(remote.sessionName, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(
+                "${remote.date}  |  ${remote.avgFps} fps  |  ${remote.deviceModel}" +
+                    if (remote.uploaderEmail.isNotEmpty()) "  · ${remote.uploaderEmail.substringBefore('@')}" else "",
+                color = TextDim, fontSize = 10.sp
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+
+        // Import / Already imported indicator
+        if (alreadyImported) {
+            Icon(Icons.Default.Check, null, tint = Color(0xFF4CAF50), modifier = Modifier.size(16.dp))
+        } else {
+            IconButton(
+                onClick = { vm.downloadAndImportSession(remote.fileId, remote.sessionName) },
+                enabled = !isBusy,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(Icons.Default.CloudDownload, "Importar sesión", tint = Cyan, modifier = Modifier.size(16.dp))
+            }
+        }
     }
 }
 
@@ -823,6 +1114,24 @@ private fun HistoryEntryRow(
                     Icon(
                         Icons.Default.PictureAsPdf, "Exportar PDF",
                         tint = if (exportingNow) TextDim else Cyan, modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            // ── Upload to Drive (only when connected) ──
+            val driveState by vm.driveState.collectAsState()
+            val driveOp by vm.driveOp.collectAsState()
+            if (driveState is AppViewModel.DriveSyncState.Connected) {
+                val isBusy = driveOp !is AppViewModel.DriveOp.Idle
+                IconButton(
+                    onClick = { vm.uploadSession(entry.id) },
+                    enabled = !isBusy,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.CloudUpload, "Subir a Drive",
+                        tint = if (isBusy) TextDim else Color(0xFF4CAF50),
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }
