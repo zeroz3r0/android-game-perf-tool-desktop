@@ -48,13 +48,14 @@ class SidecarLifecycle(
     fun start(scope: CoroutineScope): Boolean {
         if (isRunning) return true
 
-        // Check Python availability
-        if (!isPythonAvailable()) {
+        // Check Python availability only when NOT using a bundled binary
+        if (findBundledBinary(sidecarDir) == null && !isPythonAvailable()) {
             lastError = "Python 3 no encontrado. Instala Python 3.9+ para habilitar soporte iOS."
             return false
         }
 
         // Windows: iTunes/Apple Mobile Device Support must be installed for usbmuxd
+        // This applies even when using the bundled binary (pymobiledevice3 inside still needs it).
         if (isWindows() && !isITunesAvailable()) {
             lastError = "iTunes no detectado. En Windows, instala iTunes para conectar dispositivos iOS."
             return false
@@ -112,19 +113,28 @@ class SidecarLifecycle(
 
     private fun spawnProcess(): Boolean {
         return try {
-            val pb = ProcessBuilder(
-                "python3", "-m", "gameperf_sidecar",
-                "--port", port.toString(),
-                "--host", "127.0.0.1",
-            )
-            pb.directory(java.io.File(sidecarDir))
+            val binary = findBundledBinary(sidecarDir)
+            val pb = if (binary != null) {
+                // v4.1.0+: PyInstaller binary — no Python needed, no PYTHONPATH
+                ProcessBuilder(
+                    binary.absolutePath,
+                    "--port", port.toString(),
+                    "--host", "127.0.0.1",
+                )
+            } else {
+                // Fallback: Python source mode (dev / manual install)
+                ProcessBuilder(
+                    "python3", "-m", "gameperf_sidecar",
+                    "--port", port.toString(),
+                    "--host", "127.0.0.1",
+                ).also { b ->
+                    b.directory(java.io.File(sidecarDir))
+                    val env = b.environment()
+                    val existing = env["PYTHONPATH"] ?: ""
+                    env["PYTHONPATH"] = if (existing.isEmpty()) sidecarDir else "$sidecarDir:$existing"
+                }
+            }
             pb.redirectErrorStream(true)
-
-            // Inherit environment but ensure PYTHONPATH includes sidecar dir
-            val env = pb.environment()
-            val existingPythonPath = env["PYTHONPATH"] ?: ""
-            env["PYTHONPATH"] = if (existingPythonPath.isEmpty()) sidecarDir
-                else "$sidecarDir:$existingPythonPath"
 
             process = pb.start()
 
@@ -193,6 +203,39 @@ class SidecarLifecycle(
             } catch (_: Exception) {
                 0
             }
+        }
+
+        /**
+         * Look for the PyInstaller-bundled binary next to the JAR or inside sidecarDir.
+         * Returns null if only the Python source layout is available.
+         */
+        internal fun findBundledBinary(sidecarDir: String? = null): java.io.File? {
+            val exeName = if (isWindows()) "gameperf-sidecar.exe" else "gameperf-sidecar"
+            val candidates = mutableListOf<java.io.File>()
+
+            // 1. In sidecarDir itself (e.g. sidecar/gameperf-sidecar)
+            if (sidecarDir != null) {
+                candidates += java.io.File(sidecarDir, exeName)
+            }
+            // 2. Next to the JAR on java.class.path
+            val classPath = System.getProperty("java.class.path", "")
+            classPath.split(java.io.File.pathSeparator)
+                .firstOrNull { it.endsWith(".jar") }
+                ?.let { java.io.File(it).parentFile?.resolve(exeName) }
+                ?.let { candidates += it }
+            // 3. macOS .app bundle — Contents/app/
+            val appPath = System.getProperty("jpackage.app-path")
+            if (appPath != null) {
+                val contentsDir = java.io.File(appPath).parentFile?.parentFile
+                if (contentsDir != null) {
+                    candidates += java.io.File(contentsDir, "app/$exeName")
+                    candidates += java.io.File(contentsDir, "Resources/$exeName")
+                }
+            }
+            // 4. user.dir (CWD — covers dev scenarios where binary was built locally)
+            candidates += java.io.File(System.getProperty("user.dir"), exeName)
+
+            return candidates.firstOrNull { it.exists() && it.canExecute() }
         }
 
         /** Check if python3 is available on PATH. */

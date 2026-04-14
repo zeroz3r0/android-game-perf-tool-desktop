@@ -551,8 +551,13 @@ class AppViewModel(
             candidates += java.io.File(jarDir, "sidecar")
         }
 
-        val found = candidates.firstOrNull {
-            it.isDirectory && java.io.File(it, "gameperf_sidecar/__init__.py").exists()
+        val exeName = if (System.getProperty("os.name")?.lowercase()?.contains("win") == true)
+            "gameperf-sidecar.exe" else "gameperf-sidecar"
+        val found = candidates.firstOrNull { dir ->
+            dir.isDirectory && (
+                java.io.File(dir, "gameperf_sidecar/__init__.py").exists() ||  // Python source mode
+                java.io.File(dir, exeName).exists()                             // PyInstaller binary mode
+            )
         }
         if (found != null) {
             System.err.println("AppViewModel: sidecar found at ${found.absolutePath}")

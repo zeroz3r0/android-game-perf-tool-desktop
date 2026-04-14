@@ -9,6 +9,50 @@ on:
 # drop Node.js 20 — this comment tracks the awareness.
 
 jobs:
+  # ===== Build PyInstaller sidecar binary (macOS + Windows only — iOS connectivity) =====
+  sidecar:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies + PyInstaller
+        shell: bash
+        working-directory: sidecar
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements-lock.txt
+
+      - name: Build sidecar binary
+        shell: bash
+        working-directory: sidecar
+        run: pyinstaller gameperf_sidecar.spec --distpath dist --workpath build/pyinstaller --clean
+
+      - name: Rename binary with platform suffix
+        shell: bash
+        working-directory: sidecar/dist
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            mv gameperf-sidecar.exe gameperf-sidecar-windows.exe
+          else
+            mv gameperf-sidecar gameperf-sidecar-macos
+          fi
+
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-${{ matrix.os }}
+          path: |
+            sidecar/dist/gameperf-sidecar-windows.exe
+            sidecar/dist/gameperf-sidecar-macos
+
   # ===== Smoke test: compile + test on ubuntu before burning CI time on 3 platforms =====
   smoke:
     runs-on: ubuntu-latest
@@ -59,7 +103,7 @@ jobs:
           path: build/compose/jars/*.jar
 
   release:
-    needs: build
+    needs: [build, sidecar]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -71,4 +115,5 @@ jobs:
         with:
           files: |
             game-perf-desktop-*/*.jar
+            sidecar-*/gameperf-sidecar-*
           generate_release_notes: true
