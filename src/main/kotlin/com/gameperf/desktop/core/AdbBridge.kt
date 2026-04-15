@@ -33,6 +33,7 @@ object AdbBridge {
     private val RE_MISSED_FRAMES = Regex("Total missed frame count:\\s*(\\d+)")
     private val RE_THERMAL_TEMP = Regex("Temperature\\{mValue=([\\d.]+),\\s*mType=\\d+,\\s*mName=([^,]+),")
     private val RE_SF_MODERN = Regex("RequestedLayerState\\{(.+?)\\s+parentId=")
+    private val RE_ROTATION = Regex("mCurrentRotation=ROTATION_(\\d+)")
 
     // ===== Cached tool paths (v4.1.0-perf) =====
     // findFfmpeg/findFfprobe were called on every concatSegments/isValidVideoFile invocation.
@@ -281,10 +282,20 @@ object AdbBridge {
     data class FrameSnapshot(val fps: Int, val avgFrameTime: Double, val jankCount: Int, val stutterCount: Int)
 
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
-        val layer = findLayer(deviceId, pkg) ?: return null
-        val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--latency", layer)
-        val lines = output.lines()
-        if (lines.size < 3) return null
+        var layer = findLayer(deviceId, pkg) ?: return null
+        var output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--latency", layer)
+        var lines = output.lines()
+        // Stale layer detection: when Unity (or any game) recreates its SurfaceView
+        // the layer number suffix (#N) changes. The cached layer name becomes invalid
+        // and --latency returns only the refresh rate line (1 line) instead of 128.
+        // Invalidate cache and re-resolve.
+        if (lines.size < 3) {
+            cachedLayer = null
+            layer = findLayer(deviceId, pkg) ?: return null
+            output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--latency", layer)
+            lines = output.lines()
+            if (lines.size < 3) return null
+        }
         val times = mutableListOf<Long>()
         for (i in 1 until lines.size) {
             val parts = lines[i].trim().split(RE_DEVICE_LINE)
@@ -416,10 +427,26 @@ object AdbBridge {
     }
 
     /**
+     * Detect whether the device display is currently in landscape orientation.
+     * Uses `dumpsys window` to read `mCurrentRotation`. ROTATION_90 and ROTATION_270
+     * are landscape; ROTATION_0 and ROTATION_180 are portrait.
+     */
+    fun isLandscape(deviceId: String): Boolean {
+        val output = shell(deviceId, "dumpsys window")
+        val match = RE_ROTATION.find(output) ?: return false
+        val degrees = match.groupValues[1].toIntOrNull() ?: return false
+        return degrees == 90 || degrees == 270
+    }
+
+    /**
      * Start screen recording on device.
      * adb screenrecord has 3-min limit per file, so we chain segments.
      * Profile selection should happen at the caller based on hardware tier.
      * sessionId is used to create unique filenames per session.
+     *
+     * v4.2.1: auto-detects device orientation and swaps width/height for landscape
+     * games. Without this, landscape games are recorded in a portrait frame,
+     * causing the video to appear rotated or letterboxed in the player.
      */
     fun startScreenRecord(
         deviceId: String,
@@ -431,7 +458,12 @@ object AdbBridge {
         require(isValidSessionId(sessionId)) { "Invalid session ID: $sessionId" }
         return try {
             val remotePath = "/sdcard/gp_${sessionId}_$segment.mp4"
-            val size = "${profile.width}x${profile.height}"
+            // Swap width/height when device is in landscape so the video
+            // matches the actual screen orientation.
+            val landscape = isLandscape(deviceId)
+            val w = if (landscape) profile.height else profile.width
+            val h = if (landscape) profile.width else profile.height
+            val size = "${w}x${h}"
             val pb = ProcessBuilder(
                 adbPath, "-s", deviceId, "shell", "screenrecord",
                 "--size", size,
