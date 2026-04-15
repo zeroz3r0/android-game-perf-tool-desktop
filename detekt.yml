@@ -1,21 +1,21 @@
 # detekt configuration for GamePerf Desktop
 #
-# Thresholds calibrated to the current codebase (v4.1.0 baseline).
+# Thresholds calibrated 2026-04-15 (probed actual maxes).
 # Tighten gradually as code is refactored.
 
 complexity:
   LongMethod:
-    threshold: 730       # HomeScreen is 728 LOC (single Composable — split in future)
+    threshold: 600       # Actual max: ReportGenerator.generate 591 (HomeScreen dropped to ~480)
   LongParameterList:
-    functionThreshold: 42  # ReportGenerator.generate has 40+ metrics params
+    functionThreshold: 42  # ReportGenerator.generate has 41 params
     constructorThreshold: 10
   TooManyFunctions:
-    thresholdInClasses: 70   # AppViewModel has ~67 functions (Drive sync added v4.2)
+    thresholdInClasses: 70   # AppViewModel has 67 functions
     thresholdInFiles: 40
     thresholdInObjects: 40   # AdbBridge singleton has 38 functions
-    thresholdInInterfaces: 27  # AdbBridgeApi/DeviceBridgeApi have 16-25
+    thresholdInInterfaces: 26  # Actual max: 25 — tightened from 27
   CyclomaticComplexMethod:
-    threshold: 165       # AppViewModel.startCapture is the worst (162)
+    threshold: 165       # AppViewModel.startCapture is 162 — no room yet
   LargeClass:
     threshold: 2000
   NestedBlockDepth:

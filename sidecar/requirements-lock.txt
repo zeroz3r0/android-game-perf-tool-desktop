@@ -1,5 +1,5 @@
 # Pinned dependencies for reproducible builds.
-# Generated from a working environment on 2026-04-13.
+# Generated from a working environment on 2026-04-15.
 # To update: pip install -r requirements.txt && pip freeze > requirements-lock.txt
 #
 # Use requirements.txt for development (flexible ranges).
@@ -9,6 +9,6 @@ fastapi==0.135.3
 uvicorn[standard]==0.44.0
 pymobiledevice3==9.9.1
 starlette==1.0.0
-pydantic==2.12.5
+pydantic==2.13.0
 anyio==4.13.0
 httpx==0.28.1

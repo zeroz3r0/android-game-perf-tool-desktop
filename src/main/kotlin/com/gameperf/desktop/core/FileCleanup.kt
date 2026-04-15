@@ -287,7 +287,12 @@ object FileCleanup {
                 }
 
                 val result = AdbBridge.concatSegments(segments.toList(), unified)
-                if (result != null && result.exists() && result.length() > 0) {
+                // Only count as repaired when concat produced the actual unified file.
+                // If concatSegments fell back to returning a segment (ffmpeg absent/failed),
+                // that is NOT a repair — the entry already points at a segment.
+                if (result != null && result.exists() && result.length() > 0
+                    && result.absolutePath == unified.absolutePath
+                ) {
                     repaired.add(entry.copy(videoPath = result.absolutePath))
                     System.err.println(
                         "FileCleanup.repairTruncatedVideos: ${entry.id} → unified ${segments.size} segments into ${result.name}"
