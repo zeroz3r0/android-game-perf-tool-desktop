@@ -1239,7 +1239,8 @@ class AppViewModel(
                 p95FrameTime = p95ft, p99FrameTime = p99ft,
                 peakMemMb = peakMem, avgCpu = avgCpu,
                 maxTemp = maxTempCpu, score = score,
-                markers = sessionMarkers
+                markers = sessionMarkers,
+                fpsTimed = fpsTimed.map { it.second to it.value.toInt() }
             )
             evicted.forEach { FileCleanup.deleteSessionFiles(it) }
             _history.value = SessionHistory.load()
@@ -1533,6 +1534,10 @@ class AppViewModel(
             deviceGrade = entry.deviceGrade,
             deviceScore = entry.score,
             markers = entry.markers,
+        )
+        // Restore FPS timeline so the chart below the video shows data
+        _liveMetrics.value = LiveMetrics(
+            fpsTimed = entry.fpsTimed.map { TimedSample(it.first, it.second.toDouble()) }
         )
         _markers.value = entry.markers
         videoDelegate.reset()

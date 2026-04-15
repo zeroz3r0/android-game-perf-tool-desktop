@@ -121,6 +121,8 @@ object SessionHistory {
         val markers: List<SerializableMarker> = emptyList(),
         // v4.2: favoritos — default false preserva compatibilidad con history.json existente
         val isFavorite: Boolean = false,
+        // v4.2.0: FPS timeline data for re-viewing past sessions
+        val fpsTimed: List<List<Int>> = emptyList(),
     )
 
     data class HistoryEntry(
@@ -149,6 +151,8 @@ object SessionHistory {
         val markers: List<SessionMarker> = emptyList(),
         /** Favoritos nunca se auto-evictan. Solo se borran manualmente. */
         val isFavorite: Boolean = false,
+        /** v4.2.0: FPS timeline samples (second, fps) for re-viewing sessions. */
+        val fpsTimed: List<Pair<Int, Int>> = emptyList(),
     )
 
     // ===== Conversion =====
@@ -163,6 +167,7 @@ object SessionHistory {
         peakMemMb = peakMemMb, avgCpu = avgCpu, maxTemp = maxTemp, score = score,
         markers = markers.map { SerializableMarker.from(it) },
         isFavorite = isFavorite,
+        fpsTimed = fpsTimed.map { listOf(it.first, it.second) },
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -177,6 +182,7 @@ object SessionHistory {
         peakMemMb = peakMemMb, avgCpu = avgCpu, maxTemp = maxTemp, score = score,
         markers = markers.map { it.toSessionMarker() },
         isFavorite = isFavorite,
+        fpsTimed = fpsTimed.mapNotNull { if (it.size >= 2) it[0] to it[1] else null },
     )
 
     // ===== Public API (unchanged contract) =====
@@ -244,7 +250,8 @@ object SessionHistory {
         p1Fps: Int = 0, p5Fps: Int = 0, avgFrameTime: Double = 0.0,
         p95FrameTime: Double = 0.0, p99FrameTime: Double = 0.0,
         peakMemMb: Long = 0, avgCpu: Int = 0, maxTemp: Double = 0.0, score: Int = 0,
-        markers: List<SessionMarker> = emptyList()
+        markers: List<SessionMarker> = emptyList(),
+        fpsTimed: List<Pair<Int, Int>> = emptyList()
     ): List<HistoryEntry> {
         val date = SimpleDateFormat("dd/MM/yyyy HH:mm").format(Date())
         val id = System.currentTimeMillis().toString()
@@ -255,7 +262,7 @@ object SessionHistory {
             id, displayName, gamePackage, deviceModel, grade, deviceGrade, avgFps, duration, date,
             reportPath, videoPath, tag, competitorName,
             p1Fps, p5Fps, avgFrameTime, p95FrameTime, p99FrameTime, peakMemMb, avgCpu, maxTemp, score,
-            markers
+            markers, fpsTimed = fpsTimed
         )
         return addEntry(entry)
     }
