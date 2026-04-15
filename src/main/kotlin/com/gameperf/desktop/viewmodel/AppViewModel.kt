@@ -1510,6 +1510,35 @@ class AppViewModel(
         openFile(entry.videoPath)
     }
 
+    /**
+     * v4.2.0: Re-open a past session from history in the Results screen,
+     * exactly as it looked when it was captured. Reconstructs a [SessionResult]
+     * from the persisted [SessionHistory.HistoryEntry].
+     */
+    fun viewHistorySession(entry: SessionHistory.HistoryEntry) {
+        _result.value = SessionResult(
+            gamePackage = entry.gamePackage,
+            deviceModel = entry.deviceModel,
+            duration = entry.duration,
+            grade = entry.grade,
+            avgFps = entry.avgFps,
+            p1Fps = entry.p1Fps,
+            p5Fps = entry.p5Fps,
+            avgFrameTime = entry.avgFrameTime,
+            p99FrameTime = entry.p99FrameTime,
+            peakMemMb = entry.peakMemMb,
+            avgCpu = entry.avgCpu,
+            reportPath = entry.reportPath,
+            videoPath = entry.videoPath,
+            deviceGrade = entry.deviceGrade,
+            deviceScore = entry.score,
+            markers = entry.markers,
+        )
+        _markers.value = entry.markers
+        videoDelegate.reset()
+        _screen.value = AppScreen.RESULTS
+    }
+
     fun goHome() {
         captureJob?.cancel()
         shouldStop = true

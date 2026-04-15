@@ -1081,6 +1081,14 @@ private fun HistoryEntryRow(
                 )
             }
 
+            // ── View session results ──
+            IconButton(
+                onClick = { vm.viewHistorySession(entry) },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(Icons.Default.Visibility, "Ver sesión", tint = Cyan, modifier = Modifier.size(16.dp))
+            }
+
             // ── Edit name (opens dialog) ──
             IconButton(
                 onClick = { editName = entry.name; showRenameDialog = true },

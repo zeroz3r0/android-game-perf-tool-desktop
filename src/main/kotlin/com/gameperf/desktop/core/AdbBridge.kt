@@ -282,17 +282,27 @@ object AdbBridge {
     data class FrameSnapshot(val fps: Int, val avgFrameTime: Double, val jankCount: Int, val stutterCount: Int)
 
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
-        var layer = findLayer(deviceId, pkg) ?: return null
-        var output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--latency", layer)
+        var layer = findLayer(deviceId, pkg) ?: run {
+            // No layer at all — game might be hidden behind an ad.
+            // Clear cache so next call does a fresh lookup.
+            cachedLayer = null
+            return null
+        }
+        // Shell-quote the layer name: names like "SurfaceView[...](BLAST)#N"
+        // contain parentheses that cause /system/bin/sh syntax errors when
+        // passed as separate ProcessBuilder args (adb concatenates them into
+        // a single shell command).
+        var output = shell(deviceId, "dumpsys SurfaceFlinger --latency '$layer'")
         var lines = output.lines()
-        // Stale layer detection: when Unity (or any game) recreates its SurfaceView
-        // the layer number suffix (#N) changes. The cached layer name becomes invalid
-        // and --latency returns only the refresh rate line (1 line) instead of 128.
-        // Invalidate cache and re-resolve.
+        // Stale layer detection: ads, scene changes, or Unity recreating its
+        // SurfaceView change the layer number suffix (#N). The cached name
+        // becomes invalid → --latency returns only the refresh rate (1 line).
+        // Always invalidate and re-resolve so that returning from an ad
+        // picks up the new layer immediately.
         if (lines.size < 3) {
             cachedLayer = null
             layer = findLayer(deviceId, pkg) ?: return null
-            output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--latency", layer)
+            output = shell(deviceId, "dumpsys SurfaceFlinger --latency '$layer'")
             lines = output.lines()
             if (lines.size < 3) return null
         }
