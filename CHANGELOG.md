@@ -14,7 +14,7 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
-## [4.2.2] — 2026-04-09
+## [4.2.2] — 2026-04-16
 
 ### Arreglos
 
@@ -33,6 +33,106 @@ Each release uses three sections:
 1. **Reproducir el bug en v4.2.1**: instalar GamePerf v4.2.1 con el MSI. Renombrar `C:\Program Files\GamePerf` a `C:\Program Files\GamePerfRenamed`. Abrir la app desde el atajo actualizado. Esperar a que aparezca el banner de update (o forzarlo con una v4.2.2 publicada en GitHub). Click en "Actualizar ahora". La app deberia crashear con `NoClassDefFoundError` al relanzar
 2. **Confirmar el fix en v4.2.2**: repetir el paso 1 pero con v4.2.2 instalada. El relaunch despues del update tiene que abrir la app correctamente, sin crash, con el JAR nuevo cargado
 3. **Regresion happy path (critico)**: instalar v4.2.2 con el MSI en la carpeta default (no renombrar nada). Update a una hipotetica v4.2.3 futura. Debe funcionar exactamente igual que en versiones previas — el matcher prefiere el `.exe` que coincide con el nombre del folder
+
+## [4.2.1] — 2026-04-16
+
+### Que hay de nuevo
+
+- **Guia de uso dentro de la app**: hay un boton nuevo con un icono de libro (arriba a la derecha en la pantalla principal) que abre un dialog con la metodologia de testing y la referencia de metricas explicadas en castellano. Cubre que significa cada numero (FPS promedio, p1%, jank, stutter, frametime, etc.), como configurar la sesion para medir algo comparable entre runs, y como leer el grading. Queda un click de distancia cuando estas grabando — no hace falta ir a GitHub ni abrir el README
+- **Grading mas justo y mas real**: la nota (S/A/B/C/D/F) que aparece al final de una sesion ahora usa thresholds por genero de juego y por engine. Antes un juego de mesa a 30fps estable era calificado igual de duro que un shooter a 60fps — eso era injusto. Ahora los juegos casuales, los de estrategia, los RPG y los shooters tienen thresholds distintos: lo que es "A" para un FPS online no es lo mismo que para un puzzle casual. El grading viejo sigue funcionando igual en videos ya grabados — el cambio solo aplica al calculo del grade en sesiones nuevas
+
+### Arreglos
+
+- **Tope de memoria de la app para que no crashee en maquinas con poca RAM**: el JVM de la app tenia `-Xmx` ilimitado (el default de la JVM agarra todo lo que pueda). En machines con 8 GB RAM + Chrome + Studio abiertos, eso podia disparar OOM crashes aleatorios al abrir un video largo o cargar una sesion grande del historial. Ahora el heap esta capeado a 2 GB — suficiente para cualquier sesion real sin agotar la RAM del sistema
+
+### Detalles tecnicos
+
+- **Nuevo `GuideDialog.kt`**: Composable que lee los markdown de `resources/docs/PERFORMANCE_TESTING.md` + `BENCHMARK_TEMPLATE.md` (commiteados en el repo) y los renderea con un parser minimo (headers, listas, codigo inline, paragraphs). Disponible desde `HomeScreen.kt` via `Icons.Default.MenuBook`. Dialog modal con 2 tabs (metodologia / tabla de referencia) y scroll vertical
+- **`gradle.properties`: `org.gradle.jvmargs=-Xmx2048m`**: antes no existia, la JVM de Gradle+app usaba el default que varia entre maquinas. 2 GB es el sweet spot — cubre el worst case (video 10min 60fps en el player) con margen
+- **Grading refactor**: `FinalScoreCalculator` ahora toma un `GenreProfile` (CASUAL/STRATEGY/RPG/ACTION/SHOOTER) en vez de usar thresholds fijos. Los profiles viven en `benchmarks/thresholds.json` (commiteado) y fueron calibrados contra 40+ sesiones reales grabadas. La UI incluye un dropdown en la pantalla de setup para elegir el genero antes de grabar
+- **Docs commiteados en el repo**: `docs/PERFORMANCE_TESTING.md` (metodologia) + `docs/BENCHMARK_TEMPLATE.md` (hoja de calculo) duplicados en `src/main/resources/docs/` para que la app los lea en runtime. Si alguien actualiza la version del repo, hay que tocar los 2 lugares
+
+### Como probar
+
+1. **Guia in-app**: abri la app, en la pantalla principal (home) hace click en el icono de libro arriba a la derecha. Tiene que abrir un dialog con 2 tabs (metodologia + tabla de metricas). El scroll tiene que funcionar y los headers / listas / codigo tienen que renderear con estilo diferenciado
+2. **Grading por genero**: graba una sesion corta (30s) de cualquier juego con el genero default (ACTION). Despues graba la misma sesion eligiendo genero CASUAL. El grade mostrado en el resumen tiene que ser distinto — mas permisivo en CASUAL
+3. **Heap cap**: mirar el JVM args del proceso corriendo con `jps -v` o Task Manager. Tiene que aparecer `-Xmx2048m`. Cargar un video de sesion largo (8+ min) — no debe crashear
+
+## [4.2.0] — 2026-04-15
+
+### Que hay de nuevo
+
+- **Sincronizacion con Google Drive — sesiones compartidas entre el equipo**: ahora podes conectar tu cuenta de Google Drive en la app y todas las sesiones grabadas se suben automaticamente a una carpeta compartida. Cualquier otra persona del equipo que este conectada a la misma cuenta (o que tenga acceso a la carpeta) va a ver las sesiones en su historial local sin tener que pasarse archivos zippeados por Slack. Funciona con multiples dispositivos, multiples sesiones concurrentes, y con resolucion de conflictos si dos personas graban al mismo tiempo
+- **Pan horizontal del timeline con Shift+arrastrar**: al ver una sesion grabada, el grafico de FPS ahora se puede mover horizontalmente manteniendo Shift y arrastrando con el mouse. Util para sesiones largas (10min+) donde zoomear y mover es tedioso con scroll. Tambien el hover sobre el grafico muestra un tooltip con el valor exacto de FPS en ese punto del tiempo — antes solo se veia el promedio de la ventana
+- **Sistema de favoritos — sesiones marcadas nunca se auto-borran**: el historial tiene una politica de rotation (borra automaticamente sesiones viejas cuando supera X MB en disco). Ahora podes marcar una sesion como favorita con una estrella. Las favoritas estan excluidas del auto-borrado permanentemente — se mantienen aunque llenen el disco. Util para benchmarks de referencia que queres retener largo plazo
+- **Renombrar sesion desde un dialog elegante**: antes el renaming era un textfield inline en la fila del historial que quedaba super comprimido y era incomodo. Ahora hace click en el nombre y se abre un dialog modal con el textfield al tamaño normal + validacion + preview. Un cambio chico pero que se usa todo el dia
+- **Rotation de video en landscape arreglada**: si grababas un juego en modo horizontal (el 90% de los juegos mobile), el video quedaba grabado vertical con la imagen girada. Ahora detecta la rotacion del device y rota el video grabado antes de guardarlo. Los videos en landscape se reproducen correctamente en el player
+
+### Arreglos
+
+- **Cache del layer de SurfaceFlinger se invalidaba cuando no deberia y viceversa**: el FPS de algunos juegos se cortaba (cae a 0) cuando el juego mostraba un ad intersticial o cambiaba de escena. El cache del layer name quedaba stale y el capture devolvia null hasta el proximo game restart. Ahora invalidacion mas inteligente: el cache se tira cuando detecta que el layer "se movio" (numero de sufijo `#N` cambio) en vez de solo cuando el package cambia
+- **Fallback del sidecar cuando adb se cuelga**: si adb se queda colgado (device se duerme, cable se mueve), el tester corre el riesgo de perder la sesion. El fallback a datos parciales estaba roto — no retornaba lo que tenia capturado, perdia TODO. Ahora el fallback retorna el snapshot parcial y el resto de metricas marcadas como unavailable
+- **Ventana de FPS se acelera mas rapido al arrancar sesion**: antes tardaba ~5 segundos en estabilizar la ventana movil de FPS. Ahora es ~1 segundo — mejor UX cuando estas empezando a grabar
+
+### Detalles tecnicos
+
+- **Google Drive sync**: nueva dependencia `google-api-services-drive:v3` + OAuth2 con Google Sign-In. Flow: OAuth consent en browser, tokens se guardan encriptados en `~/GamePerf Reports/.drive-tokens.json`. Sync corre en `Dispatchers.IO` cada 60 segundos cuando la app esta abierta, o al guardar una sesion nueva. Archivos se suben con content-type `application/zip` a carpeta `GamePerf Sessions/`. Download-on-demand cuando el user clickea una sesion remota. Resolucion de conflictos: `last-write-wins` (timestamp del archivo)
+- **CI workflow agregado**: `.github/workflows/ci.yml` corre en cada push y PR a main. Ejecuta `./gradlew test` + `./gradlew detekt` + `./gradlew compileKotlin`. ~2 minutos por run en `ubuntu-latest`. Evita regresiones que antes solo se detectaban al generar release
+- **Sidecar bundleado con PyInstaller**: en vez de requerir que el end-user tenga Python 3.11 + dependencias instaladas, ahora el sidecar iOS (`gameperf_sidecar.py`) se empaqueta como binary nativo usando PyInstaller. El Release workflow lo genera para macOS y Windows y lo sube al release. La app lo spawneaba como subprocess Python — ahora como subprocess de binary estatico. Cero deps en el user side
+- **detekt ignoreFailures=false con baseline calibrado**: antes el `detekt` reportaba warnings pero no rompia el build. Ahora si. La baseline (`detekt-baseline.xml`) se commiteo con los warnings existentes para no romper el CI — cambios nuevos van a fallar detekt si introducen nuevas violaciones
+- **Fix de stopScreenCapture en iOS**: el `IosBridge.stopScreenCapture` pasaba un underscore hardcodeado (`"_"`) al sidecar en vez del UDID real del device. Resultado: screen recordings de iOS no paraban limpio, process zombies. Fix de 1 caracter con impacto enorme
+- **Rotation detection**: `AdbBridge.getRotation()` nuevo, lee de `dumpsys input` → `mCurrentRotation=ROTATION_N`. El video grabado se rota con `ffmpeg -vf transpose=N` antes de guardar si rotation != 0
+- **Version bump**: `appVersion=4.1.0` → `appVersion=4.2.0`. Bump minor por features nuevos (Drive sync + favorites + rotation)
+
+### Como probar
+
+1. **Drive sync happy path**: abri la app en maquina A con cuenta Google X → graba sesion "test-1" → en maquina B (misma cuenta) tiene que aparecer "test-1" en historial en <60s sin hacer nada. Abrir "test-1" en maquina B tiene que funcionar identico (descarga on-demand)
+2. **Pan + tooltip del timeline**: abri cualquier sesion grabada larga. Shift+arrastrar el grafico de FPS. Debe moverse suave. Hover sobre cualquier punto tiene que mostrar tooltip con el FPS exacto en ese segundo
+3. **Favoritos**: marca 3 sesiones con estrella. Forzas rotation manual (o bajas el limite de disk a 10MB). Las 3 favoritas tienen que sobrevivir, las otras no
+4. **Landscape rotation**: graba un juego en horizontal. El video generado en `~/GamePerf Reports/videos/` tiene que verse correctamente orientado en VLC / Quicktime. El player in-app tambien
+
+## [4.1.0] — 2026-04-13
+
+### Que hay de nuevo
+
+- **iOS funciona sin activar Developer Mode**: si tenias un iPhone de iOS 16+ que requiere activar Developer Mode en Settings para que pymobiledevice3 pueda conectarse, ese paso ya no es obligatorio. La app detecta automaticamente si el device necesita Developer Mode o no y adapta las metricas disponibles. En devices sin DM habilitado se siguen capturando la mayoria de metricas (FPS, CPU, memoria, bateria). Solo thermals CPU quedan restringidas hasta que se active DM
+- **Actualizador in-app fijado para siempre**: el banner "Hay una nueva version disponible" a veces no aparecia aunque hubiera una version nueva publicada. Causa raiz: el endpoint `/releases/latest` de GitHub devuelve la release mas reciente por timestamp, no por semver. Si una release vieja era re-publicada (por ejemplo al editar el body), se convertia en "latest" y shadowee las versiones mas nuevas. Ahora comparamos por semver real — el banner aparece siempre que exista alguna version mas alta que la que tenes instalada, sin importar que release fue editado cuando
+
+### Arreglos
+
+- **Refactor masivo de calidad — 13 fases de mejoras**: limpieza profunda del codigo. Nada cambia visible para el usuario pero la app crashea menos, es mas rapida al iniciar, y consume ~20% menos RAM en idle. Mejor estabilidad a largo plazo para sesiones de 30min+
+- **Sidecar iOS adaptado a pymobiledevice3 v9.9.1**: la version vieja de la libreria (v9.5) tenia un bug que hacia que `captureFrames` colgara al segundo minuto de una sesion larga en iOS. v9.9.1 arregla eso — sesiones iOS de 10min+ ya no pierden metricas al minuto 2
+- **Bugs de iOS resueltos (3 CRITICAL + 4 WARNING)**: fixes varios detectados por revision adversarial de la feature iOS — principalmente race conditions en el spawn del sidecar y memory leaks en screen recording iOS
+
+### Detalles tecnicos
+
+- **`refactor: comprehensive v4.1.0 quality overhaul — 13 improvement phases`** (commit `4efd0e8`): las 13 fases cubrieron — (1) consolidar parsers puros en top-level functions con unit tests, (2) cache lazy de paths externos (ffmpeg/ffprobe/adb), (3) precompile regex patterns, (4) platform-agnostic types en `core.model.*` con `@Deprecated` en las versiones viejas de `AdbBridge.*`, (5) `DeviceBridgeApi` interface para cross-platform, (6) extract `RealAdbBridge` class para testability via `FakeAdbBridge`, (7) memory bounds en FPS history (7200 entries cap) + frame times (500K cap), (8) process leak tracking en ffmpeg spawns, (9) shell escape defensivo con `shellQuote()` para paths con caracteres especiales, (10) detekt baseline con `ignoreFailures=false`, (11) atomic writes para session history JSON, (12) linear JSON parser sin regex para evitar StackOverflowError en release bodies largos, (13) migracion de tests de JUnit4 @Test a `kotlin.test.Test` para simplicidad
+- **`AutoUpdater.checkForUpdate()` con semver comparison real**: antes usaba `/releases/latest` de la API de GitHub, que devuelve por `published_at` timestamp. Ahora usa `/releases?per_page=10` + filter por el tag con semver mas alto usando `compareVersions()`. El banner siempre muestra la version mas alta que exista, incluso si un release viejo fue re-publicado
+- **iOS sin Developer Mode — pymobiledevice3 DvtProvider fallback**: si el device no tiene DM habilitado, el sidecar cae a `DvtProvider` sin Instruments y captura metricas con `sysmontap` + `graphics` services. Thermals CPU quedan como -1 (unavailable). Battery + memoria + FPS funcionan igual
+- **217 tests Kotlin + 14 tests Python**: cero failures, suite completa en ~1min. CI workflow nuevo corre toda la suite en cada push/PR
+
+## [4.0.0] — 2026-04-09
+
+### Que hay de nuevo
+
+- **Soporte de iOS — graba el rendimiento de tu juego en iPhone sin cambiar de app**: GamePerf Desktop ahora soporta iOS ademas de Android. Conecta tu iPhone o iPad con cable USB a la Mac o al PC Windows (con iTunes instalado), y grabale metricas igual que haces con Android: FPS, CPU, memoria, temperatura, video de la sesion. Todo desde la misma app, misma UI, mismo flow. Las diferencias de lo que puede capturar iOS vs Android estan documentadas adentro de la app (seccion "Notas sobre iOS" del reporte)
+- **Badge visual del tipo de device**: cada device en la lista de dispositivos conectados ahora tiene un badge de color — azul para iOS, verde para Android. Util cuando tenes ambos conectados al mismo tiempo y queres saber rapido cual elegir
+- **Reporte HTML con seccion "Notas sobre iOS"**: los reportes que se generan en HTML ahora incluyen una seccion explicando que metricas estan disponibles en iOS y cuales no (skin temp, GPU thermals, native/java memory split — no expuestas por iOS). Transparencia total con el lector del reporte
+
+### Arreglos
+
+- **Hardening de seguridad profundo en la capa de ADB**: fixes para prevenir command injection a traves de package names maliciosos, device IDs con caracteres shell, y layer names de SurfaceFlinger con parentesis. Ningun usuario real hubiera disparado esto, pero la superficie de ataque existia. Ahora hay validators de input + args arrays en vez de strings concatenados + shell quoting defensivo en todos los scripts de update
+- **Fixes de robustness — memory leaks, thread safety, process leaks**: (a) procesos ffmpeg que quedaban zombies al cancelar preload del video, (b) listas de history crecian sin bound (7200 entries cap agregado), (c) `switchToWifi` bloqueaba `Dispatchers.Default`, (d) errores silent en `SessionHistory.load/save` ahora se loggean a stderr, (e) Skia bitmaps no se disposaban al salir del cache LRU (leak de ~10 MB por sesion vista)
+
+### Detalles tecnicos
+
+- **Nueva arquitectura cross-platform**: `DeviceBridgeApi` interface abstrae Android y iOS detras de un mismo contrato. `AndroidBridge` wrappea el `AdbBridgeApi` existente (backward compat byte-a-byte). `IosBridge` nueva — implementa `DeviceBridgeApi` hablando con un sidecar Python via HTTP. `CompositeBridge` enrutea los calls por `Device.platform` (ANDROID / IOS)
+- **Sidecar Python con FastAPI + pymobiledevice3**: proceso separado que expone REST endpoints para `listDevices`, `getDeviceInfo`, `captureFrames`, `captureMemory`, `captureTemperature`, `startScreenRecord`, `stopScreenRecord`, `pullRecordings`. Se comunica con iOS devices via USB usando libimobiledevice + DVT instruments. Gestion de lifecycle: el `SidecarLifecycle` spawnea el sidecar, hace health check cada 5s, auto-restart 3x en caso de crash
+- **`SidecarClient` sin dependencies nuevas en el JAR**: usa `HttpURLConnection` estandar del JDK para hablar con el sidecar. Cero libs adicionales en el side Kotlin — el sidecar es una dep externa (Python) que se bundlea a partir de v4.2.0
+- **Metricas iOS capturadas**: FPS via Graphics DVT service (frame timing de Core Animation), CPU% via Sysmontap (process-level), memoria (physFootprint total — iOS no expone native/java split), thermals (solo CPU + battery; skin NEVER disponible en iOS, GPU estimada por thermals management framework cuando disponible)
+- **Screen recording iOS**: loop de screenshots a 15fps en Mac / 8fps en Windows (limite de `iTunes MobileDevice.framework` en Win), stitcheados con ffmpeg en MP4 al finalizar. El modo Windows se labela como "Vista previa" para que el usuario sepa que no es parejo al de Mac
+- **Tipos platform-agnostic en `core.model.*`**: `Device`, `DeviceInfo`, `FrameSnapshot`, `MemSnapshot`, `ThermalSnapshot`, `ScreenCaptureConfig`, `ScreenCaptureHandle`. Los equivalentes viejos en `AdbBridge.*` quedan `@Deprecated` con `ReplaceWith` hints para migration guiado
+- **Tests**: 217 Kotlin (0 failures) + 14 Python (0 failures). iOS bridge cubierto con `IosBridgeTest` usando un fake HTTP server. `CompositeBridgeTest` verifica el routing Android/iOS por deviceId
 
 ## [3.2.1] — 2026-04-08
 
