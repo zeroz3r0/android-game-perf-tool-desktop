@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +32,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -177,7 +179,164 @@ private fun extractFrameAtIndex(videoPath: String, frameIndex: Int, fps: Double)
 }
 
 /**
- * Embedded video player using on-demand ffmpeg seeking + LRU frame cache.
+ * v4.2.3: Thumbnail track for smooth scrubbing on long videos.
+ *
+ * The LRU [FrameCache] only covers ±10s around the playhead. On a 2-hour
+ * session the user was seeing the video stall for ~200ms every time they
+ * dragged the timeline cursor beyond the cached window — ffmpeg had to cold-
+ * start for each frame request and the disk I/O added latency.
+ *
+ * Solution: generate a low-resolution thumbnail track in background (one
+ * invocation of ffmpeg with `fps=1/N,scale=240:-1` → ~500 thumbnails
+ * covering the whole video, ~14MB total in RAM, takes 15-30s for a 2h video).
+ * During scrub we show the closest thumbnail instantly; once the user stops
+ * scrubbing, a debounce timer fetches the full-res frame at the exact
+ * timestamp via the original on-demand ffmpeg seek.
+ *
+ * Contract: `thumbs` is non-empty, and `intervalMs` is `(durationMs / thumbs.size)`.
+ * To look up the thumbnail for a given playhead time use
+ * `thumbs[(timeMs / intervalMs).toInt().coerceIn(0, thumbs.lastIndex)]`.
+ */
+private data class ThumbnailTrack(
+    val thumbs: List<ImageBitmap>,
+    val intervalMs: Long,
+)
+
+/** Target number of thumbnails in the track. 500 thumbs × ~14KB JPEG ≈ 7MB, fits
+ *  comfortably in RAM and gives ~7s resolution on a 1-hour video, ~14s on 2h. */
+private const val THUMBNAIL_TARGET_COUNT = 500
+
+/** Width of each thumbnail in pixels. 240px is enough to identify a scene
+ *  while being tiny enough to decode in a few ms. Height preserves aspect ratio. */
+private const val THUMBNAIL_WIDTH = 240
+
+/** Video duration threshold under which we skip thumbnail generation — for
+ *  short clips the ±600-frame window already covers the entire video. */
+private const val THUMBNAIL_MIN_DURATION_MS = 10_000L
+
+/**
+ * Generate a thumbnail track for the video by invoking ffmpeg once with a
+ * downsampling filter. Writes JPEGs to a temp directory, reads them in order,
+ * decodes to [ImageBitmap], then deletes the temp files.
+ *
+ * Reports progress through [onProgress] (0.0 .. 1.0). The callback is invoked
+ * both while ffmpeg is running (based on how many files appeared on disk) and
+ * once per decoded bitmap during the read phase — the numbers don't line up
+ * perfectly but the progress bar moves steadily.
+ *
+ * Returns null if:
+ *   - The video is shorter than [THUMBNAIL_MIN_DURATION_MS] (not worth the overhead).
+ *   - ffmpeg fails or times out (5 min hard timeout for 2h video at worst case).
+ *   - No thumbnails were produced.
+ *   - Caller coroutine was cancelled.
+ *
+ * Best-effort: the caller should tolerate null and fall back to the per-frame
+ * on-demand seeking (original v3.2.1 behavior).
+ */
+private suspend fun generateThumbnailTrack(
+    videoPath: String,
+    durationMs: Long,
+    onProgress: suspend (Float) -> Unit,
+): ThumbnailTrack? = withContext(Dispatchers.IO) {
+    if (durationMs < THUMBNAIL_MIN_DURATION_MS) return@withContext null
+
+    val tmpDir = try {
+        Files.createTempDirectory("gp_thumbs_").toFile()
+    } catch (_: Exception) {
+        return@withContext null
+    }
+
+    try {
+        // Interval per thumb in seconds — e.g. 2h video / 500 thumbs = 14.4s per thumb.
+        val durationSec = durationMs / 1000.0
+        val intervalSec = (durationSec / THUMBNAIL_TARGET_COUNT).coerceAtLeast(0.1)
+
+        // Build ffmpeg command. `fps=1/N` means "output 1 frame every N input seconds"
+        // so ffmpeg skips most of the decode work. `scale=W:-1` keeps aspect ratio.
+        val filter = "fps=1/${"%.6f".format(Locale.US, intervalSec)},scale=${THUMBNAIL_WIDTH}:-1"
+        val outputPattern = File(tmpDir, "thumb_%05d.jpg").absolutePath
+        val cmd = listOf(
+            findFfmpeg(),
+            "-v", "error",
+            "-y",
+            "-i", videoPath,
+            "-vf", filter,
+            "-q:v", "4",
+            "-fps_mode", "vfr",
+            outputPattern,
+        )
+
+        val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        activeProcesses.add(proc)
+
+        // Progress monitor: while ffmpeg runs, poll the temp dir and report
+        // fraction of target count produced so far. Cancelled cooperatively.
+        val progressJob = launch {
+            while (isActive && proc.isAlive) {
+                delay(500)
+                val produced = tmpDir.list()?.size ?: 0
+                onProgress((produced.toFloat() / THUMBNAIL_TARGET_COUNT).coerceAtMost(0.9f))
+            }
+        }
+
+        // Drain stdout/stderr combined (we redirected to stdout) to prevent pipe-full deadlock.
+        val drainJob = launch(Dispatchers.IO) {
+            runCatching { proc.inputStream.readBytes() }
+        }
+
+        // 5 min hard timeout. For a 2-hour video with 500 thumbs at 240p, real
+        // elapsed time is typically 20-60s depending on codec and disk speed.
+        val finished = try {
+            proc.waitFor(5, TimeUnit.MINUTES)
+        } catch (_: InterruptedException) {
+            false
+        } finally {
+            progressJob.cancel()
+            drainJob.cancel()
+            activeProcesses.remove(proc)
+        }
+
+        if (!finished) {
+            proc.destroyForcibly()
+            return@withContext null
+        }
+        if (proc.exitValue() != 0) return@withContext null
+
+        // Read generated JPEGs in order. Numbering starts at 1 (ffmpeg convention).
+        val thumbFiles = tmpDir.listFiles { f -> f.extension.equals("jpg", true) }
+            ?.sortedBy { it.name }
+            ?: return@withContext null
+        if (thumbFiles.isEmpty()) return@withContext null
+
+        val thumbs = mutableListOf<ImageBitmap>()
+        thumbFiles.forEachIndexed { idx, file ->
+            if (!isActive) return@withContext null
+            try {
+                val bytes = file.readBytes()
+                val bitmap = org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
+                thumbs.add(bitmap)
+            } catch (_: Exception) {
+                // Skip corrupt thumbs — the track is a best-effort preview.
+            }
+            // Progress: 0.9 → 1.0 during the decode phase.
+            val progress = 0.9f + 0.1f * (idx + 1).toFloat() / thumbFiles.size
+            onProgress(progress.coerceAtMost(1.0f))
+        }
+
+        if (thumbs.isEmpty()) return@withContext null
+
+        val actualIntervalMs = durationMs / thumbs.size
+        ThumbnailTrack(thumbs = thumbs, intervalMs = actualIntervalMs.coerceAtLeast(1L))
+    } finally {
+        // Cleanup temp files. tmpDir is under system temp so if deletion fails
+        // the OS will reap it eventually, not our problem.
+        runCatching { tmpDir.walkBottomUp().forEach { it.delete() } }
+    }
+}
+
+/**
+ * Embedded video player using on-demand ffmpeg seeking + LRU frame cache +
+ * a pre-generated low-resolution thumbnail track for smooth scrubbing.
  *
  * v3.2.1 rewrite: the previous implementation pre-extracted every frame of the
  * video to disk as JPEGs before showing anything, which took minutes and
@@ -185,6 +344,12 @@ private fun extractFrameAtIndex(videoPath: String, frameIndex: Int, fps: Double)
  * <300 ms, seeking to any point in the timeline fetches the target frame in
  * <200 ms, and playback is smooth because a ±600-frame preload window keeps
  * the cache warm around the playhead.
+ *
+ * v4.2.3: added a low-resolution thumbnail track generated in background on
+ * init. During scrub the user sees the closest thumbnail instantly (no
+ * ffmpeg round-trip); when scrubbing stops, a 250ms debounce triggers the
+ * full-res frame decode at the exact timestamp. Makes a 2-hour session
+ * scrubbable end-to-end without lag.
  *
  * Public API (signature byte-identical to v3.2.0 — the single call site in
  * `ResultsScreen.kt` is untouched).
@@ -208,6 +373,13 @@ fun EmbeddedVideoPlayer(
     var videoFps by remember { mutableStateOf(30.0) }
     var ready by remember { mutableStateOf(false) }
 
+    // v4.2.3: thumbnail track for smooth scrubbing on long videos.
+    // While null, the player still works (falls back to on-demand seek) — this
+    // is a progressive enhancement, not a hard dependency.
+    var thumbnailTrack by remember { mutableStateOf<ThumbnailTrack?>(null) }
+    var thumbnailProgress by remember { mutableStateOf(0f) }
+    var thumbnailGenerating by remember { mutableStateOf(false) }
+
     // On-demand cache: indexed by frame number. No disk-backed paths anymore.
     val frameCache = remember { FrameCache(1500) }
     var displayedIdx by remember { mutableStateOf(-1) }
@@ -217,6 +389,14 @@ fun EmbeddedVideoPlayer(
     // spot, we cancel the previous preload so stale work doesn't compete with
     // the new window for ffmpeg throughput.
     var preloadJob by remember { mutableStateOf<Job?>(null) }
+    // v4.2.3: separate job for thumbnail track generation — runs once per videoPath,
+    // cancelled on dispose. Kept independent from preloadJob so scrubbing doesn't
+    // cancel the thumbnail pre-gen.
+    var thumbnailJob by remember { mutableStateOf<Job?>(null) }
+    // v4.2.3: debounce job for "settled-on-a-frame" full-res decode. Fires 250ms
+    // after the last scrub update; if the user scrubs again within 250ms we cancel
+    // and restart, so we don't waste ffmpeg cycles on frames the user scrolled past.
+    var fullResDebounceJob by remember { mutableStateOf<Job?>(null) }
 
     /**
      * Get a frame by its index — cache-first, fallback to an on-demand
@@ -300,6 +480,9 @@ fun EmbeddedVideoPlayer(
         frameCache.clear()
         displayedIdx = -1
         ready = false
+        thumbnailTrack = null
+        thumbnailProgress = 0f
+        thumbnailGenerating = false
 
         withContext(Dispatchers.IO) {
             if (!isFfmpegAvailable()) {
@@ -341,27 +524,85 @@ fun EmbeddedVideoPlayer(
             // block ready=true, so the player is usable immediately.
             preloadWindow(0)
         }
+
+        // v4.2.3: kick off thumbnail-track generation in background AFTER the
+        // first frame is visible. The spinner overlay is what the user asked
+        // for ("ruedecita como diciendo cargando y renderizando video") so
+        // there's clear feedback during the 15-60s it takes on a long video.
+        if (ready && videoDurationMs >= THUMBNAIL_MIN_DURATION_MS && thumbnailTrack == null) {
+            thumbnailGenerating = true
+            thumbnailJob = coroutineScope.launch(Dispatchers.IO) {
+                val track = generateThumbnailTrack(
+                    videoPath = videoPath,
+                    durationMs = videoDurationMs,
+                    onProgress = { p -> thumbnailProgress = p },
+                )
+                thumbnailTrack = track
+                thumbnailGenerating = false
+            }
+        }
     }
 
     // Cleanup
     DisposableEffect(videoPath) {
         onDispose {
             preloadJob?.cancel()
+            thumbnailJob?.cancel()
+            fullResDebounceJob?.cancel()
             // H-1: kill all tracked ffmpeg processes to prevent zombies.
             killActiveProcesses()
             // M-8: clear() now disposes native Skia resources.
             frameCache.clear()
+            // Release thumbnail track bitmaps too — same native memory concern.
+            thumbnailTrack?.thumbs?.forEach { tryCloseBitmap(it) }
         }
     }
 
     // ---- SCRUB: react to external time changes when NOT playing ----
-    LaunchedEffect(currentTimeMs, isPlaying, ready) {
+    //
+    // v4.2.3 two-phase scrub:
+    //   Phase 1 — instant thumbnail (if track is ready): show the closest
+    //             pre-decoded low-res thumbnail. Zero ffmpeg work, <1ms.
+    //   Phase 2 — debounced full-res: 250ms after the user stops scrubbing,
+    //             fetch the exact-timestamp full-res frame from the LRU cache
+    //             or via on-demand ffmpeg. The user ends up on a crisp frame.
+    //
+    // The debounce means continuous scrubbing doesn't spawn an ffmpeg process
+    // per pixel — we only fetch the full frame once the cursor settles. Makes
+    // dragging across a 2-hour timeline buttery-smooth.
+    LaunchedEffect(currentTimeMs, isPlaying, ready, thumbnailTrack) {
         if (isPlaying || !ready || videoDurationMs <= 0) return@LaunchedEffect
         val totalFrames = (videoDurationMs / 1000.0 * videoFps).toInt().coerceAtLeast(1)
         val idx = msToFrame(currentTimeMs, videoFps, totalFrames)
-        if (idx != displayedIdx && idx in 0 until totalFrames) {
-            val bitmap = withContext(Dispatchers.IO) { getFrame(idx) }
-            if (bitmap != null) {
+        if (idx == displayedIdx || idx !in 0 until totalFrames) return@LaunchedEffect
+
+        // Phase 1: thumbnail track hit — instant display.
+        val track = thumbnailTrack
+        val cachedFull = frameCache.get(idx)
+        if (cachedFull != null) {
+            // Already cached full-res: show it directly, skip thumbnail flash.
+            currentFrame = cachedFull
+            displayedIdx = idx
+            preloadWindow(idx)
+            return@LaunchedEffect
+        }
+        if (track != null) {
+            val thumbIdx = (currentTimeMs / track.intervalMs)
+                .toInt()
+                .coerceIn(0, track.thumbs.lastIndex)
+            currentFrame = track.thumbs[thumbIdx]
+            // Note: displayedIdx intentionally NOT updated here — it's the
+            // full-res frame index, which we're still about to fetch.
+        }
+
+        // Phase 2: debounce full-res decode. Cancel any pending debounce first
+        // so rapid scrubs collapse into a single tail-decode.
+        fullResDebounceJob?.cancel()
+        fullResDebounceJob = coroutineScope.launch(Dispatchers.IO) {
+            delay(250)
+            if (!isActive) return@launch
+            val bitmap = getFrame(idx)
+            if (bitmap != null && isActive) {
                 currentFrame = bitmap
                 displayedIdx = idx
                 preloadWindow(idx)
@@ -412,6 +653,45 @@ fun EmbeddedVideoPlayer(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
             )
+            // v4.2.3: non-blocking spinner overlay while thumbnail track is
+            // being generated in background. The video is already playable
+            // (cached ±10s window + on-demand seek) — the overlay just tells
+            // the user "scrubbing the whole timeline will be smooth soon".
+            if (thumbnailGenerating && thumbnailTrack == null) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                        .background(Color(0xCC0D1117), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            color = Cyan,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                "Preparando vista previa del video...",
+                                color = TextPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { thumbnailProgress },
+                                color = Cyan,
+                                trackColor = Color(0x33FFFFFF),
+                                modifier = Modifier
+                                    .width(220.dp)
+                                    .height(3.dp)
+                            )
+                        }
+                    }
+                }
+            }
         } else {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator(color = Cyan, modifier = Modifier.size(36.dp))
