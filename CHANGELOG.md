@@ -14,6 +14,26 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.2] — 2026-04-09
+
+### Arreglos
+
+- **Actualizar desde adentro de la app ahora funciona aunque hayas renombrado la carpeta de instalacion**: si instalaste la app con el instalador de Windows y despues renombraste la carpeta (por ejemplo de `GamePerf` a `GamePerfApp2` o cualquier otro nombre), el boton "Actualizar ahora" del banner te crasheaba la app al relanzarla post-update. Ahora la detecta bien y reinicia con el launcher correcto. Las actualizaciones automaticas al abrir la app ya funcionaban — este fix es para cuando clickeas "Actualizar ahora" manualmente desde el banner
+
+### Detalles tecnicos
+
+- **`AutoUpdater.detectInstallation()` — fix de Windows bundle detection**: la deteccion del launcher buscaba un `.exe` cuyo basename coincidiera exactamente con el nombre de la carpeta de instalacion (`"${installRoot.name}.exe"`). Si el usuario renombraba la carpeta (tipico: reinstalar sobre una version vieja, mover el folder, o cambiarle el nombre para tener varias versiones paralelas), la deteccion fallaba silenciosamente y caia a `FAT_JAR_STANDALONE`. Eso disparaba un relanzamiento con `java -jar` directo, sin los JVM args del `.cfg` del bundle (`-Dskiko.library.path`, `-Dcompose.application.resources.dir`, etc.) — resultado: `NoClassDefFoundError` de Skiko/Compose al primer frame
+- **Nueva logica en 2 pasos**: (1) listar todos los `.exe` de la raiz del install, (2) preferir el que matchea el nombre del folder (backward compatible byte-a-byte para instalaciones sin renombrar), (3) fallback: tomar el primer `.exe` de la raiz. El path de `WINDOWS_APP_BUNDLE` se sigue activando siempre que exista AL MENOS un `.exe` en la raiz del install + un `app/` adentro con el JAR
+- **2 tests de regresion nuevos en `AutoUpdaterDetectionTest.kt`**: (a) `detectInstallation returns WINDOWS_APP_BUNDLE when install folder was renamed (exe basename differs)` crea `RenamedFolder/app/main.jar` + `RenamedFolder/GamePerf.exe` y asserta que la deteccion devuelve `WINDOWS_APP_BUNDLE` con launcher = `GamePerf.exe`; (b) `detectInstallation prefers exe matching folder name when multiple exe files exist` crea `MyApp/` con `MyApp.exe` + `uninstall.exe` y asserta que el matcher prefiere el que coincide con el folder name (evita regresion accidental a alfabetico)
+- **Cero impacto en macOS / Linux / dev-mode**: el fix toca solamente las lineas 536-541 del bloque de deteccion Windows. Los otros 4 paths (`MACOS_APP_BUNDLE`, `LINUX_NATIVE_PACKAGE`, `FAT_JAR_STANDALONE`, `DEV_MODE`) y los tests existentes (9 casos) no se modificaron
+- **Sin dependencias nuevas**: el JAR no cambia de tamaño
+
+### Como probar
+
+1. **Reproducir el bug en v4.2.1**: instalar GamePerf v4.2.1 con el MSI. Renombrar `C:\Program Files\GamePerf` a `C:\Program Files\GamePerfRenamed`. Abrir la app desde el atajo actualizado. Esperar a que aparezca el banner de update (o forzarlo con una v4.2.2 publicada en GitHub). Click en "Actualizar ahora". La app deberia crashear con `NoClassDefFoundError` al relanzar
+2. **Confirmar el fix en v4.2.2**: repetir el paso 1 pero con v4.2.2 instalada. El relaunch despues del update tiene que abrir la app correctamente, sin crash, con el JAR nuevo cargado
+3. **Regresion happy path (critico)**: instalar v4.2.2 con el MSI en la carpeta default (no renombrar nada). Update a una hipotetica v4.2.3 futura. Debe funcionar exactamente igual que en versiones previas — el matcher prefiere el `.exe` que coincide con el nombre del folder
+
 ## [3.2.1] — 2026-04-08
 
 ### Arreglos

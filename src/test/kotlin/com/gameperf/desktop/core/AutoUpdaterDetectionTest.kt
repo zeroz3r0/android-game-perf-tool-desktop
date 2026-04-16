@@ -167,6 +167,60 @@ class AutoUpdaterDetectionTest {
         assertEquals(InstallationType.FAT_JAR_STANDALONE, info.type)
     }
 
+    @Test
+    fun `detectInstallation returns WINDOWS_APP_BUNDLE when install folder was renamed (exe basename differs)`() {
+        // Regression test for v4.2.2 in-app update bug:
+        // User installed via jpackage as "GamePerf/" (with GamePerf.exe launcher) and
+        // later renamed the folder to something else (e.g., "GamePerfApp2"). The old
+        // detection looked for "<foldername>.exe" — if the .exe basename no longer
+        // matched the folder name, detection fell through to FAT_JAR_STANDALONE and
+        // the in-app updater relaunched with `java -jar` instead of the native
+        // launcher .exe, which crashed because the bundle's .cfg (Skiko paths, etc.)
+        // was never loaded.
+        // Fix: fall back to ANY .exe in the install root when no exact match exists.
+        val installRoot = File(tempDir, "RenamedFolder").apply { mkdirs() }
+        val appDir = File(installRoot, "app").apply { mkdirs() }
+        val jar = File(appDir, "main.jar").apply { writeBytes(ByteArray(10)) }
+        // Launcher name does NOT match folder name — simulates a renamed install dir.
+        val exe = File(installRoot, "GamePerf.exe").apply { writeBytes(ByteArray(4)) }
+
+        val info = AutoUpdater.detectInstallation(jarPathOverride = jar)
+
+        assertEquals(
+            InstallationType.WINDOWS_APP_BUNDLE,
+            info.type,
+            "renamed folder with any .exe at root must still be detected as Windows bundle"
+        )
+        assertEquals(jar, info.currentJar)
+        assertEquals(installRoot, info.bundleRoot)
+        assertEquals(exe, info.launcher, "fallback should pick any .exe at install root")
+    }
+
+    @Test
+    fun `detectInstallation prefers exe matching folder name when multiple exe files exist`() {
+        // When the install root contains several .exe files (e.g., a real launcher plus
+        // an "uninstall.exe" left by the installer), the matcher must prefer the .exe
+        // whose basename matches the folder name. Only when no match exists should it
+        // fall back to the first .exe found.
+        val installRoot = File(tempDir, "MyApp").apply { mkdirs() }
+        val appDir = File(installRoot, "app").apply { mkdirs() }
+        val jar = File(appDir, "main.jar").apply { writeBytes(ByteArray(10)) }
+        // Create unrelated .exe first so directory iteration might return it before MyApp.exe
+        // on some filesystems — if the matcher is naive (just firstOrNull), this test fails.
+        val unrelated = File(installRoot, "uninstall.exe").apply { writeBytes(ByteArray(4)) }
+        val launcher = File(installRoot, "MyApp.exe").apply { writeBytes(ByteArray(4)) }
+
+        val info = AutoUpdater.detectInstallation(jarPathOverride = jar)
+
+        assertEquals(InstallationType.WINDOWS_APP_BUNDLE, info.type)
+        assertEquals(
+            launcher,
+            info.launcher,
+            "exact folder-name match must beat alphabetical/order fallback"
+        )
+        assertTrue(unrelated.exists()) // silence unused warning
+    }
+
     // ═══════ LINUX_NATIVE_PACKAGE ═══════
 
     @Test

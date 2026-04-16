@@ -533,13 +533,18 @@ object AutoUpdater {
             val appDir = jarPath.parentFile
             val installRoot = appDir?.parentFile
             if (installRoot != null && appDir.name == "app") {
-                val expectedExe = File(installRoot, "${installRoot.name}.exe")
-                if (expectedExe.exists()) {
+                // v4.2.1: detect launcher by ANY .exe at install root (not just matching the folder name).
+                // Previously looked for "<foldername>.exe", which broke if user renamed the folder
+                // (e.g. installed as "GamePerfApp2" but launcher is "GamePerf.exe").
+                val exeFiles = installRoot.listFiles { f -> f.isFile && f.extension.equals("exe", ignoreCase = true) }
+                val launcher = exeFiles?.firstOrNull { it.nameWithoutExtension.equals(installRoot.name, true) }
+                    ?: exeFiles?.firstOrNull()  // fallback: any .exe in install root
+                if (launcher != null && launcher.exists()) {
                     return InstallationInfo(
                         type = InstallationType.WINDOWS_APP_BUNDLE,
                         currentJar = jarPath,
                         bundleRoot = installRoot,
-                        launcher = expectedExe
+                        launcher = launcher
                     )
                 }
             }
