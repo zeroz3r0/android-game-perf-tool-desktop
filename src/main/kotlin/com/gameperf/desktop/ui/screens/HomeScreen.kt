@@ -44,12 +44,17 @@ fun HomeScreen(vm: AppViewModel) {
     val gamePackage by vm.gamePackage.collectAsState()
     val statusMessage by vm.statusMessage.collectAsState()
     var duration by remember { mutableStateOf("") }
+    var showGuide by remember { mutableStateOf(false) }
 
     val updateInfo by vm.updateAvailable.collectAsState()
     val updateProgress by vm.updateProgress.collectAsState()
     val updateError by vm.updateError.collectAsState()
 
     val exportStatus by vm.exportStatus.collectAsState()
+
+    if (showGuide) {
+        com.gameperf.desktop.ui.components.GuideDialog(onDismiss = { showGuide = false })
+    }
 
     Column(
         modifier = Modifier
@@ -58,7 +63,21 @@ fun HomeScreen(vm: AppViewModel) {
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // ===== PDF Export Banner =====
+        // ===== Guide button + PDF Export Banner =====
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = { showGuide = true },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.MenuBook, null, tint = Cyan, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Guía de testing", color = Cyan, fontSize = 12.sp)
+            }
+            Spacer(Modifier.weight(1f))
+        }
         ExportBanner(
             status = exportStatus,
             onDismiss = { vm.resetExportStatus() },
