@@ -14,6 +14,25 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.4] — 2026-04-16
+
+### Arreglos
+
+- **Los acentos, enes y guiones del banner de actualizacion ahora se ven bien**: si estabas en Windows con idioma español, al aparecer el banner "Nueva version disponible" el texto de "Que hay de nuevo" mostraba cosas raras tipo `â€"` en vez de `—`, `Ã¡` en vez de `á`, `Ã±` en vez de `ñ`. Eso era porque el codigo que lee las release notes de GitHub no forzaba UTF-8 y Windows en español por default usa Windows-1252 — GitHub siempre responde en UTF-8, y la conversion silenciosa estaba rompiendo todos los caracteres multi-byte. Ahora se lee explicitamente como UTF-8 y los textos del banner salen legibles
+
+### Detalles tecnicos
+
+- **`AutoUpdater.kt`: 2 lineas criticas**: las llamadas `BufferedReader(InputStreamReader(conn.inputStream))` en `checkForUpdate()` (linea ~106 para el listing de releases, linea ~141 para fetch del release individual) ahora pasan `StandardCharsets.UTF_8` como segundo parametro a `InputStreamReader`. Sin la charset explicita, el reader usa `Charset.defaultCharset()` que es platform-dependent — en Windows con locale `es-ES` o `es-AR` es `windows-1252` (Cp1252), y la conversion UTF-8→Cp1252 de bytes E2 80 94 (em-dash `—`) produce los 3 caracteres "â€"" como si fueran tres bytes separados de Cp1252
+- **Por que otros lugares no estaban afectados**: las extensiones Kotlin `InputStream.bufferedReader()` y `File.readText()` **SI** defaultean a `Charsets.UTF_8`, no a la charset del sistema. Los 2 call-sites afectados usaban la construccion Java antigua (`new BufferedReader(new InputStreamReader(stream))`) que hereda el default del JVM. Resto del codebase (SidecarClient, SessionHistory, etc.) estaba limpio
+- **Zero impact en Mac/Linux**: en macOS y Linux la charset default del JVM es UTF-8, asi que el bug solo se manifestaba en Windows con locale no-ingles. El fix es seguro para todas las plataformas — UTF-8 es la charset correcta para JSON per RFC 8259
+- **Version bump**: `gradle.properties` `appVersion=4.2.3` → `appVersion=4.2.4`. Patch bump porque es un hotfix puntual sin cambio de API
+
+### Como probar
+
+1. **Reproducir en v4.2.3**: instalar v4.2.3 en Windows con idioma español. Abrir la app cuando exista una release mas nueva publicada. El banner va a mostrar `â€"` en lugar de `—` y `Ã³` en lugar de `ó` en el mini-changelog
+2. **Confirmar fix en v4.2.4**: misma configuracion, pero con v4.2.4 instalada. El banner tiene que mostrar los caracteres correctamente — `—`, `á`, `é`, `í`, `ó`, `ú`, `ñ`, `¿`, `¡`
+3. **Regresion Mac/Linux**: instalar v4.2.4 en Mac o Linux. El banner tiene que funcionar igual que antes — ningun cambio visible porque esos SOs ya usaban UTF-8 por default
+
 ## [4.2.3] — 2026-04-16
 
 ### Arreglos

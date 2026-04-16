@@ -6,6 +6,7 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.charset.StandardCharsets
 
 const val GITHUB_OWNER = "zeroz3r0"
 const val GITHUB_REPO = "android-game-perf-tool-desktop"
@@ -103,7 +104,16 @@ object AutoUpdater {
                 return null
             }
 
-            val json = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+            // v4.2.4: force UTF-8. Without the explicit charset, InputStreamReader
+            // falls back to Charset.defaultCharset() — which on a Windows machine
+            // with a Spanish locale is Windows-1252 (Cp1252). GitHub's REST API
+            // always responds with Content-Type: application/json; charset=utf-8,
+            // so reading those bytes as Cp1252 mis-decodes every multi-byte UTF-8
+            // character: em-dash "—" (bytes E2 80 94) renders as "â€"", tildes
+            // become "Ã¡" / "Ã©" / "Ã±", etc. The release banner parses `body`
+            // from this JSON, so the user was seeing mojibake for every non-ASCII
+            // character in the release notes.
+            val json = BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).use { it.readText() }
             conn.disconnect()
 
             // Parse the JSON array and find the release with the highest semver tag.
@@ -138,7 +148,10 @@ object AutoUpdater {
                 return null
             }
 
-            val releaseJson = BufferedReader(InputStreamReader(releaseConn.inputStream)).use { it.readText() }
+            // v4.2.4: same UTF-8 fix as above — this fetch retrieves the full
+            // release body (including "Que hay de nuevo" / "Arreglos" sections
+            // shown in the in-app banner), so the mojibake was most visible here.
+            val releaseJson = BufferedReader(InputStreamReader(releaseConn.inputStream, StandardCharsets.UTF_8)).use { it.readText() }
             releaseConn.disconnect()
 
             val version = highestTag.removePrefix("v").removePrefix("V")
