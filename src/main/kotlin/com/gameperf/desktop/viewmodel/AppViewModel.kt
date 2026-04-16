@@ -257,42 +257,24 @@ class AppViewModel(
     private val _history = MutableStateFlow<List<SessionHistory.HistoryEntry>>(emptyList())
     val history: StateFlow<List<SessionHistory.HistoryEntry>> = _history
 
-    // ===== Google Drive Sync (v4.2) =====
+    // ===== Session Sharing via .gameperf files (v4.2.8) =====
+    //
+    // v4.2.8: replaced the Google Drive sync integration with manual .gameperf
+    // export/import. The Drive code required the user to:
+    //   - Get a credentials.json from Google Cloud Console
+    //   - Enable the Drive API on their account
+    //   - Share a team folder ID between QA members
+    //   - Run an OAuth2 browser flow on first use
+    // That's way too much plumbing for a QA tool used by 2-5 people on a team.
+    // .gameperf is a self-contained ZIP (via SessionPack) the user can move
+    // around however they want: email, Slack, shared folder, USB stick, rsync,
+    // whatever. Zero cloud dependencies, zero OAuth, zero maintenance.
 
-    sealed class DriveSyncState {
-        object Disconnected : DriveSyncState()
-        object Connecting : DriveSyncState()
-        data class Connected(val email: String) : DriveSyncState()
-        data class Error(val message: String) : DriveSyncState()
-    }
-
-    sealed class DriveOp {
-        object Idle : DriveOp()
-        data class Uploading(val sessionName: String) : DriveOp()
-        data class Downloading(val sessionName: String) : DriveOp()
-        object Refreshing : DriveOp()
-    }
-
-    private val driveSync = com.gameperf.desktop.cloud.DriveSync(
-        configDir = java.io.File(System.getProperty("user.home"), ".gameperf")
-    )
-
-    private val _driveState = MutableStateFlow<DriveSyncState>(
-        if (driveSync.isAuthenticated && driveSync.hasCredentials)
-            DriveSyncState.Connected(driveSync.userEmail)
-        else DriveSyncState.Disconnected
-    )
-    val driveState: StateFlow<DriveSyncState> = _driveState
-
-    private val _remoteSessions = MutableStateFlow<List<com.gameperf.desktop.cloud.DriveSync.RemoteSession>>(emptyList())
-    val remoteSessions: StateFlow<List<com.gameperf.desktop.cloud.DriveSync.RemoteSession>> = _remoteSessions
-
-    private val _driveOp = MutableStateFlow<DriveOp>(DriveOp.Idle)
-    val driveOp: StateFlow<DriveOp> = _driveOp
-
-    /** Folder ID shared by the team — empty until configured. */
-    val driveTeamFolderId: String get() = driveSync.teamFolderId
-    val driveHasCredentials: Boolean get() = driveSync.hasCredentials
+    /** Emits a transient message when an export/import succeeds or fails.
+     *  The UI snackbars / dialogs observe it to show confirmation. Cleared
+     *  after ~5 seconds via [clearSessionPackMessage]. */
+    private val _sessionPackMessage = MutableStateFlow<String?>(null)
+    val sessionPackMessage: StateFlow<String?> = _sessionPackMessage
 
     // ===== Session Tagging =====
     private val _sessionTag = MutableStateFlow(SessionHistory.SessionTag.OUR_GAME)
@@ -1541,103 +1523,70 @@ class AppViewModel(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Google Drive sync
+    // Session sharing via .gameperf files (v4.2.8 — replaced Drive sync)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** Launch OAuth2 browser flow. Runs on IO, updates driveState. */
-    fun connectDrive() {
-        if (_driveState.value is DriveSyncState.Connecting) return
-        _driveState.value = DriveSyncState.Connecting
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val email = driveSync.authenticate()
-                _driveState.value = DriveSyncState.Connected(email)
-                refreshRemoteSessions()
-            } catch (e: Exception) {
-                val msg = when {
-                    e.message?.contains("credentials.json") == true ->
-                        "Falta credentials.json — sigue las instrucciones de configuración"
-                    e.message?.contains("403") == true ->
-                        "Acceso denegado. Verifica los permisos del proyecto en Google Cloud"
-                    else -> e.message ?: "Error desconocido"
-                }
-                _driveState.value = DriveSyncState.Error(msg)
-            }
-        }
-    }
-
-    /** Sign out — removes local tokens. */
-    fun disconnectDrive() {
-        driveSync.signOut()
-        _driveState.value = DriveSyncState.Disconnected
-        _remoteSessions.value = emptyList()
-    }
-
-    /** Upload a single session to Drive. */
-    fun uploadSession(entryId: String) {
+    /**
+     * Export a session from the history to a .gameperf file at [destFile].
+     * The UI typically obtains [destFile] via a native "Save As" dialog so the
+     * user chooses where it lands (Desktop, shared-folder, USB, etc.).
+     *
+     * Returns true on success. On failure, the error message is surfaced via
+     * [sessionPackMessage] for the UI to display.
+     *
+     * The resulting file is a self-contained ZIP — the recipient can double-
+     * click it in a File Explorer to see manifest.json and report.html, or
+     * open it in any unzip tool. The app also supports re-importing it via
+     * [importSessionPackFromFile].
+     */
+    fun exportSessionPack(entryId: String, destFile: File) {
         val entry = _history.value.firstOrNull { it.id == entryId } ?: return
-        _driveOp.value = DriveOp.Uploading(entry.name)
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val tmpDir = java.io.File(System.getProperty("java.io.tmpdir"), "gameperf_packs")
+                val tmpDir = File(System.getProperty("java.io.tmpdir"), "gameperf_export")
                 val packFile = com.gameperf.desktop.cloud.SessionPack.export(entry, tmpDir)
-                val appProps = com.gameperf.desktop.cloud.SessionPack.appPropertiesFrom(entry)
-                driveSync.uploadSession(packFile, appProps)
+                // Move/copy to the user-chosen destination, then clean up the temp.
+                packFile.copyTo(destFile, overwrite = true)
                 packFile.delete()
-                _driveOp.value = DriveOp.Idle
-                refreshRemoteSessions()
+                _sessionPackMessage.value = "Sesion exportada a ${destFile.name}"
             } catch (e: Exception) {
-                _driveState.value = DriveSyncState.Error("Error al subir: ${e.message}")
-                _driveOp.value = DriveOp.Idle
+                _sessionPackMessage.value = "Error exportando: ${e.message}"
             }
         }
     }
 
-    /** Refresh the list of remote sessions from Drive. */
-    fun refreshRemoteSessions() {
-        if (_driveState.value !is DriveSyncState.Connected) return
-        _driveOp.value = DriveOp.Refreshing
+    /**
+     * Import a .gameperf file from disk into the local history. The file can
+     * come from anywhere — a teammate shared it via Slack, email, or a USB
+     * stick. [packFile] is the full path to the .gameperf the user selected
+     * via a native "Open" dialog.
+     *
+     * Duplicates (same session id already in history) are silently skipped so
+     * repeated imports are idempotent.
+     */
+    fun importSessionPackFromFile(packFile: File) {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                _remoteSessions.value = driveSync.listSessions()
-            } catch (e: Exception) {
-                _driveState.value = DriveSyncState.Error("Error al leer Drive: ${e.message}")
-            } finally {
-                _driveOp.value = DriveOp.Idle
-            }
-        }
-    }
-
-    /** Download a remote session and import it into local history. */
-    fun downloadAndImportSession(fileId: String, sessionName: String) {
-        _driveOp.value = DriveOp.Downloading(sessionName)
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val tmpDir = java.io.File(System.getProperty("java.io.tmpdir"), "gameperf_downloads")
-                val packFile = driveSync.downloadSession(fileId, tmpDir)
-                val reportsDir = java.io.File(System.getProperty("user.home"), "GamePerf Reports")
+                val reportsDir = File(System.getProperty("user.home"), "GamePerf Reports")
                 val imported = com.gameperf.desktop.cloud.SessionPack.import(packFile, reportsDir)
-                packFile.delete()
-                // Only import if not already present
                 val existing = _history.value.any { it.id == imported.id }
-                if (!existing) {
+                if (existing) {
+                    _sessionPackMessage.value = "La sesion ya estaba en el historial, no se duplico"
+                } else {
                     SessionHistory.addEntry(imported)
                     _history.value = SessionHistory.load()
+                    _sessionPackMessage.value = "Sesion '${imported.name}' importada al historial"
                 }
-                _driveOp.value = DriveOp.Idle
             } catch (e: Exception) {
-                _driveState.value = DriveSyncState.Error("Error al descargar: ${e.message}")
-                _driveOp.value = DriveOp.Idle
+                _sessionPackMessage.value = "Error importando: ${e.message}"
             }
         }
     }
 
-    /** Set a custom team folder ID (shared by a teammate). */
-    fun setDriveTeamFolder(folderId: String) {
-        driveSync.setTeamFolderId(folderId)
-        if (_driveState.value is DriveSyncState.Connected) {
-            refreshRemoteSessions()
-        }
+    /** Clear the transient "exported / imported" message. Called by the UI
+     *  after a brief display (typically 4-5 seconds). */
+    fun clearSessionPackMessage() {
+        _sessionPackMessage.value = null
     }
 
     fun renameHistoryEntry(id: String, newName: String) {

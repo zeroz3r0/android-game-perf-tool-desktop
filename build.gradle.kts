@@ -62,10 +62,14 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.7.3")
     // v4.1.0: replaces hand-rolled JSON parsing in SessionHistory and SidecarClient.
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
-    // v4.2: Google Drive API — session pack sync across team
-    implementation("com.google.api-client:google-api-client:2.4.1")
-    implementation("com.google.oauth-client:google-oauth-client-jetty:1.36.0")
-    implementation("com.google.apis:google-api-services-drive:v3-rev20260405-2.0.0")
+    // v4.2.8: Google Drive API removed. The DriveSync code was 450 LOC of OAuth
+    // + Drive-upload/download plumbing that required the user to obtain a
+    // credentials.json via Google Cloud Console, enable the Drive API, and
+    // maintain a shared team folder ID. Too much friction for the value
+    // delivered. Session sharing is now via manual .gameperf file export
+    // (see SessionPack) — the user picks a save location, the file is a
+    // self-contained ZIP, and they can share it by any means (email, Slack,
+    // shared folder, USB). Zero cloud dependencies, zero OAuth.
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 }

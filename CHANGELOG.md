@@ -14,6 +14,44 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.8] — 2026-04-16
+
+### Que hay de nuevo
+
+- **Compartir sesiones sin cloud, sin APIs, sin OAuth**: la integracion con Google Drive fue eliminada por completo. En su lugar hay dos botones nuevos en el panel de historial:
+  - **"Exportar .gameperf"** en cada fila de sesion — abre un dialogo nativo "Guardar como" y genera un archivo `.gameperf` (un ZIP autocontenido con el informe HTML + todas las metricas) en la ubicacion que elijas (Escritorio, carpeta compartida, USB, etc.)
+  - **"Importar .gameperf"** al lado del boton "Reparar videos" en la cabecera del historial — abre un dialogo "Abrir" y agrega la sesion al historial local
+
+  Podes compartir el archivo por cualquier medio (correo, Slack, carpeta compartida, USB, AirDrop, lo que uses tipicamente). No hace falta cuenta de Google, no hace falta credentials.json, no hace falta OAuth ni pasar por console.cloud.google.com. El archivo es portable y cualquier miembro del equipo lo puede abrir en su copia de GamePerf
+
+### Detalles tecnicos
+
+- **Eliminado `cloud/DriveSync.kt`** (~450 LOC): toda la logica OAuth2 + GoogleAuthorizationCodeFlow + LocalServerReceiver + Drive.Files.create/list/get + FileDataStoreFactory. El flujo requeria que el usuario obtuviera credentials.json de Google Cloud Console, habilitara la Drive API, compartiera un folder ID con el equipo, y ejecutara un OAuth browser flow. Demasiada friccion para el valor entregado en un tool QA usado por 2-5 personas
+- **Eliminadas 3 dependencias de Google del `build.gradle.kts`**: `com.google.api-client:google-api-client`, `com.google.oauth-client:google-oauth-client-jetty`, `com.google.apis:google-api-services-drive`. El JAR de Windows baja de ~80MB a ~78MB (-2MB net)
+- **`cloud/SessionPack.kt` conservado**: es el modulo responsable de generar el formato `.gameperf` (ZIP con `manifest.json` + `report.html`). Antes lo usaba DriveSync para subir/bajar, ahora lo usa directamente el usuario via los botones nuevos. Es auto-contenido y cross-platform (funciona en macOS, Windows, Linux sin dependencias cloud)
+- **`AppViewModel` cambios**:
+  - Eliminadas sealed classes `DriveSyncState` (Disconnected/Connecting/Connected/Error) y `DriveOp` (Idle/Uploading/Downloading/Refreshing)
+  - Eliminados fields `driveSync`, `_driveState`, `_remoteSessions`, `_driveOp` y getters `driveTeamFolderId` / `driveHasCredentials`
+  - Eliminadas funciones `connectDrive()`, `disconnectDrive()`, `uploadSession(entryId)`, `refreshRemoteSessions()`, `downloadAndImportSession(fileId, name)`, `setDriveTeamFolder(folderId)`
+  - Agregadas funciones nuevas: `exportSessionPack(entryId, destFile: File)` (export a path elegido por user), `importSessionPackFromFile(packFile: File)` (import desde disco), `clearSessionPackMessage()` (clear del snackbar)
+  - Nuevo StateFlow `sessionPackMessage: StateFlow<String?>` para el snackbar de confirmacion/error
+- **`HomeScreen` cambios**:
+  - Eliminado `DriveSyncPanel(vm)` Composable (~230 LOC) y `RemoteSessionRow(remote, vm)` Composable (~50 LOC)
+  - En `HistoryEntryRow`, el boton "Subir a Drive" reemplazado por "Exportar .gameperf" (usa `java.awt.FileDialog` para el "Save As" nativo)
+  - En el header del historial, nuevo TextButton "Importar .gameperf" al lado de "Reparar videos" (usa `java.awt.FileDialog` para el "Open" con filtro `.gameperf`)
+- **`gradle.properties`**: `appVersion=4.2.7` → `appVersion=4.2.8`. Patch
+- **310 tests pasan** — sin cambios en tests (DriveSync no tenia tests propios, era principalmente glue code con Google API)
+
+### Por que este cambio
+
+La feature de Drive fue agregada en v4.2.0 pensada para colaboracion entre el equipo de QA. En la practica:
+
+1. **Friccion de setup es alta**: cada nuevo integrante del equipo necesita crear un proyecto en Google Cloud, habilitar la Drive API, descargar credentials.json, copiarlo a `~/.gameperf/`, autenticarse via browser. El setup toma 15-20 minutos y requiere conocimientos de Google Cloud que no es razonable esperar de un QA
+2. **Mantenimiento del OAuth**: los tokens caducan, las credenciales se revocan, las quotas de API se consumen. Cada problema requiere debug de codigo OAuth complejo
+3. **Valor limitado**: la funcionalidad final (subir un ZIP a una carpeta Drive, bajarlo desde otra maquina) es equivalente a compartir el ZIP por Slack/email/carpeta compartida — canales que el equipo YA tiene configurados
+
+Conclusion: la UX real de intercambio de sesiones NO es mejor con Drive que con un archivo `.gameperf` compartido manualmente. La complejidad del OAuth + APIs agregaba mucho codigo y friccion para cero ganancia de UX
+
 ## [4.2.7] — 2026-04-16
 
 ### Arreglos
