@@ -1273,11 +1273,40 @@ class AppViewModel(
                 }
                 p5Ratio < 0.6 -> score -= 6
             }
-            // KNOWN LIMITATION (v4.2.6): SurfaceFlinger missed-frames is a
-            // device-wide counter, not per-process. totalDrops includes drops
-            // caused by other apps' surfaces too. Penalty is intentionally mild
-            // because we can't isolate this to the game.
-            if (totalDrops > 30) { score -= 12; problems.add("$totalDrops frames perdidos por el compositor grafico (incluye otros procesos del sistema)") }
+            // ═══ Jank ratio (v4.2.7: per-game, not global) ═══
+            //
+            // Pre-v4.2.7 the grading used `totalDrops` (SurfaceFlinger's global
+            // missed-frame counter), which counts drops from ALL apps' surfaces
+            // not just the game's. We had a low penalty (12 pts) to avoid
+            // unfairly tanking the game's grade for unrelated drops, but the
+            // metric was still polluted.
+            //
+            // v4.2.7: switch the grading penalty to use `totalJank`, which is
+            // counted per-game inside computeFrameSnapshot using the dynamic
+            // jank threshold (1.5 × inferred target). This is a true per-game
+            // metric and the penalty can be more meaningful. We normalize as a
+            // RATIO (jank frames / approximate total frames in session) so
+            // long sessions aren't penalized just for accumulating jank over
+            // time.
+            //
+            // totalDrops kept in the report as supplementary info (with a
+            // disclaimer about being device-wide) but no longer drives grading.
+            val approxTotalFrames = (finalElapsed * targetFps).toLong().coerceAtLeast(1)
+            val jankRatio = totalJank.toDouble() / approxTotalFrames
+            when {
+                jankRatio > 0.20 -> {
+                    score -= 15
+                    problems.add("$totalJank frames con jank (${(jankRatio * 100).toInt()}% de la sesion) - Falta de fluidez perceptible")
+                }
+                jankRatio > 0.10 -> score -= 8
+                jankRatio > 0.05 -> score -= 3
+            }
+            // Stutter penalty (frames > 100ms = visible freezes regardless of target).
+            // These are user-visible problems even on a 30fps game; harsh penalty.
+            if (totalStutter > 5) {
+                score -= 10
+                problems.add("$totalStutter freezes visibles (frames > 100ms) durante la sesion")
+            }
             if (peakMem > 2000) { score -= 12; problems.add("Pico de memoria ${peakMem}MB - Riesgo de cierre forzado en dispositivos con poca RAM") }
             else if (peakMem > 1500) { score -= 6; problems.add("Memoria alta: ${peakMem}MB") }
             if (maxTempCpu > 45) { score -= 12; problems.add("Temperatura CPU ${maxTempCpu.toInt()}C - Thermal throttling activo, reduce rendimiento") }

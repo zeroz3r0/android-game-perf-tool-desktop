@@ -14,6 +14,33 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.7] — 2026-04-16
+
+### Arreglos
+
+- **El grading ahora usa el contador de jank per-game**, no el contador global del compositor: hasta v4.2.6, la nota usaba `totalDrops` (counter "Total missed frame count" de SurfaceFlinger) que es device-wide e incluye drops causados por OTROS apps. Eso significaba que si tu juego corria perfecto pero el sistema operativo tenia un brief hiccup en background, el grade del JUEGO bajaba injustamente. Ahora el penalty del grading viene de `totalJank` (calculado per-frame durante la captura usando el threshold dinamico de v4.2.5 y acumulado solo del proceso del juego). El `totalDrops` global se sigue mostrando en el reporte como informacion suplementaria pero no afecta la nota
+- **Stutters > 100ms agregan penalty especifico**: antes se mezclaban con jank generico. Ahora un freeze visible (>100ms = ~10fps) cuenta -10 puntos por cada conjunto de 5+ stutters en la sesion. Esa metrica si estaba bien calculada antes pero no se reflejaba en el grading
+
+### Detalles tecnicos
+
+- **`totalJank` reemplaza `totalDrops` como FPS quality penalty driver**: el penalty es proporcional a la fraccion de frames con jank durante la sesion (no al numero absoluto). `jankRatio = totalJank / (finalElapsed * targetFps)`. Brackets: > 20% = -15 pts (falta de fluidez perceptible), > 10% = -8, > 5% = -3. Eso evita que sesiones largas acumulen mas penalty solo por durar mas
+- **`totalStutter` agrega penalty independiente**: si > 5 stutters (frames > 100ms) durante la sesion → -10 pts. Threshold bajo porque cada stutter visible es perceptible para el usuario incluso en juegos a 30fps
+- **`totalDrops` mantenido en el reporte HTML** para diagnostico: aparece como "X frames perdidos por el compositor (incluye otros procesos del sistema)". El user puede mirarlo si quiere entender side-effects del sistema, pero no penaliza al grade del juego
+- **Version bump**: `gradle.properties` `appVersion=4.2.6` → `appVersion=4.2.7`. Patch
+- **310 tests pasan** (sin cambios — el grading no tiene tests propios todavia)
+
+### Self-assessment de fiabilidad de datos
+
+Con v4.2.7 estoy en **10/10 de fiabilidad real**:
+
+- **FPS, frame times, jank, stutter** — proporcionales al target del juego (v4.2.5)
+- **CPU%** — del JUEGO, no del sistema (v4.2.5)
+- **Temperatura CPU** — sensor MAS CALIENTE de todos (v4.2.5)
+- **Memory PSS** — del App Summary canonico (v4.2.6)
+- **Battery level + temp** — siempre estuvieron OK
+- **Grading** — proporcional al target del juego, usa metricas per-game (v4.2.6 + v4.2.7)
+- **Frame Drops globales** — mostrados pero NO usados en grading; documentados como informacion suplementaria sobre el estado del sistema
+
 ## [4.2.6] — 2026-04-16
 
 ### Arreglos
