@@ -14,6 +14,17 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.9] — 2026-04-16
+
+### Arreglos
+
+- **Feedback visible al exportar / importar `.gameperf`** (hotfix de v4.2.8): en v4.2.8 añadimos las funciones `exportSessionPack()` / `importSessionPackFromFile()` en el ViewModel y expusimos `sessionPackMessage: StateFlow<String?>` para el feedback, pero **no había ninguna UI observando ese StateFlow**. El usuario hacía click en «Exportar .gameperf», el archivo se creaba correctamente, pero no veía ninguna confirmación visible — parecía que no había pasado nada. v4.2.9 agrega un `Snackbar` en la parte inferior de `HomeScreen` que muestra los mensajes de confirmación («Sesión exportada a X.gameperf», «Sesión importada al historial») y los de error. Se auto-cierra a los 4 segundos o manualmente con la X
+
+### Detalles tecnicos
+
+- `HomeScreen.kt`: agregada observación de `vm.sessionPackMessage` via `collectAsState()`, un `LaunchedEffect(sessionPackMessage)` que auto-limpia a los 4s, y un Box overlay condicional en la parte inferior que muestra un Card con icono (Check para éxito, ErrorOutline para error), texto, y botón Close para dismiss manual
+- Todo el `HomeScreen` envuelto en un Box outer nuevo para hostear ambos el Column principal + el snackbar overlay
+
 ## [4.2.8] — 2026-04-16
 
 ### Que hay de nuevo

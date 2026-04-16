@@ -53,9 +53,27 @@ fun HomeScreen(vm: AppViewModel) {
 
     val exportStatus by vm.exportStatus.collectAsState()
 
+    // v4.2.8 hotfix: observe sessionPackMessage from the ViewModel and auto-clear
+    // it after 4 seconds so the snackbar is transient. Without this the state
+    // would persist and the user would see the same "exported / imported"
+    // message until they manually dismiss it.
+    val sessionPackMessage by vm.sessionPackMessage.collectAsState()
+    LaunchedEffect(sessionPackMessage) {
+        if (sessionPackMessage != null) {
+            kotlinx.coroutines.delay(4000)
+            vm.clearSessionPackMessage()
+        }
+    }
+
     if (showGuide) {
         com.gameperf.desktop.ui.components.GuideDialog(onDismiss = { showGuide = false })
     }
+
+    // v4.2.8: outer Box hosts both the main content Column AND the sessionPack
+    // snackbar overlay (which lives at the bottom of the screen while visible).
+    // Without this Box, the snackbar would be a sibling of Column inside the
+    // parent, breaking the fillMaxSize layout.
+    Box(modifier = Modifier.fillMaxSize()) {
 
     Column(
         modifier = Modifier
@@ -752,6 +770,66 @@ fun HomeScreen(vm: AppViewModel) {
         // the "Exportar .gameperf" button, and the top of the history section
         // for the "Importar .gameperf" button.
     }
+
+    // v4.2.8: snackbar overlay for session pack export/import feedback.
+    // Observed from the sessionPackMessage StateFlow — appears when the user
+    // exports or imports a .gameperf, auto-dismisses after 4s via the
+    // LaunchedEffect at the top of this Composable.
+    val currentSessionPackMsg = sessionPackMessage
+    if (currentSessionPackMsg != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 32.dp, start = 24.dp, end = 24.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (currentSessionPackMsg.startsWith("Error", ignoreCase = true))
+                        Red.copy(alpha = 0.95f)
+                    else
+                        Cyan.copy(alpha = 0.95f)
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        if (currentSessionPackMsg.startsWith("Error", ignoreCase = true))
+                            Icons.Default.ErrorOutline
+                        else
+                            Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = Color.Black,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        currentSessionPackMsg,
+                        color = Color.Black,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    IconButton(
+                        onClick = { vm.clearSessionPackMessage() },
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Cerrar",
+                            tint = Color.Black,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    } // closes the outer Box opened at the top of HomeScreen in v4.2.8
 }
 
 // ============================================================================
