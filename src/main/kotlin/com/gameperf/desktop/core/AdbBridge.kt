@@ -1,11 +1,23 @@
 package com.gameperf.desktop.core
 
+import com.gameperf.desktop.core.model.Device
+import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.DevicePlatform
+import com.gameperf.desktop.core.model.FrameSnapshot
+import com.gameperf.desktop.core.model.MemSnapshot
+import com.gameperf.desktop.core.model.ThermalSnapshot
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /**
  * Minimal ADB bridge for the desktop app.
  * Extracts device info, metrics, and logs from ADB commands.
+ *
+ * v4.2.2: Returns `core.model.*` types directly. The previously nested
+ * `@Deprecated` data classes (AdbBridge.Device/DeviceInfo/FrameSnapshot/
+ * MemSnapshot/ThermalSnapshot) have been removed after the v4.1.0
+ * migration period. Consumers already used the `core.model.*` versions via
+ * [AdbBridgeApi].
  */
 object AdbBridge {
 
@@ -110,12 +122,6 @@ object AdbBridge {
 
     // ===== Devices =====
 
-    @Deprecated(
-        "Use com.gameperf.desktop.core.model.Device instead",
-        ReplaceWith("com.gameperf.desktop.core.model.Device(id, model, DevicePlatform.ANDROID, isWifi)", "com.gameperf.desktop.core.model.Device", "com.gameperf.desktop.core.model.DevicePlatform"),
-    )
-    data class Device(val id: String, val model: String, val isWifi: Boolean)
-
     fun listDevices(): List<Device> {
         val output = exec("adb", "devices", "-l")
         if (output.isBlank()) return emptyList()
@@ -126,7 +132,7 @@ object AdbBridge {
                 if (parts.size >= 2 && parts[1] == "device") {
                     val id = parts[0]
                     val model = RE_MODEL.find(line)?.groupValues?.get(1) ?: "Unknown"
-                    Device(id, model, id.contains(":"))
+                    Device(id = id, model = model, platform = DevicePlatform.ANDROID, isWifi = id.contains(":"))
                 } else null
             }
     }
@@ -139,16 +145,6 @@ object AdbBridge {
         val connectOutput = exec("adb", "connect", "$ip:$port", timeoutMs = 5000)
         return if (connectOutput.contains("connected")) "$ip:$port" else null
     }
-
-    @Deprecated(
-        "Use com.gameperf.desktop.core.model.DeviceInfo instead",
-        ReplaceWith("com.gameperf.desktop.core.model.DeviceInfo(model, manufacturer, cpu, gpu, ram, cores, sdk.toString(), resolution, DevicePlatform.ANDROID)"),
-    )
-    data class DeviceInfo(
-        val model: String, val manufacturer: String, val cpu: String,
-        val gpu: String, val ram: String, val cores: Int,
-        val sdk: Int, val resolution: String
-    )
 
     fun getDeviceInfo(deviceId: String): DeviceInfo {
         val model = shell(deviceId, "getprop ro.product.model").trim()
@@ -163,7 +159,17 @@ object AdbBridge {
         val cores = RE_PROCESSOR.findAll(shell(deviceId, "cat /proc/cpuinfo")).count().let { if (it > 0) it else 4 }
         val sf = shell(deviceId, "dumpsys SurfaceFlinger", timeoutMs = 3000)
         val gpu = RE_GLES.find(sf)?.groupValues?.get(1)?.trim()?.take(60) ?: shell(deviceId, "getprop ro.hardware.egl").trim().ifEmpty { "Unknown" }
-        return DeviceInfo(model.ifEmpty { "Unknown" }, mfr.ifEmpty { "Unknown" }, "$hw $plat".trim().ifEmpty { "Unknown" }, gpu, ramGb, cores, sdk, res.ifEmpty { "Unknown" })
+        return DeviceInfo(
+            model = model.ifEmpty { "Unknown" },
+            manufacturer = mfr.ifEmpty { "Unknown" },
+            cpu = "$hw $plat".trim().ifEmpty { "Unknown" },
+            gpu = gpu,
+            ram = ramGb,
+            cores = cores,
+            osVersion = sdk.toString(),
+            resolution = res.ifEmpty { "Unknown" },
+            platform = DevicePlatform.ANDROID,
+        )
     }
 
     fun getBatteryLevel(deviceId: String): Int {
@@ -278,9 +284,6 @@ object AdbBridge {
             ?: extracted.firstOrNull()
     }
 
-    @Deprecated("Use com.gameperf.desktop.core.model.FrameSnapshot instead")
-    data class FrameSnapshot(val fps: Int, val avgFrameTime: Double, val jankCount: Int, val stutterCount: Int)
-
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
         var layer = findLayer(deviceId, pkg) ?: run {
             // No layer at all — game might be hidden behind an ad.
@@ -329,9 +332,6 @@ object AdbBridge {
         return FrameSnapshot(fps, frameTimes.average(), frameTimes.count { it > 16.67 }, frameTimes.count { it > 100.0 })
     }
 
-    @Deprecated("Use com.gameperf.desktop.core.model.MemSnapshot instead")
-    data class MemSnapshot(val totalMb: Long, val nativeMb: Long, val javaMb: Long)
-
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
         require(isValidPackageName(pkg)) { "Invalid package name: $pkg" }
         val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "meminfo", pkg, timeoutMs = 8000)
@@ -363,9 +363,6 @@ object AdbBridge {
             return if (deltaTotal > 0) (deltaBusy * 100 / deltaTotal).toInt().coerceIn(0, 100) else -1
         }
     }
-
-    @Deprecated("Use com.gameperf.desktop.core.model.ThermalSnapshot instead")
-    data class ThermalSnapshot(val cpu: Double, val gpu: Double, val battery: Double, val skin: Double)
 
     fun captureTemperature(deviceId: String): ThermalSnapshot {
         var cpu = -1.0; var gpu = -1.0; var battery = -1.0; var skin = -1.0

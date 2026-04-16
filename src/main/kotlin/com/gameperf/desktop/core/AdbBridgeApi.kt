@@ -2,7 +2,6 @@ package com.gameperf.desktop.core
 
 import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
-import com.gameperf.desktop.core.model.DevicePlatform
 import com.gameperf.desktop.core.model.FrameSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
@@ -13,6 +12,8 @@ import java.io.File
  * v4.1.0 — Return types migrated from deprecated AdbBridge.* nested classes
  *           to platform-agnostic core.model.* types. This eliminates the
  *           deprecated type layer and aligns AdbBridgeApi with DeviceBridgeApi.
+ * v4.2.2 — The deprecated types in AdbBridge are now gone (not just deprecated).
+ *           [RealAdbBridge] is now a 1-line passthrough for every method.
  */
 interface AdbBridgeApi {
     fun isAvailable(): Boolean
@@ -62,25 +63,18 @@ interface AdbBridgeApi {
 }
 
 /**
- * Production implementation. Delegates to [AdbBridge] singleton and converts
- * the deprecated nested types to core.model types.
+ * Production implementation. Thin wrapper over the [AdbBridge] singleton.
+ *
+ * v4.2.2: AdbBridge now returns core.model.* types directly (the deprecated
+ * nested data classes were removed), so every method here is a 1-line
+ * passthrough. No type conversion needed.
  */
 class RealAdbBridge : AdbBridgeApi {
     override fun isAvailable(): Boolean = AdbBridge.isAvailable()
 
-    override fun listDevices(): List<Device> = AdbBridge.listDevices().map { d ->
-        Device(id = d.id, model = d.model, platform = DevicePlatform.ANDROID, isWifi = d.isWifi)
-    }
+    override fun listDevices(): List<Device> = AdbBridge.listDevices()
 
-    override fun getDeviceInfo(deviceId: String): DeviceInfo {
-        val d = AdbBridge.getDeviceInfo(deviceId)
-        return DeviceInfo(
-            model = d.model, manufacturer = d.manufacturer, cpu = d.cpu,
-            gpu = d.gpu, ram = d.ram, cores = d.cores,
-            osVersion = d.sdk.toString(), resolution = d.resolution,
-            platform = DevicePlatform.ANDROID,
-        )
-    }
+    override fun getDeviceInfo(deviceId: String): DeviceInfo = AdbBridge.getDeviceInfo(deviceId)
 
     override fun detectGame(deviceId: String): String? = AdbBridge.detectGame(deviceId)
     override fun switchToWifi(usbDeviceId: String, port: Int): String? =
@@ -93,22 +87,16 @@ class RealAdbBridge : AdbBridgeApi {
 
     override fun resetSessionState() = AdbBridge.resetSessionState()
 
-    override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
-        val f = AdbBridge.captureFrames(deviceId, pkg) ?: return null
-        return FrameSnapshot(fps = f.fps, avgFrameTime = f.avgFrameTime, jankCount = f.jankCount, stutterCount = f.stutterCount)
-    }
+    override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? =
+        AdbBridge.captureFrames(deviceId, pkg)
 
     override fun captureCpuPercent(deviceId: String): Int = AdbBridge.captureCpuPercent(deviceId)
 
-    override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
-        val m = AdbBridge.captureMemory(deviceId, pkg) ?: return null
-        return MemSnapshot(totalMb = m.totalMb, nativeMb = m.nativeMb, javaMb = m.javaMb)
-    }
+    override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? =
+        AdbBridge.captureMemory(deviceId, pkg)
 
-    override fun captureTemperature(deviceId: String): ThermalSnapshot {
-        val t = AdbBridge.captureTemperature(deviceId)
-        return ThermalSnapshot(cpu = t.cpu, gpu = t.gpu, battery = t.battery, skin = t.skin)
-    }
+    override fun captureTemperature(deviceId: String): ThermalSnapshot =
+        AdbBridge.captureTemperature(deviceId)
 
     override fun startScreenRecord(
         deviceId: String, sessionId: String, segment: Int,
