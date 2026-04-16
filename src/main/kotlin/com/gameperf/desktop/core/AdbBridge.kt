@@ -460,14 +460,57 @@ object AdbBridge {
         else -> 50.0            // <20 fps — anything above 75ms (50*1.5) is jank
     }
 
+    /**
+     * Capture memory PSS for the given package.
+     *
+     * v4.2.5 — improved parser to prefer the App Summary section.
+     *
+     * `dumpsys meminfo <pkg>` output has TWO different "TOTAL PSS:" lines:
+     *
+     * 1. The detailed table near the top, where TOTAL is the sum of every
+     *    allocation category (Native Heap + Dalvik + Stack + Cursor + Ashmem +
+     *    Other dev + ... etc.). On some OEMs this number doesn't match the App
+     *    Summary one because of how mmapped regions are accounted.
+     *
+     * 2. The App Summary section near the bottom (Android 5+), labeled
+     *    `App Summary` with a clear "TOTAL PSS: <N>" line. Per the Android
+     *    Memory Profiler docs, this is the canonical "memory used by your app"
+     *    number — sum of Java + Native + Code + Stack + Graphics + Private Other
+     *    + System.
+     *
+     * Pre-v4.2.5 the regex agreed with whichever line came FIRST, which on
+     * Android 12+ was the table version (sometimes wrong by 5-15%). v4.2.5
+     * specifically looks INSIDE "App Summary" first, with the table-version
+     * regex as fallback for Android <5 (which had no App Summary section).
+     *
+     * Sanity check: anything above 16384 MB (16 GB) is treated as a parse error
+     * — no Android device has more than 16GB RAM in 2025. Anything 0 is
+     * impossible for a running process.
+     */
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
         require(isValidPackageName(pkg)) { "Invalid package name: $pkg" }
         val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "meminfo", pkg, timeoutMs = 8000)
-        val total = (RE_TOTAL_PSS.find(output) ?: RE_TOTAL_FALLBACK.find(output))
-            ?.groupValues?.get(1)?.toLongOrNull() ?: return null
+
+        // v4.2.5: prefer the App Summary section's TOTAL PSS over the first
+        // match, which on Android 12+ is the detailed-table TOTAL (different by
+        // 5-15% on some devices).
+        val appSummary = output.substringAfter("App Summary", missingDelimiterValue = "")
+        val totalKb = (
+            if (appSummary.isNotEmpty()) RE_TOTAL_PSS.find(appSummary)?.groupValues?.get(1)?.toLongOrNull()
+            else null
+        )
+            ?: RE_TOTAL_PSS.find(output)?.groupValues?.get(1)?.toLongOrNull()
+            ?: RE_TOTAL_FALLBACK.find(output)?.groupValues?.get(1)?.toLongOrNull()
+            ?: return null
+
+        val totalMb = totalKb / 1024
+        // v4.2.5: sanity range. Phones top out at ~16GB RAM in 2025 and a
+        // running process can't be 0MB. Anything outside this is a parse error.
+        if (totalMb !in 1L..16384L) return null
+
         val native = RE_NATIVE_HEAP.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
         val java = RE_JAVA_HEAP.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
-        return MemSnapshot(total / 1024, native / 1024, java / 1024)
+        return MemSnapshot(totalMb, native / 1024, java / 1024)
     }
 
     /**
