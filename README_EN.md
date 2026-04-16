@@ -1,0 +1,355 @@
+# GamePerf Desktop
+
+[🇪🇸 Español](README.md) · [🇬🇧 English](README_EN.md)
+
+**Measure the performance of your mobile games with a simple desktop app — no scripts, no terminal.**
+
+Connect your phone (Android or iPhone), press a button, play the level you care about — the app gives you back a report with FPS, CPU, memory, temperature, gameplay video, interactive chart, and a grade (A/B/C/...) that tells you whether performance is good or if something needs fixing.
+
+Free, open source, runs on Mac, Windows and Linux.
+
+---
+
+## Table of contents
+
+- [Who it's for](#who-its-for)
+- [What it does](#what-it-does)
+- [Installation](#installation)
+- [Your first session in 4 steps](#your-first-session-in-4-steps)
+- [Supported platforms](#supported-platforms)
+- [FAQ](#faq)
+- [Building from source](#building-from-source)
+- [Project structure](#project-structure-for-developers)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Who it's for
+
+| Role | What they use it for |
+|---|---|
+| **QA / Testers** | Verify a game runs stably before shipping a build. Spot FPS drops, overheating, and memory leaks during long sessions |
+| **Game designers** | Check whether a specific level or scene hurts performance. Compare two builds side by side |
+| **Product / Producer** | Share reports with the team (PDF or exportable file). Benchmark your game against competitors |
+| **Developers** | Integrate into CI. Export data for analysis. Debug performance regressions |
+
+You don't need to know ADB or touch a terminal. If you've ever plugged a phone into a computer, you already know enough.
+
+---
+
+## What it does
+
+### Live capture
+
+- **Real-time metrics** during the session: FPS, frame time (p1% / p50% / p99%), CPU, memory (total / native / java), temperature (CPU / GPU / battery / skin), and battery level
+- **Video recording** of the gameplay in parallel, using the phone's hardware encoder (doesn't affect the FPS of the game you're measuring)
+- **Markers during the session**: press a button to flag the exact moment something happens (an interstitial ad, a scene transition, a heavy asset load, etc.). You can review them later in the report
+
+### Post-session analysis
+
+- **HTML report** with interactive charts, per-second FPS table, percentiles, and a "detected problems" section with plain-English explanations (e.g., "Temperature reached 48 °C at minute 3 — probable thermal throttling")
+- **Built-in video player** with a timeline synced to the FPS chart. Drag the cursor on the FPS graph and the video jumps to the same moment, so you see exactly what was happening when performance dropped
+- **Automatic grade (S / A / B / C / D / F)** with fair, genre-aware scoring (the thresholds for a shooter aren't the same as for a casual puzzle)
+- **Session comparison**: pick 2 sessions from history and view them side by side to compare "build before / after", "your game / competitor", or "device A / device B"
+
+### Team collaboration
+
+- **Export a session as a `.gameperf` file** (self-contained ZIP with the HTML report + all metrics). Share it by any means: email, Slack, shared folder, USB. The recipient imports it into their copy of the app and it shows up as just another session in the history
+- **Export to PDF** from any session or comparison report. The PDF lives outside the automatic retention policy so it won't be deleted
+- **Favorites**: star a session to make sure it's never auto-removed
+
+### Built-in help
+
+- **In-app guide** (book icon top-right): explains the testing methodology and what each metric means. No need to go to GitHub or open external docs — it's one click away while you're recording
+
+---
+
+## Installation
+
+### Mac (Intel or Apple Silicon)
+
+1. Download the latest `.dmg` from [Releases](https://github.com/zeroz3r0/android-game-perf-tool-desktop/releases/latest)
+2. Open it and drag **GamePerf** into Applications
+3. The first time, macOS will block the app for security reasons. To bypass:
+   - Open **System Preferences > Security & Privacy**
+   - Click **"Open Anyway"** next to the GamePerf message
+   - Terminal alternative: `xattr -cr /Applications/GamePerf.app`
+
+### Windows 10 / 11
+
+1. Download the latest `.msi` from [Releases](https://github.com/zeroz3r0/android-game-perf-tool-desktop/releases/latest)
+2. Run the installer
+3. Windows Defender / SmartScreen will show a warning because the installer isn't code-signed (false positive — the app is open source):
+   - Click **"More info"**
+   - Click **"Run anyway"**
+4. If your antivirus deletes it, add the install folder (`C:\Program Files\GamePerf\`) to the exclusion list
+
+### Linux
+
+1. Download the JAR (`GamePerf-linux-x64-X.Y.Z.jar` or `linux-aarch64`) from [Releases](https://github.com/zeroz3r0/android-game-perf-tool-desktop/releases/latest)
+2. Make sure you have Java 17+ installed: `java -version` should report `17` or newer
+3. Run: `java -jar GamePerf-linux-x64-X.Y.Z.jar`
+
+---
+
+## Your first session in 4 steps
+
+### If your phone is **Android**
+
+1. **Enable USB Debugging**: on the phone, go to *Settings > About phone > tap "Build number" 7 times* to enable Developer Options. Then go to *Settings > Developer Options* and turn on **"USB Debugging"**
+2. **Connect the phone** to your computer with a USB cable. A popup will appear on the phone asking for authorization — tap "Always allow from this computer"
+3. **Open GamePerf**. Your phone should appear in the "Devices" list on the main screen. If it doesn't, make sure you have ADB installed (see [FAQ](#faq))
+4. **Open the game you want to measure** on the phone and click **"Start test"** in GamePerf. Pick a duration (e.g., 1 minute), play normally, and when it finishes the app shows the report automatically
+
+You can also connect the phone **wirelessly** via WiFi (Android 11+): see the [WiFi connection](#wifi-connection-android-11) section below.
+
+### If your phone is **iPhone / iPad**
+
+1. **On Mac**: connect the iPhone with a USB cable. You'll need to authorize the connection with the iPhone's passcode the first time ("Trust this computer?")
+2. **On Windows**: install iTunes (or "Apple Devices" on Windows 11) before connecting the iPhone. The system needs it to communicate with the device
+3. **Open GamePerf**. The iPhone will appear with a blue badge in the "Devices" list. If your iPhone runs iOS 16 or later, the app automatically detects whether Developer Mode is needed — most metrics work without it
+4. **Open the game and click "Start test"**. The differences between what iOS can capture vs. Android are explained in the report (in particular: iOS doesn't expose skin temperature or the native/java memory split)
+
+---
+
+## Supported platforms
+
+### Devices you can measure
+
+| Platform | Metrics | Video | Connection |
+|---|---|---|---|
+| Android 5+ | All: FPS, CPU, memory (native+java+total), temperature (CPU+GPU+battery+skin), battery | Native resolution at 30/60 fps | USB or WiFi (Android 11+) |
+| iOS 14+ | FPS, CPU, memory (total only), temperature (CPU + battery), battery | 15 fps (Mac) / 8 fps "preview" (Windows) | USB only |
+
+### Computers that run GamePerf
+
+| System | Installer | Notes |
+|---|---|---|
+| macOS (Intel / Apple Silicon) | `.dmg` | Recommended for iOS — smoother screen capture |
+| Windows 10 / 11 | `.msi` | Requires iTunes or "Apple Devices" for iOS support |
+| Linux (x64 / ARM64) | `.jar` + Java 17 | No iOS support (requires Apple SDK) |
+
+### WiFi connection (Android 11+)
+
+Recording without a cable is useful for measuring **real battery consumption** (the USB cable charges the phone and skews the measurement). Two paths:
+
+**Recommended since v3.2.0 — Direct pairing without ever using USB**:
+
+1. Open GamePerf without connecting the cable
+2. "WiFi (Android 11+)" tab in the device panel, or "+ Add WiFi device" button
+3. On the phone: *Developer Options > Wireless debugging > ON > Pair device with pairing code*
+4. The device appears in the app's list in under 3 seconds. Click it and type the 6-digit code shown on the phone
+5. On subsequent runs the device reconnects automatically — no action needed
+
+**Classic path — Switch from USB**:
+
+1. Connect the cable first, wait for the device to appear
+2. Click "Switch to WiFi (measure real battery)"
+3. Unplug the cable when prompted. The test runs over WiFi
+
+---
+
+## FAQ
+
+### My Android phone doesn't show up in the list
+
+1. Make sure **USB Debugging** is enabled in Developer Options
+2. Accept the authorization popup on the phone when it asks "Allow USB debugging from this computer?"
+3. Make sure **ADB** is installed and on your PATH:
+   - **Mac**: `brew install android-platform-tools`, then `adb version` in a terminal should show the version
+   - **Windows**: download [Platform-Tools](https://developer.android.com/studio/releases/platform-tools), extract to `C:\platform-tools\`, add that folder to the system PATH
+4. Try a different cable. Some USB cables are charge-only and don't carry data
+
+### My iPhone doesn't show up
+
+- **On Mac**: accept the "Trust this computer?" prompt on the iPhone the first time
+- **On Windows**: you must have iTunes installed (or the newer "Apple Devices" on Windows 11). Without it, Windows can't talk to the iPhone
+- **iOS 16+**: you don't need to enable Developer Mode for most metrics. The app detects it and adapts what it captures
+
+### Windows Defender deletes the installer
+
+This is a false positive (the installer isn't code-signed because code-signing certs cost money). Fixes:
+
+1. **Personal use**: add the install folder as an antivirus exclusion
+2. **Corporate environments**: see the ["Code signing" section](#code-signing-corporate-environment) in the internal docs
+
+### Where are reports saved?
+
+Under `~/GamePerf Reports/` (Mac/Linux) or `C:\Users\<your-username>\GamePerf Reports\` (Windows). Inside you'll find:
+
+- `informe_*.html` — the generated reports
+- `video_*.mp4` — the gameplay videos
+- `history.json` — index of the history (don't edit by hand)
+
+The latest 5 sessions are preserved automatically. To keep one permanently, **star it as a favorite**, or **export it to PDF or `.gameperf`** before recording new sessions.
+
+### How do I update the app?
+
+The app checks GitHub Releases on every startup. If a new version is available, a banner appears at the top with an "Update now" button. You can ignore it — the app will auto-update on startup if a new version exists. Nothing is lost on update: history, favorites, and settings persist between versions.
+
+### How do I share a session with a teammate?
+
+From the history, click the **"Export .gameperf"** button in the session row. A native save dialog opens where you pick the destination. The resulting `.gameperf` is a self-contained ZIP with the HTML report + all metrics — you can send it by any means (email, Slack, shared folder, USB). Your teammate imports it via the **"Import .gameperf"** button in the same history and it shows up as just another session.
+
+### What if the grade seems unfair?
+
+Since v4.2.1, the grade takes the game's genre into account (casual / strategy / RPG / action / shooter). The setup screen has a dropdown to pick the genre before recording. An average FPS of 30 is "A" for a board game but "D" for a shooter — that's already handled.
+
+Since v4.2.6, the grade is also proportional to the **game's own target FPS**. A game intentionally capped at 30 fps that runs stably at 30 fps earns an A, not a D like in previous versions.
+
+If you still think the grade is off, open an [issue](https://github.com/zeroz3r0/android-game-perf-tool-desktop/issues) with the exported session and we'll review it.
+
+---
+
+## Building from source
+
+For developers who want to contribute or build the binary from scratch:
+
+### Requirements
+
+- **Java 17 or later** (recommended: [Temurin](https://adoptium.net/))
+- **ADB** (Android Debug Bridge) installed and on your PATH — only if you're going to test against real Android devices
+- **Python 3.11 or later** with `pymobiledevice3` — only if you're going to test against real iOS devices (release builds bundle this as a PyInstaller binary)
+
+### Commands
+
+```bash
+# Clone the repo
+git clone https://github.com/zeroz3r0/android-game-perf-tool-desktop.git
+cd android-game-perf-tool-desktop
+
+# Run directly without installing
+./gradlew run        # Mac/Linux
+.\gradlew.bat run    # Windows
+
+# Run the test suite (300+ tests, ~1 min)
+./gradlew test
+
+# Build the installer for the current OS
+./gradlew packageDmg    # macOS .dmg
+./gradlew packageMsi    # Windows .msi
+./gradlew packageDeb    # Linux .deb
+
+# Build the standalone JAR (runs with `java -jar`)
+./gradlew packageUberJarForCurrentOS
+```
+
+The project ships with Gradle Wrapper — **you don't need to install Gradle separately**.
+
+### CI pipeline
+
+The repo has 2 GitHub Actions workflows:
+
+- **CI** (`.github/workflows/ci.yml`): runs on every push and PR to `main`. Executes `detekt` + `test` + `compileKotlin`. About 2 minutes per run on `ubuntu-latest`. Catches regressions that used to only surface during release builds
+- **Release** (`.github/workflows/release.yml`): triggers on pushing a `v*` tag. Builds on `ubuntu`, `macos`, and `windows` in parallel, packages the iOS sidecar with PyInstaller, and publishes a GitHub release with all artifacts
+
+To cut a new release:
+
+1. Bump `appVersion` in `gradle.properties`
+2. Add an entry to `CHANGELOG.md` with the 3 sections (What's new / Fixes / Technical details)
+3. Commit + push to `main`
+4. `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <notes.md>` — this fires the release workflow and publishes the artifacts automatically
+
+---
+
+## Project structure (for developers)
+
+```
+src/main/kotlin/com/gameperf/desktop/
+├── Main.kt                         # Entry point, main window
+├── core/
+│   ├── AdbBridge.kt                # ADB communication (low-level layer)
+│   ├── AdbBridgeApi.kt             # Interface + RealAdbBridge (testable)
+│   ├── AutoUpdater.kt              # Auto-updater via GitHub Releases
+│   ├── DeviceNameResolver.kt       # SM-S911B -> "Samsung Galaxy S23" (v4.2.5)
+│   ├── HardwareScoring.kt          # Hardware classification + per-device grading
+│   ├── SessionHistory.kt           # Persistence + retention + favorites
+│   ├── ToolResolver.kt             # Cross-platform ffmpeg/ffprobe locator
+│   ├── bridge/                     # Bridge pattern: Android + iOS + Composite
+│   ├── ios/                        # Python sidecar client (iOS)
+│   └── model/                      # Platform-agnostic types (Device, DeviceInfo, etc.)
+├── viewmodel/
+│   └── AppViewModel.kt             # Global state, capture loop, grading
+├── report/
+│   └── ReportGenerator.kt          # HTML + PDF generation via Playwright
+├── cloud/
+│   └── SessionPack.kt              # .gameperf format for QA session sharing
+└── ui/
+    ├── theme/                      # Colors, typography
+    ├── components/                 # Reusable composables (player, timeline, dialogs)
+    └── screens/                    # Main screens (Home, Capture, Results, Comparison)
+
+sidecar/                            # Python iOS sidecar (packaged as a binary)
+├── gameperf_sidecar.py             # FastAPI entry point
+├── ios_client.py                   # pymobiledevice3 wrapper
+└── gameperf_sidecar.spec           # PyInstaller config
+
+src/test/                           # 300+ tests — kotlin.test + JUnit 4 (mixed)
+.github/workflows/                  # CI + Release pipelines
+docs/                               # PERFORMANCE_TESTING.md, BENCHMARK_TEMPLATE.md, manual tests
+```
+
+### Cross-platform architecture
+
+```
+AppViewModel (single source of truth for UI state)
+       |
+       v
+DeviceBridgeApi (platform-agnostic interface)
+       |
+       +--> CompositeBridge (routes by Device.platform)
+                |
+                +--> AndroidBridge -> AdbBridgeApi -> AdbBridge (singleton, wraps adb subprocess)
+                |
+                +--> IosBridge -> SidecarClient (HTTP) -> Python sidecar -> pymobiledevice3
+```
+
+All UI + ViewModel code talks **only to types from `core.model.*`** (platform-agnostic). The bridges translate to each platform's native APIs. This lets us test with `FakeAdbBridge` / `FakeDeviceBridge` without touching real ADB.
+
+---
+
+## Contributing
+
+Pull requests are welcome. For large changes, open an issue first to discuss.
+
+Conventions:
+
+- **Commits**: [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`)
+- **Tests**: new code comes with tests if it has logic. Pure parsers are especially easy to test without mocks
+- **CHANGELOG**: any user-visible change lands in the CHANGELOG under the right section (What's new / Fixes). Purely technical changes go under Technical details
+- **Detekt**: the baseline is calibrated — new violations fail CI. If your change needs to suppress a rule, justify it with a comment in the baseline XML
+
+---
+
+## Code signing (corporate environment)
+
+To prevent antivirus software and SmartScreen from blocking the MSI on corporate Windows deployments:
+
+```bash
+# Sign with signtool (Windows SDK)
+signtool sign /f certificate.pfx /p password /tr http://timestamp.digicert.com /td sha256 GamePerf-X.Y.Z.msi
+```
+
+Certificate vendors: DigiCert (~$300/year), Sectigo / SSL.com (~$70/year).
+
+Alternatives without a certificate:
+
+- **Antivirus exclusion**: add `C:\Program Files\GamePerf\` to exclusions
+- **Corporate GPO**: whitelist the MSI by hash
+
+---
+
+## License
+
+MIT — use, modify, and distribute freely. See [LICENSE](LICENSE) for details.
+
+---
+
+## Credits
+
+- [Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform) — UI framework
+- [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) — iOS communication
+- [FFmpeg](https://ffmpeg.org/) — video encoding/decoding
+- [Chart.js](https://www.chartjs.org/) — HTML report charts
+- [Playwright](https://playwright.dev/) — headless PDF generation
