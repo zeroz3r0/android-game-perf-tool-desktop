@@ -14,6 +14,26 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.6] — 2026-04-16
+
+### Arreglos
+
+- **La nota (A/B/C/D/F) ahora es proporcional al target de FPS del juego** (CRITICO): hasta v4.2.5, los thresholds del grading "general" eran hardcoded a 60 FPS — un juego con target 30 FPS (Pokemon Unite, casuales, juegos en modo bateria) que corria estable a 30 fps obtenia automaticamente -35 puntos en su nota porque el codigo asumia que p50 < 30 era "muy bajo" y p50 < 55 era "se nota falta de fluidez". Ahora se infiere el target del juego (30/45/60/90/120) a partir del avgFps y maxFps observados, y el grading penaliza solo cuando el p50 baja del 85% del target del propio juego. Un juego target 30 con p50=30 ahora obtiene grade A correctamente. Mismo razonamiento que el fix del jank en v4.2.5 — la metrica era "que tan bien comparas vs 60fps" cuando deberia ser "que tan bien hits TU PROPIO target"
+- **Memoria PSS prefiere App Summary > TOTAL PSS** (preciso): el regex de captura de memoria agarraba el PRIMER "TOTAL PSS:" del output de `dumpsys meminfo`, que en Android 12+ es el de la tabla detallada (suma de cada categoria de allocacion). Ese numero puede diferir 5-15% del valor canonico de "memoria que usa la app" segun la doc de Android (que es el TOTAL PSS dentro de la seccion "App Summary"). Ahora se lee de App Summary primero, con fallback al original. Tambien se valida que el numero sea razonable (1-16384 MB) para descartar parsing errors
+
+### Detalles tecnicos
+
+- **`AppViewModel.inferGameTargetFps(avgFps, maxFps)` companion function**: pure, testable. Heuristica: `indicator = max(avgFps, maxFps * 0.95)` → bucket en {120, 90, 60, 45, 30}. El multiplicador 0.95 evita que un brief spike de menu (max=35 en juego 30fps) lo clasifique como 45. Si el indicator >= 110 → 120fps, >= 80 → 90fps, >= 50 → 60fps, >= 38 → 45fps, sino 30fps. **9 unit tests** en `AppViewModelGradingTest`: stable streams a cada bucket, juego con loading-screen-low-avg-pero-game-60fps, max-spike no over-classifica, fallback a 30 para sesiones rotas, edge case avg=max=0
+- **`captureMemory` con scope a App Summary**: usa `output.substringAfter("App Summary", "")` para limitar la busqueda del regex `TOTAL PSS:`. Si el delimitador no esta (Android <5, raro), cae al match original. Validacion `totalMb in 1..16384` rechaza valores absurdos como 0 o 99999
+- **Documentacion del Frame Drops como known limitation**: el numero `totalDrops` viene del counter global de SurfaceFlinger (`dumpsys SurfaceFlinger | "Total missed frame count:"`) y NO esta filtrado por proceso. Incluye drops causados por OTROS apps cuyas surfaces no rasterizaron a tiempo. Penalty mantenido bajo (12 pts) para no falsamente penalizar al juego por algo que no hizo. Mejora futura: usar `dumpsys SurfaceFlinger --layer-stats <layer>` para drops scoped al layer del juego — scope creep para v4.2.7
+- **Version bump**: `gradle.properties` `appVersion=4.2.5` → `appVersion=4.2.6`. Patch
+- **310 tests pasan** (era 301): +9 grading tests
+
+### Como probar
+
+1. **Grading proporcional**: grabar 1 minuto de un juego target 30fps (Pokemon Unite con limit, o cualquier casual). Pre-v4.2.6 esto daba grade D/F automaticamente. Post-v4.2.6 da grade A si la sesion fue estable
+2. **Memory App Summary**: comparar `dumpsys meminfo <pkg>` manualmente con el valor mostrado por la app. El valor de la app debe coincidir con el "TOTAL PSS:" que aparece en la seccion "App Summary" (cerca del final del output de meminfo), no con el TOTAL de la tabla detallada (cerca del top)
+
 ## [4.2.5] — 2026-04-16
 
 ### Arreglos

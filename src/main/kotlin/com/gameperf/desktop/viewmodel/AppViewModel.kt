@@ -159,6 +159,38 @@ class AppViewModel(
     companion object {
         internal const val MAX_HISTORY_SIZE = 7_200
         internal const val MAX_FRAME_TIMES_SIZE = 500_000
+
+        /**
+         * v4.2.6: infer the game's intended target FPS from the observed avg + max.
+         *
+         * Used by the grading logic so a 30fps-target game isn't penalized for
+         * landing at p50=30 (which is on-target, not below). The previous grading
+         * compared all games against 60fps thresholds.
+         *
+         * Heuristic: take the higher of `avgFps` and 95% of `maxFps`. The max is
+         * the best the game ever achieved during the session, which is a strong
+         * signal of what it tries to render. Drop to 95% to discount one-off
+         * spikes from (e.g.) skipping the splash screen.
+         *
+         * Buckets correspond to the common mobile-game refresh strategies:
+         *   ≥ 110 → 120 fps (high-refresh competitive)
+         *   ≥ 80  → 90 fps (Genshin's "60+" mode, OnePlus 90hz games)
+         *   ≥ 50  → 60 fps (most action games)
+         *   ≥ 38  → 45 fps (Unity Auto on mid-range)
+         *   else  → 30 fps (battery-saver, casual games, low-end devices)
+         *
+         * Pure function, easily unit-testable.
+         */
+        internal fun inferGameTargetFps(avgFps: Int, maxFps: Int): Int {
+            val indicator = maxOf(avgFps, (maxFps * 0.95).toInt())
+            return when {
+                indicator >= 110 -> 120
+                indicator >= 80 -> 90
+                indicator >= 50 -> 60
+                indicator >= 38 -> 45
+                else -> 30
+            }
+        }
     }
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -1197,19 +1229,55 @@ class AppViewModel(
             val maxTempGpu = tempGpuHistory.maxOrNull() ?: 0.0
             val totalDrops = missedEnd - missedStart
 
-            // Grade — v4.2.0: use p50 (median) as main signal, p5 for sustained drops.
-            // Loading screens and brief scene transitions no longer tank the grade
-            // because p1 is ignored. A game with avg 53 / p50 55 / p5 45 now scores B.
+            // ═══ Grading (v4.2.6: target-FPS-aware) ═══
+            //
+            // Pre-v4.2.6 the FPS thresholds were hardcoded assuming a 60fps target:
+            //   p50 < 30 → -35
+            //   p50 < 45 → -20
+            //   p50 < 55 → -8
+            //
+            // That penalized 30fps-target games unfairly: a Pokemon Unite or any
+            // mobile game with an intentional 30fps cap landed at p50=30 and got
+            // -35 despite being on-target. Same class of bug we fixed in v4.2.5
+            // for jank — the metric was answering "how does this stream compare
+            // to a 60fps reference?" instead of "how well does this game hit ITS
+            // OWN target?". After v4.2.6 the grading is proportional to the
+            // inferred target.
+            val targetFps = inferGameTargetFps(avgFps = avgFps, maxFps = maxFps)
             val problems = mutableListOf<String>()
             var score = 100
+            // FPS median scoring proportional to the game's target.
+            // p50 ≥ 85% of target = on-target, no penalty.
+            // p50 < 85% but ≥ 70% = small penalty (8 pts).
+            // p50 < 70% but ≥ 50% = medium penalty (20 pts).
+            // p50 < 50% = severe (35 pts), the game is broken at its own target.
+            val p50Ratio = if (targetFps > 0) p50.toDouble() / targetFps else 1.0
             when {
-                p50 < 30 -> { score -= 35; problems.add("FPS mediana $p50 - Muy bajo para una experiencia fluida") }
-                p50 < 45 -> { score -= 20; problems.add("FPS mediana $p50 - Se nota falta de fluidez en escenas con accion") }
-                p50 < 55 -> score -= 8
+                p50Ratio < 0.5 -> {
+                    score -= 35
+                    problems.add("FPS mediana $p50 vs target ${targetFps} - Muy bajo para una experiencia fluida")
+                }
+                p50Ratio < 0.7 -> {
+                    score -= 20
+                    problems.add("FPS mediana $p50 vs target ${targetFps} - Se nota falta de fluidez en escenas con accion")
+                }
+                p50Ratio < 0.85 -> score -= 8
             }
-            if (p5 < 20) { score -= 15; problems.add("P5 FPS: $p5 - Caidas severas que causan congelaciones visibles") }
-            else if (p5 < 30) score -= 6
-            if (totalDrops > 30) { score -= 12; problems.add("$totalDrops frames perdidos por el compositor grafico") }
+            // P5 scoring proportional to target. p5 ≥ 60% of target = OK.
+            // Below 40% of target = severe drops; between 40-60% = mild.
+            val p5Ratio = if (targetFps > 0) p5.toDouble() / targetFps else 1.0
+            when {
+                p5Ratio < 0.4 -> {
+                    score -= 15
+                    problems.add("P5 FPS: $p5 - Caidas severas que causan congelaciones visibles")
+                }
+                p5Ratio < 0.6 -> score -= 6
+            }
+            // KNOWN LIMITATION (v4.2.6): SurfaceFlinger missed-frames is a
+            // device-wide counter, not per-process. totalDrops includes drops
+            // caused by other apps' surfaces too. Penalty is intentionally mild
+            // because we can't isolate this to the game.
+            if (totalDrops > 30) { score -= 12; problems.add("$totalDrops frames perdidos por el compositor grafico (incluye otros procesos del sistema)") }
             if (peakMem > 2000) { score -= 12; problems.add("Pico de memoria ${peakMem}MB - Riesgo de cierre forzado en dispositivos con poca RAM") }
             else if (peakMem > 1500) { score -= 6; problems.add("Memoria alta: ${peakMem}MB") }
             if (maxTempCpu > 45) { score -= 12; problems.add("Temperatura CPU ${maxTempCpu.toInt()}C - Thermal throttling activo, reduce rendimiento") }
