@@ -6,8 +6,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -49,7 +49,7 @@ fun GuideDialog(onDismiss: () -> Unit) {
                     Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.MenuBook, null, tint = Cyan, modifier = Modifier.size(24.dp))
+                    Icon(Icons.AutoMirrored.Filled.MenuBook, null, tint = Cyan, modifier = Modifier.size(24.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Guía de Performance Testing", color = Cyan, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
@@ -74,7 +74,7 @@ fun GuideDialog(onDismiss: () -> Unit) {
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
                         text = { Text("Plantilla", fontSize = 13.sp) },
-                        icon = { Icon(Icons.Default.MenuBook, null, modifier = Modifier.size(16.dp)) }
+                        icon = { Icon(Icons.AutoMirrored.Filled.MenuBook, null, modifier = Modifier.size(16.dp)) }
                     )
                 }
 

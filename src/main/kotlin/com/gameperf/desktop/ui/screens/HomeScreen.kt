@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -72,7 +73,7 @@ fun HomeScreen(vm: AppViewModel) {
                 onClick = { showGuide = true },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Icon(Icons.Default.MenuBook, null, tint = Cyan, modifier = Modifier.size(16.dp))
+                Icon(Icons.AutoMirrored.Filled.MenuBook, null, tint = Cyan, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Guía de testing", color = Cyan, fontSize = 12.sp)
             }
