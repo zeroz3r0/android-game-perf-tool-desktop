@@ -124,48 +124,96 @@ object AutoUpdater {
                 return null
             }
 
-            // Find the highest semver tag
-            val highestTag = tagNames.maxWithOrNull { a, b ->
+            // v4.2.10: iterate releases from highest semver downward until we find
+            // one that actually has a JAR asset published for our platform.
+            //
+            // This closes a recurring bug ("No hay JAR disponible para tu plataforma")
+            // that happened in v4.2.3, v4.2.4, and v4.2.9: `gh release create`
+            // creates the release immediately, but the .github/workflows/release.yml
+            // workflow needs 6-7 minutes to compile + package + upload binaries.
+            // During that window the release exists in GitHub but has no assets,
+            // and the previous version of this code exposed it to the banner
+            // anyway. Pressing "Actualizar" then failed with the red error text
+            // because extractJarAssetUrl returned null.
+            //
+            // Now we skip any release without matching assets. If the highest
+            // release hasn't finished building, we fall back to the next one.
+            // If none of the newer releases have assets yet, we return null
+            // (no banner) — "no update visible yet" is a better UX than
+            // "update that doesn't work".
+            //
+            // See CLAUDE.md "Patrón de bug recurrente" section for the lesson.
+            val sortedTagsDescending = tagNames.sortedWith { a, b ->
                 val av = a.removePrefix("v").removePrefix("V")
                 val bv = b.removePrefix("v").removePrefix("V")
-                compareVersions(av, bv)
-            } ?: run {
-                lastCheckError = "Could not determine highest version from tags: $tagNames"
-                return null
+                compareVersions(bv, av) // b before a => descending
             }
 
-            // Now fetch that specific release to get full details including assets
-            val releaseUrl = URL("https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/tags/$highestTag")
-            val releaseConn = releaseUrl.openConnection() as HttpURLConnection
-            releaseConn.requestMethod = "GET"
-            releaseConn.setRequestProperty("Accept", "application/vnd.github+json")
-            releaseConn.setRequestProperty("User-Agent", "GamePerfDesktop/${AppVersion.NAME}")
-            releaseConn.connectTimeout = 10_000
-            releaseConn.readTimeout = 10_000
+            val currentVersion = AppVersion.NAME
+            for (tag in sortedTagsDescending) {
+                val tagVersion = tag.removePrefix("v").removePrefix("V")
+                // Stop as soon as we reach the version we're running — everything
+                // below is older or equal, so no update.
+                if (compareVersions(tagVersion, currentVersion) <= 0) {
+                    // No new version with assets found.
+                    return null
+                }
 
-            if (releaseConn.responseCode != 200) {
-                lastCheckError = "HTTP ${releaseConn.responseCode} fetching release $highestTag"
-                return null
+                val releaseJson = fetchReleaseJson(tag) ?: continue // network error → skip this tag
+                val jarUrl = extractJarAssetUrl(releaseJson)
+
+                if (jarUrl == null) {
+                    // Release exists but its binaries haven't been uploaded yet
+                    // (workflow still building, or workflow failed). Try the
+                    // next lower tag to avoid showing a broken "Update" button.
+                    continue
+                }
+
+                val name = extractJsonString(releaseJson, "name") ?: tag
+                val body = extractJsonString(releaseJson, "body") ?: ""
+                val publishedAt = extractJsonString(releaseJson, "published_at") ?: ""
+                val htmlUrl = extractJsonString(releaseJson, "html_url") ?: ""
+                return ReleaseInfo(tag, tagVersion, name, body, publishedAt, jarUrl, htmlUrl)
             }
 
-            // v4.2.4: same UTF-8 fix as above — this fetch retrieves the full
-            // release body (including "Que hay de nuevo" / "Arreglos" sections
-            // shown in the in-app banner), so the mojibake was most visible here.
-            val releaseJson = BufferedReader(InputStreamReader(releaseConn.inputStream, StandardCharsets.UTF_8)).use { it.readText() }
-            releaseConn.disconnect()
-
-            val version = highestTag.removePrefix("v").removePrefix("V")
-            val name = extractJsonString(releaseJson, "name") ?: highestTag
-            val body = extractJsonString(releaseJson, "body") ?: ""
-            val publishedAt = extractJsonString(releaseJson, "published_at") ?: ""
-            val htmlUrl = extractJsonString(releaseJson, "html_url") ?: ""
-            val jarUrl = extractJarAssetUrl(releaseJson)
-
-            ReleaseInfo(highestTag, version, name, body, publishedAt, jarUrl, htmlUrl)
+            // Exhausted the tag list without finding any newer release that has
+            // binaries. Treat as "no update available" — normal during the
+            // 6-7 minute window after a release is created.
+            null
         } catch (t: Throwable) {
             lastCheckError = "${t.javaClass.simpleName}: ${t.message ?: "no details"}"
             null
         }
+    }
+
+    /**
+     * Fetch the full JSON of a single release by tag. Returns null on any HTTP /
+     * network failure so callers can skip the tag and try the next one.
+     *
+     * v4.2.10: extracted so [checkForUpdate] can iterate through multiple tags
+     * looking for one with assets. Uses the same UTF-8 encoding + user agent as
+     * the rest of the updater.
+     */
+    private fun fetchReleaseJson(tag: String): String? = try {
+        val releaseUrl = URL("https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/tags/$tag")
+        val releaseConn = releaseUrl.openConnection() as HttpURLConnection
+        releaseConn.requestMethod = "GET"
+        releaseConn.setRequestProperty("Accept", "application/vnd.github+json")
+        releaseConn.setRequestProperty("User-Agent", "GamePerfDesktop/${AppVersion.NAME}")
+        releaseConn.connectTimeout = 10_000
+        releaseConn.readTimeout = 10_000
+
+        if (releaseConn.responseCode != 200) {
+            releaseConn.disconnect()
+            null
+        } else {
+            val text = BufferedReader(InputStreamReader(releaseConn.inputStream, StandardCharsets.UTF_8))
+                .use { it.readText() }
+            releaseConn.disconnect()
+            text
+        }
+    } catch (_: Throwable) {
+        null
     }
 
     /**

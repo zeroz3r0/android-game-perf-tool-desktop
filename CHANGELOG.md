@@ -14,6 +14,21 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.10] — 2026-04-16
+
+### Arreglos
+
+- **Nunca más el error «No hay JAR disponible para tu plataforma»** (tercer intento, esta vez de verdad): cada vez que se publicaba una release nueva (`gh release create vX.Y.Z`), había una ventana de 6-7 minutos entre que el tag se creaba y que el workflow de CI terminaba de compilar y subir los binarios. Si un usuario abría la aplicación durante esa ventana, el banner le ofrecía la actualización, pulsaba «Actualizar», y recibía el error rojo porque los binarios todavía no existían. Pasó en v4.2.3, v4.2.4 y v4.2.9. Ahora el `AutoUpdater.checkForUpdate()` itera las releases desde la más alta hacia abajo y **solo muestra aquellas que tienen un JAR publicado para la plataforma del usuario**. Si los binarios de la versión más alta aún se están compilando, cae a la siguiente versión disponible o simplemente no muestra banner. "Sin actualización visible todavía" es infinitamente mejor UX que "actualización que falla al descargar"
+
+### Detalles tecnicos
+
+- **`AutoUpdater.checkForUpdate()` reescrito**: antes tomaba el tag con mayor semver y fetcheaba su release independientemente de si tenía assets. Ahora ordena los tags descendientemente, itera uno por uno hasta encontrar una release con `extractJarAssetUrl(release) != null` para el SO del usuario, y solo entonces construye el `ReleaseInfo`. Si se recorre toda la lista sin encontrar una con binarios (normal durante los primeros ~6 minutos post-release), devuelve `null` — sin banner
+- **Nueva función helper `fetchReleaseJson(tag)`**: extraída para permitir la iteración multiple. Retorna `null` en cualquier fallo HTTP o network, para que el caller pueda simplemente ir al siguiente tag
+- **Bug loggeado en `CLAUDE.md`** para no repetirlo: nuevo archivo `CLAUDE.md` en la raíz del proyecto documenta los patrones de bugs recurrentes (este incluido) con síntoma, causa raíz y fix. Cualquier agente o colaborador futuro que lea el repo se encuentra con la lección antes de poder repetirla
+- **Mejora complementaria tracked pero no implementada**: el workflow Release podría crear la release con `draft: true` y publicarla con `draft: false` solo al final cuando los assets estén subidos. Eso elimina el gap temporal a nivel GitHub. Fix alternativo al de esta release; los dos son compatibles y mutuamente fortalecedores
+- **Version bump**: `4.2.9` → `4.2.10`. Patch
+- **310 tests siguen pasando** — el cambio es en `checkForUpdate()` que hace I/O HTTP difícil de mockear sin un refactor mayor. Si surge de nuevo, crear un test que inyecte una función de fetch fake
+
 ## [4.2.9] — 2026-04-16
 
 ### Arreglos
