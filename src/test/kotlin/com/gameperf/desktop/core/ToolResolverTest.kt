@@ -122,16 +122,27 @@ class ToolResolverTest {
 
     // ═══════ winGetCandidates ═══════
 
+    /**
+     * Helper: build the `Microsoft/WinGet/Packages` path using nested [File]
+     * constructors so it works on both Windows (separator `\`) and Linux
+     * (separator `/`). Previously used raw string literals with `\` which
+     * Linux CI treated as a single directory name, causing the tests to
+     * create a file literally named `Microsoft\WinGet\Packages` instead of
+     * three nested directories.
+     */
+    private fun winGetPackagesRoot(base: File): File =
+        File(File(File(base, "Microsoft"), "WinGet"), "Packages")
+
     @Test
     fun `winGetCandidates returns empty when localAppData is empty string`() {
-        val result = ToolResolver.winGetCandidates("", "ffmpeg", "ffmpeg.exe")
+        val result = ToolResolver.winGetCandidates("", "ffmpeg.exe")
         assertTrue(result.isEmpty(), "empty %LOCALAPPDATA% must degrade to empty list, not crash")
     }
 
     @Test
     fun `winGetCandidates returns empty when WinGet root does not exist`() {
         // Point at a real directory that has no Microsoft\WinGet\Packages subtree
-        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg", "ffmpeg.exe")
+        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg.exe")
         assertTrue(result.isEmpty())
     }
 
@@ -139,13 +150,13 @@ class ToolResolverTest {
     fun `winGetCandidates finds ffmpeg in WinGet package layout with dynamic version`() {
         // Simulate the real-world WinGet layout:
         //   <LOCALAPPDATA>\Microsoft\WinGet\Packages\yt-dlp.FFmpeg_.../ffmpeg-N-.../bin\ffmpeg.exe
-        val winGetRoot = File(tempDir, """Microsoft\WinGet\Packages""").apply { mkdirs() }
+        val winGetRoot = winGetPackagesRoot(tempDir).apply { mkdirs() }
         val pkgDir = File(winGetRoot, "yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe").apply { mkdirs() }
         val versionDir = File(pkgDir, "ffmpeg-N-123778-g3b55818764-win64-gpl").apply { mkdirs() }
         val binDir = File(versionDir, "bin").apply { mkdirs() }
         val exe = File(binDir, "ffmpeg.exe").apply { writeText("") }
 
-        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg", "ffmpeg.exe")
+        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg.exe")
         assertEquals(1, result.size, "exactly one candidate for a single-version install")
         assertEquals(exe.absolutePath, result.first())
     }
@@ -154,7 +165,7 @@ class ToolResolverTest {
     fun `winGetCandidates finds both yt-dlp FFmpeg and Gyan FFmpeg package flavors`() {
         // Both yt-dlp.FFmpeg and Gyan.FFmpeg are common WinGet publishers. Match must
         // be case-insensitive on the "ffmpeg" substring so both get enumerated.
-        val winGetRoot = File(tempDir, """Microsoft\WinGet\Packages""").apply { mkdirs() }
+        val winGetRoot = winGetPackagesRoot(tempDir).apply { mkdirs() }
 
         val pkgA = File(winGetRoot, "yt-dlp.FFmpeg_xxx").apply { mkdirs() }
         val versA = File(pkgA, "ffmpeg-N-111-gpl").apply { mkdirs() }
@@ -166,7 +177,7 @@ class ToolResolverTest {
         val binB = File(versB, "bin").apply { mkdirs() }
         val exeB = File(binB, "ffmpeg.exe").apply { writeText("") }
 
-        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg", "ffmpeg.exe")
+        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg.exe")
         assertEquals(2, result.size, "both package flavors must be enumerated")
         val resultSet = result.toSet()
         assertTrue(resultSet.contains(exeA.absolutePath), "must include yt-dlp.FFmpeg entry")
@@ -177,7 +188,7 @@ class ToolResolverTest {
     fun `winGetCandidates skips non-ffmpeg packages in the Packages dir`() {
         // Real WinGet directories have dozens of packages. The matcher must only
         // surface the ones whose name contains "ffmpeg" — case-insensitive.
-        val winGetRoot = File(tempDir, """Microsoft\WinGet\Packages""").apply { mkdirs() }
+        val winGetRoot = winGetPackagesRoot(tempDir).apply { mkdirs() }
 
         // Non-matching package — should be ignored
         val unrelated = File(winGetRoot, "Git.Git_xxx").apply { mkdirs() }
@@ -190,7 +201,7 @@ class ToolResolverTest {
         val ffmpegBin = File(ffmpegVers, "bin").apply { mkdirs() }
         val ffmpegExe = File(ffmpegBin, "ffmpeg.exe").apply { writeText("") }
 
-        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg", "ffmpeg.exe")
+        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg.exe")
         assertEquals(1, result.size)
         assertEquals(ffmpegExe.absolutePath, result.first())
     }
@@ -199,7 +210,7 @@ class ToolResolverTest {
     fun `winGetCandidates ignores package subdirs that do not start with ffmpeg dash`() {
         // WinGet package folders often contain sibling dirs for metadata (.installed,
         // .appsFolderDot, etc.). Only `ffmpeg-*` subdirs contain the actual binary.
-        val winGetRoot = File(tempDir, """Microsoft\WinGet\Packages""").apply { mkdirs() }
+        val winGetRoot = winGetPackagesRoot(tempDir).apply { mkdirs() }
         val pkg = File(winGetRoot, "yt-dlp.FFmpeg_xxx").apply { mkdirs() }
 
         // Non-matching subdir — metadata, not a version folder
@@ -209,7 +220,7 @@ class ToolResolverTest {
         val versDir = File(pkg, "ffmpeg-N-123").apply { mkdirs() }
         val exe = File(File(versDir, "bin").apply { mkdirs() }, "ffmpeg.exe").apply { writeText("") }
 
-        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg", "ffmpeg.exe")
+        val result = ToolResolver.winGetCandidates(tempDir.absolutePath, "ffmpeg.exe")
         assertEquals(1, result.size, "only real version folders must be considered")
         assertEquals(exe.absolutePath, result.first())
     }

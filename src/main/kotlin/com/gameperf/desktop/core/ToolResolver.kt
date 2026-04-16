@@ -97,7 +97,7 @@ internal object ToolResolver {
      * average user gets the fast path.
      */
     internal fun candidatesFor(tool: String, exeName: String, isWindows: Boolean): List<String> =
-        if (isWindows) windowsCandidates(tool, exeName) else unixCandidates(tool)
+        if (isWindows) windowsCandidates(exeName) else unixCandidates(tool)
 
     /**
      * Windows install locations, ordered by likelihood:
@@ -114,7 +114,7 @@ internal object ToolResolver {
      *   yt-dlp.FFmpeg`. The package folder has a dynamic version subdir
      *   (`ffmpeg-N-<hash>`), so we glob via [winGetCandidates].
      */
-    private fun windowsCandidates(tool: String, exeName: String): List<String> {
+    private fun windowsCandidates(exeName: String): List<String> {
         val userHome = System.getProperty("user.home").orEmpty()
         val localAppData = System.getenv("LOCALAPPDATA").orEmpty()
         val staticPaths = listOf(
@@ -124,7 +124,7 @@ internal object ToolResolver {
             """$userHome\scoop\shims\$exeName""",
             """$userHome\scoop\apps\ffmpeg\current\bin\$exeName""",
         )
-        return staticPaths + winGetCandidates(localAppData, tool, exeName)
+        return staticPaths + winGetCandidates(localAppData, exeName)
     }
 
     /**
@@ -158,16 +158,20 @@ internal object ToolResolver {
      * and Gyan.FFmpeg get picked up. If multiple versions exist we return all
      * of them — [findInCandidates] picks the first existing one. Returns empty
      * list if `%LOCALAPPDATA%` is unset or the WinGet root doesn't exist.
+     *
+     * v4.2.4: paths built with nested [File] constructors instead of string
+     * concatenation with backslashes, so the function is testable on Linux CI
+     * (where `\` is a filename character, not a separator).
      */
-    internal fun winGetCandidates(localAppData: String, tool: String, exeName: String): List<String> {
+    internal fun winGetCandidates(localAppData: String, exeName: String): List<String> {
         if (localAppData.isEmpty()) return emptyList()
         return try {
-            val root = File("""$localAppData\Microsoft\WinGet\Packages""")
+            val root = File(File(File(localAppData, "Microsoft"), "WinGet"), "Packages")
             if (!root.isDirectory) return emptyList()
             root.listFiles { f -> f.isDirectory && f.name.contains("ffmpeg", ignoreCase = true) }
                 ?.flatMap { pkgDir ->
                     pkgDir.listFiles { f -> f.isDirectory && f.name.startsWith("ffmpeg-") }
-                        ?.map { File(it, """bin\$exeName""").absolutePath }
+                        ?.map { File(File(it, "bin"), exeName).absolutePath }
                         ?: emptyList()
                 }
                 ?: emptyList()
