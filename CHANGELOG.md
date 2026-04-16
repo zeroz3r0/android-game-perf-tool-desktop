@@ -14,6 +14,19 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.12] — 2026-04-16
+
+### Arreglos
+
+- **Fix de v4.2.11 corregido — la release pasa a draft ANTES de que empiecen los builds**: en v4.2.11 el `gh release edit --draft` estaba en el job `release` final que depende de `[build, sidecar]`. Esos jobs tardan 5-6 minutos; durante ese tiempo la release seguía publicada sin binarios, manteniendo el bug original. v4.2.12 mueve el flip a draft a un job nuevo `mark-draft` que corre ANTES de todos los demás (5 segundos) y del que todos los demás dependen. Ahora la release está draft desde el segundo 1 del workflow y solo pasa a published cuando los assets están subidos al final
+
+### Detalles tecnicos
+
+- `release.yml`: nuevo primer job `mark-draft` que corre `gh release edit --draft` inmediatamente al disparar el workflow. Todos los demás jobs (`sidecar`, `smoke`, que encadena con `build`) agregan `needs: mark-draft` para garantizar que no arrancan hasta que el draft flip haya pasado
+- El job `release` final queda simplificado: ya no necesita hacer el flip a draft porque `mark-draft` lo hizo. Solo sube los assets con `softprops/action-gh-release@v2` y usa `draft: false` al final para publicar
+- Si el tag fue pusheado sin `gh release create` previamente (caso raro), `mark-draft` crea la release como draft en el momento con un título y notas mínimas
+- **Version bump**: `4.2.11` → `4.2.12`. Patch
+
 ## [4.2.11] — 2026-04-16
 
 ### Arreglos
