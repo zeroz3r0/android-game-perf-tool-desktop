@@ -517,28 +517,16 @@ object AdbBridge {
     private fun findFfmpeg(): String? = cachedFfmpegPath
 
     /**
-     * Resolve ffmpeg path. Same lookup as EmbeddedVideoPlayer.findFfmpeg, duplicated here
-     * to avoid coupling core/ to ui/components/. ffmpeg is a soft dependency: if absent,
-     * concat falls back to leaving segments as separate files.
+     * Resolve ffmpeg path. ffmpeg is a soft dependency: if absent, concat falls back
+     * to leaving segments as separate files.
      *
      * v4.1.0: Renamed to `Impl` and invoked once via `cachedFfmpegPath` lazy.
+     * v4.2.3: Delegated to [ToolResolver] — previously this function used `which`
+     *         (no-op on Windows) and only checked one hardcoded Windows path. Users
+     *         who installed ffmpeg through WinGet/Scoop/Chocolatey got null back
+     *         and the session video got capped at the first 3-minute segment.
      */
-    private fun findFfmpegImpl(): String? {
-        try {
-            val p = ProcessBuilder("which", "ffmpeg").start()
-            val result = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor()
-            if (result.isNotEmpty() && java.io.File(result).exists()) return result
-        } catch (_: Exception) {}
-
-        val candidates = listOf(
-            "/usr/local/bin/ffmpeg",
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/bin/ffmpeg",
-            "C:\\ffmpeg\\bin\\ffmpeg.exe"
-        )
-        return candidates.firstOrNull { java.io.File(it).exists() }
-    }
+    private fun findFfmpegImpl(): String? = ToolResolver.find("ffmpeg")
 
     /**
      * Concatenate multiple .mp4 segments produced by `screenrecord` into a single
@@ -706,26 +694,13 @@ object AdbBridge {
     /** Return cached ffprobe path. Lookup happens at most once per JVM lifetime. */
     private fun findFfprobe(): String? = cachedFfprobePath
 
-    /** Find the local ffprobe binary. Mirrors EmbeddedVideoPlayer.findFfprobe() so core/
-     *  doesn't depend on ui/components/.
+    /** Find the local ffprobe binary via [ToolResolver]. Same Windows-detection
+     *  overhaul as [findFfmpegImpl] — pre-v4.2.3 this function had the same
+     *  Unix-first bug that caused silent concat failures.
      *
-     *  v4.1.0: Renamed to `Impl` and invoked once via `cachedFfprobePath` lazy. */
-    private fun findFfprobeImpl(): String? {
-        try {
-            val p = ProcessBuilder("which", "ffprobe").start()
-            val result = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor()
-            if (result.isNotEmpty() && java.io.File(result).exists()) return result
-        } catch (_: Exception) {}
-
-        val candidates = listOf(
-            "/usr/local/bin/ffprobe",
-            "/opt/homebrew/bin/ffprobe",
-            "/usr/bin/ffprobe",
-            "C:\\ffmpeg\\bin\\ffprobe.exe"
-        )
-        return candidates.firstOrNull { java.io.File(it).exists() }
-    }
+     *  v4.1.0: Renamed to `Impl` and invoked once via `cachedFfprobePath` lazy.
+     *  v4.2.3: Delegated to [ToolResolver]. */
+    private fun findFfprobeImpl(): String? = ToolResolver.find("ffprobe")
 
     /** Helper extension: find the first valid segment in a list, or null if none. */
     private fun List<java.io.File>.firstValidSegment(): java.io.File? =

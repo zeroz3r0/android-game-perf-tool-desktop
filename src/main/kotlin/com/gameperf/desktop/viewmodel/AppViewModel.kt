@@ -1098,6 +1098,15 @@ class AppViewModel(
                 delay(3000) // let last segment finalize on device
                 val recordings = adb.pullRecordings(device.id, sessionId, videoDir)
 
+                // v4.2.3: Surface "ffmpeg missing" as a distinct, actionable warning
+                // BEFORE attempting concat. Previously concat would return null and the
+                // code fell through to "concat failed, falling back to first segment"
+                // which gave the user a 2:56 video for a 30-min session with no hint
+                // of why. Now the user gets a specific install-ffmpeg message AND we
+                // still preserve the first segment as best-effort playback.
+                val ffmpegMissing = recordings.size > 1 &&
+                    com.gameperf.desktop.core.ToolResolver.find("ffmpeg") == null
+
                 videoPath = if (recordings.isNotEmpty()) {
                     val unified = java.io.File(videoDir, "video_${sessionId}.mp4")
                     val result = if (recordings.size > 1) {
@@ -1107,6 +1116,14 @@ class AppViewModel(
                     }
                     if (result != null) {
                         result.absolutePath
+                    } else if (ffmpegMissing) {
+                        val anyValid = recordings.firstOrNull { adb.isValidVideoFile(it) } ?: recordings.first()
+                        System.err.println("AppViewModel: ffmpeg not found, video kept as ${recordings.size} separate segments")
+                        _captureWarning.value = "ffmpeg no esta instalado — el video se grabo en ${recordings.size} segmentos " +
+                            "separados de ~3 min cada uno. Solo se muestra el primero. " +
+                            "Instala ffmpeg (con winget install Gyan.FFmpeg, scoop install ffmpeg, o brew install ffmpeg) " +
+                            "y al reabrir la app los segmentos se juntaran automaticamente."
+                        anyValid.absolutePath
                     } else {
                         val anyValid = recordings.firstOrNull { adb.isValidVideoFile(it) }
                         if (anyValid != null) {

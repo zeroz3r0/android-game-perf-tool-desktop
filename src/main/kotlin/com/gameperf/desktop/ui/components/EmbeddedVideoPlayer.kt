@@ -442,25 +442,13 @@ private fun msToFrame(ms: Long, fps: Double, total: Int): Int =
 private fun frameToMs(idx: Int, fps: Double): Long =
     (idx * 1000.0 / fps).toLong()
 
-private fun findFfmpeg(): String {
-    val candidates = listOf(
-        "/usr/local/bin/ffmpeg",       // Homebrew Intel Mac
-        "/opt/homebrew/bin/ffmpeg",     // Homebrew ARM Mac
-        "/usr/bin/ffmpeg",             // System Linux
-        "C:\\ffmpeg\\bin\\ffmpeg.exe",  // Common Windows
-    )
-    return candidates.firstOrNull { File(it).exists() } ?: "ffmpeg" // fallback to PATH
-}
+// v4.2.3: delegated to core.ToolResolver so Windows users with ffmpeg installed
+// via WinGet / Scoop / Chocolatey get the correct path. Fallback to bare "ffmpeg"
+// / "ffprobe" string keeps the old behavior where OS PATH resolution might still
+// work even if our explicit locations don't match.
+private fun findFfmpeg(): String = com.gameperf.desktop.core.ToolResolver.find("ffmpeg") ?: "ffmpeg"
 
-private fun findFfprobe(): String {
-    val candidates = listOf(
-        "/usr/local/bin/ffprobe",       // Homebrew Intel Mac
-        "/opt/homebrew/bin/ffprobe",     // Homebrew ARM Mac
-        "/usr/bin/ffprobe",             // System Linux
-        "C:\\ffmpeg\\bin\\ffprobe.exe",  // Common Windows
-    )
-    return candidates.firstOrNull { File(it).exists() } ?: "ffprobe" // fallback to PATH
-}
+private fun findFfprobe(): String = com.gameperf.desktop.core.ToolResolver.find("ffprobe") ?: "ffprobe"
 
 private fun isFfmpegAvailable(): Boolean = try {
     val p = ProcessBuilder(findFfmpeg(), "-version").redirectErrorStream(true).start()
