@@ -17,27 +17,23 @@ Este archivo recoge lecciones aprendidas y patrones de bugs recurrentes **para e
 5. `AutoUpdater.extractJarAssetUrl` retorna `null` porque los assets todavía no existen en la release
 6. El banner aparece igual porque `checkForUpdate()` no filtra releases sin binarios listos → muestra error al descargar
 
-**Fix definitivo (implementado en v4.2.10):**
+**Fix definitivo (implementado en dos capas, v4.2.10 + v4.2.11):**
 
-En `AutoUpdater.kt::checkForUpdate()`, después de obtener la lista de tags ordenada por semver descendente, iterar hasta encontrar una release que tenga un JAR asset matching la plataforma del usuario. Si la más alta todavía está compilando, caer a la siguiente más alta. Si ninguna matchea, retornar `null` (sin banner) — es mejor "no hay update" que "update que no funciona".
+Capa 1 — cliente (v4.2.10), mitigación para versiones nuevas:
+En `AutoUpdater.kt::checkForUpdate()`, después de obtener la lista de tags ordenada por semver descendente, iterar hasta encontrar una release que tenga un JAR asset matching la plataforma del usuario. Si la más alta todavía está compilando, caer a la siguiente más alta. Si ninguna matchea, retornar `null` (sin banner).
 
-Código clave (pseudocódigo):
+Capa 2 — servidor (v4.2.11), fix que afecta TODAS las versiones cliente:
+En `.github/workflows/release.yml`, el job `release` ahora (a) marca la release como `draft=true` al arrancar (usando `gh release edit --draft`), (b) sube todos los assets, y (c) usa `softprops/action-gh-release@v2` con `draft: false` al final para publicarla. Una release en draft NO aparece en GitHub's `/releases` public API, así que el `AutoUpdater` de cualquier instalación (incluso versiones viejas sin el fix de v4.2.10) nunca la ve hasta que los binarios estén listos.
 
-```kotlin
-for (tag in tagsDescending) {
-    if (compareVersions(tag, AppVersion.NAME) <= 0) break // ya estamos al día
-    val releaseJson = fetchRelease(tag)
-    val jarUrl = extractJarAssetUrl(releaseJson)
-    if (jarUrl != null) return ReleaseInfo(tag, ..., jarUrl, ...)
-    // else: todavía compilando, probar con la siguiente
-}
-return null
-```
+La capa 2 es la que realmente resuelve el problema. La capa 1 queda como defensa en profundidad por si el workflow falla mid-way (entonces la release queda draft para siempre — aceptable, nadie la ve).
 
-**Mejoras complementarias posibles (no implementadas, pero documentadas):**
+**Por qué tardé tres intentos en arreglarlo bien:**
 
-- Marcar la release como `draft: true` al crearla con `gh release create --draft`, y que el workflow Release haga `gh release edit --draft=false` al final tras subir los assets. Eso elimina el gap temporal a nivel GitHub.
-- Invertir la responsabilidad del workflow: que sea `release.yml` el que cree la release con `softprops/action-gh-release` en lugar de que el workflow dispare tras un release ya creado. Así la release solo existe cuando tiene assets.
+1. v4.2.3/v4.2.4: no identifiqué el patrón, asumí que era un problema de tests fallidos en CI (lo era en parte, pero no era el bug real).
+2. v4.2.10: atacé solo el cliente. Problema: el cliente viejo no tiene el fix, así que el bug sigue apareciendo para usuarios que tardan en actualizar (que son la mayoría).
+3. v4.2.11: al fin ataqué el servidor. Este es el fix correcto porque no depende de que el cliente haga nada especial.
+
+**Lección meta:** cuando el bug está en la frontera cliente/servidor, siempre mirar PRIMERO si se puede arreglar en el servidor. El servidor lo ven todos los clientes; el cliente lo ven solo los que actualicen.
 
 **Tests que previenen regresión:**
 

@@ -14,6 +14,29 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.2.11] — 2026-04-16
+
+### Arreglos
+
+- **Fix de SERVIDOR del bug «No hay JAR disponible para tu plataforma»** (4ª y esperemos que última iteración): v4.2.10 atacaba el bug desde el cliente, pero eso solo funcionaba para usuarios que ya tuviesen v4.2.10 instalada. Los usuarios en versiones anteriores (v4.2.4 en concreto) seguían viendo el error porque su copia del `AutoUpdater` no tiene el filtro. Ahora se ataca el problema en el SERVIDOR: el workflow de GitHub Actions marca la release como `draft` al arrancar (invisible para la API pública de `/releases`), sube los binarios, y solo al final la pasa a `published`. De esta forma, **ninguna versión del cliente puede ver la release hasta que los binarios estén disponibles** — ni siquiera las versiones viejas con el bug original
+
+### Detalles tecnicos
+
+- **`.github/workflows/release.yml` — job `release` reescrito**: dos cambios. (1) Nuevo primer paso `gh release edit "${{ github.ref_name }}" --draft` que marca la release como draft inmediatamente al arrancar el job. Una release en draft **no aparece en la respuesta del endpoint público `/repos/{owner}/{repo}/releases`**, así que el `AutoUpdater` in-app la ignora completamente. (2) El paso final `softprops/action-gh-release@v2` ahora usa `draft: false` para publicar la release (flip a visible) ***después*** de haber subido todos los files. El orden interno de softprops es: download assets → upload files → update release metadata, así que cuando se aplica `draft=false` los files ya están arriba
+- **Failure mode manejado**: si el workflow falla a mitad (compile error, timeout, etc.), la release queda `draft` para siempre. Eso es mejor que el comportamiento anterior (release visible con error) porque nadie la ve. Para recuperar: `gh release delete vX.Y.Z` o publicarla manualmente desde la UI de GitHub después de arreglar el build
+- **`generate_release_notes` dejado a default (`false`)**: preservamos las notas manuales pasadas a `gh release create --notes-file`. Auto-generadas clobberían las notas cuidadas en castellano
+- **Actualizado `CLAUDE.md`** con la lección meta: cuando un bug está en la frontera cliente/servidor, atacar primero el servidor — afecta a todos los clientes sin requerir actualización
+- **Version bump**: `4.2.10` → `4.2.11`. Patch
+
+### Como probar
+
+1. Ejecutar `gh release create v4.2.12-test --title "test" --notes "test" --target main` (manual)
+2. Abrir https://github.com/zeroz3r0/android-game-perf-tool-desktop/releases en browser → la release aparece como "Draft" (gris)
+3. Esperar ~6 min a que el workflow termine
+4. Refrescar la página → la release ahora aparece como publicada con todos los assets
+5. Durante esos 6 min, el banner in-app en cualquier versión vieja **NO muestra el update**. Solo aparece cuando los binarios ya están subidos
+6. Borrar la test: `gh release delete v4.2.12-test --yes && git tag -d v4.2.12-test && git push --delete origin v4.2.12-test`
+
 ## [4.2.10] — 2026-04-16
 
 ### Arreglos

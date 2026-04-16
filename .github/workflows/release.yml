@@ -108,12 +108,48 @@ jobs:
     permissions:
       contents: write
     steps:
+      # v4.2.11: hide the release behind draft=true while we upload assets.
+      # Draft releases are NOT returned by GitHub's public /releases API, so the
+      # AutoUpdater running in users' installations won't see this release
+      # until the binaries are uploaded. This closes the recurring "No hay JAR
+      # disponible para tu plataforma" bug that happened in v4.2.3, v4.2.4,
+      # v4.2.9, and v4.2.10: the 6-7 minute window between `gh release create`
+      # and the end of this workflow.
+      #
+      # The release is created by the human running `gh release create` just
+      # before pushing the tag. That command creates it published-but-empty,
+      # which is why the banner would show up with nothing to download. Now we
+      # flip it to draft as soon as this job starts, so it becomes invisible,
+      # and flip it back to published ONLY after all assets are uploaded.
+      #
+      # Failure mode: if the workflow fails mid-way, the release stays draft
+      # forever. That's an acceptable trade-off (nobody sees a broken release)
+      # vs the pre-v4.2.11 behavior (everybody sees a release with no JAR).
+      # To recover: either delete the release (`gh release delete vX.Y.Z`)
+      # or manually publish it after fixing the build.
+      #
+      # See CLAUDE.md "Patrón de bug recurrente" for the full lesson.
+      - name: Mark release as draft while we upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" --draft --repo "${{ github.repository }}"
+
       - uses: actions/download-artifact@v4
 
-      - name: Create Release
+      - name: Upload assets + publish release
         uses: softprops/action-gh-release@v2
         with:
+          # draft: false flips the release back to published AFTER files are uploaded,
+          # so the AutoUpdater only sees it once the binaries are available. The
+          # order inside softprops/action-gh-release is: download assets, upload
+          # them to the existing release, then update release metadata (draft,
+          # body, etc.). So by the time draft=false takes effect, all files
+          # are already present.
+          draft: false
           files: |
             game-perf-desktop-*/*.jar
             sidecar-*/gameperf-sidecar-*
-          generate_release_notes: true
+          # generate_release_notes left at default (false) to preserve the manual
+          # notes passed to `gh release create --notes-file`. Auto-generated notes
+          # would clobber the curated Spanish changelog we write per release.
