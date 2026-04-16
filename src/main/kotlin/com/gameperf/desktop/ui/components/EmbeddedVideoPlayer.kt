@@ -38,12 +38,12 @@ import java.util.concurrent.TimeUnit
 /**
  * LRU cache for decoded video frames, keyed by frame index.
  *
- * v3.2.1: size bumped from 200 → 1500.
- * v4.2.0: reduced to 500 to prevent OOM crashes. 500 frames at 60fps = ~8s of
- * video around the playhead. Decoded JPEG bitmaps at 720p ≈ 1.5 MB each →
- * ~750 MB max, well within typical desktop memory.
+ * v3.2.1: 200 → 1500.
+ * v4.2.0: 1500 OOM'd host OS (5GB heap). 500 made scrubbing laggy.
+ * Sweet spot: 600 frames ≈ 10s @60fps, ~900MB peak — keeps the JVM heap under
+ * the new 2GB cap (-Xmx2048m) while still buffering enough for smooth scrub.
  */
-private class FrameCache(private val maxSize: Int = 500) {
+private class FrameCache(private val maxSize: Int = 600) {
     private val cache = object : LinkedHashMap<Int, ImageBitmap>(maxSize + 1, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, ImageBitmap>?): Boolean {
             if (size > maxSize) {
@@ -258,7 +258,7 @@ fun EmbeddedVideoPlayer(
             val backwardIndices = (start until centerIndex).reversed().filter { !frameCache.contains(it) }
             val allIndices = forwardIndices + backwardIndices
 
-            val parallelism = 2
+            val parallelism = 3
             coroutineScope {
                 allIndices.chunked(parallelism).forEach { chunk ->
                     if (!isActive) return@forEach

@@ -75,6 +75,11 @@ compose.desktop {
         mainClass = "com.gameperf.desktop.MainKt"
 
         jvmArgs += listOf(
+            // v4.2.0: cap heap to prevent the video player from starving the host OS
+            // (was using 5+ GB on long sessions, OOM'd Antigravity/Chrome).
+            "-Xmx2048m",
+            "-XX:+UseG1GC",
+            "-XX:MaxGCPauseMillis=100",
             "--add-opens=java.base/java.lang=ALL-UNNAMED",
             "--add-opens=java.base/java.util=ALL-UNNAMED",
             "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",

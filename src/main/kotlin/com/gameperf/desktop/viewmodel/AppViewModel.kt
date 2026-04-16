@@ -1151,16 +1151,18 @@ class AppViewModel(
             val maxTempGpu = tempGpuHistory.maxOrNull() ?: 0.0
             val totalDrops = missedEnd - missedStart
 
-            // Grade
+            // Grade — v4.2.0: use p50 (median) as main signal, p5 for sustained drops.
+            // Loading screens and brief scene transitions no longer tank the grade
+            // because p1 is ignored. A game with avg 53 / p50 55 / p5 45 now scores B.
             val problems = mutableListOf<String>()
             var score = 100
             when {
-                avgFps < 30 -> { score -= 35; problems.add("FPS promedio $avgFps - Muy bajo para una experiencia fluida") }
-                avgFps < 45 -> { score -= 20; problems.add("FPS promedio $avgFps - Se nota falta de fluidez en escenas con accion") }
-                avgFps < 55 -> score -= 10
+                p50 < 30 -> { score -= 35; problems.add("FPS mediana $p50 - Muy bajo para una experiencia fluida") }
+                p50 < 45 -> { score -= 20; problems.add("FPS mediana $p50 - Se nota falta de fluidez en escenas con accion") }
+                p50 < 55 -> score -= 8
             }
-            if (p1 < 20) { score -= 15; problems.add("P1 FPS: $p1 - Caidas severas que causan congelaciones visibles") }
-            else if (p1 < 30) score -= 8
+            if (p5 < 20) { score -= 15; problems.add("P5 FPS: $p5 - Caidas severas que causan congelaciones visibles") }
+            else if (p5 < 30) score -= 6
             if (totalDrops > 30) { score -= 12; problems.add("$totalDrops frames perdidos por el compositor grafico") }
             if (peakMem > 2000) { score -= 12; problems.add("Pico de memoria ${peakMem}MB - Riesgo de cierre forzado en dispositivos con poca RAM") }
             else if (peakMem > 1500) { score -= 6; problems.add("Memoria alta: ${peakMem}MB") }
