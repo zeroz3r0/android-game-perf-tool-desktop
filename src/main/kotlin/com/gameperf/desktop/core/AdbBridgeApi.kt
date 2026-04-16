@@ -31,7 +31,16 @@ interface AdbBridgeApi {
     fun resetSessionState()
 
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot?
+
+    /** Device-wide CPU% (legacy — sum of all processes). Pre-v4.2.5 default. */
     fun captureCpuPercent(deviceId: String): Int
+
+    /** v4.2.5: per-process CPU% scoped to [pkg]. Returns the GAME's CPU usage as
+     *  a fraction of total device CPU capacity (0-100). The pre-v4.2.5 single-arg
+     *  overload still works but reports device-wide CPU which is rarely what the
+     *  user wants. New code should always pass [pkg]. */
+    fun captureCpuPercent(deviceId: String, pkg: String): Int
+
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot?
     fun captureTemperature(deviceId: String): ThermalSnapshot
 
@@ -91,6 +100,8 @@ class RealAdbBridge : AdbBridgeApi {
         AdbBridge.captureFrames(deviceId, pkg)
 
     override fun captureCpuPercent(deviceId: String): Int = AdbBridge.captureCpuPercent(deviceId)
+    override fun captureCpuPercent(deviceId: String, pkg: String): Int =
+        AdbBridge.captureCpuPercent(deviceId, pkg)
 
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? =
         AdbBridge.captureMemory(deviceId, pkg)

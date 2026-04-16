@@ -21,6 +21,36 @@ import java.util.concurrent.TimeUnit
  */
 object AdbBridge {
 
+    // ===== Frame analysis tunables (v4.2.5) =====
+    //
+    // Documented and centralized so they're easy to find / change. Previously
+    // these were magic numbers scattered across captureFrames with no docstring.
+
+    /** Cap for valid frame time in ms. Anything bigger is treated as a clock-skew
+     *  read or stale data and discarded. v4.2.4 was 1000ms (lost evidence of any
+     *  hang > 1 second); v4.2.5 raised to 5000ms to capture multi-second hangs. */
+    internal const val MAX_FRAME_TIME_MS = 5000.0
+
+    /** Cap for instantaneous FPS in [computeFrameSnapshot]. v4.2.4 was 144;
+     *  v4.2.5 raised to 240 to support Razer Phone, ASUS ROG Phone 8, OnePlus 12
+     *  in 240hz mode. */
+    internal const val MAX_FPS = 240
+
+    /** Multiplier applied to the inferred target frame time to define "jank".
+     *  Industry convention: a frame > 1.5 × target is visibly slow. */
+    internal const val JANK_MULTIPLIER = 1.5
+
+    /** Frame time (ms) above which we count a frame as a "stutter" (visible
+     *  freeze regardless of target FPS). 100ms = ~10fps, severe enough to be
+     *  perceived as a stall by the user even on a 30fps target game. */
+    internal const val STUTTER_THRESHOLD_MS = 100.0
+
+    /** Min/max realistic temperature (°C) for a phone sensor. Anything outside
+     *  this range is a sensor read error (we've seen 850°C from corrupt zones)
+     *  and gets discarded. -40°C lower bound covers cold-boot scenarios. */
+    internal const val MIN_REALISTIC_TEMP_C = -40.0
+    internal const val MAX_REALISTIC_TEMP_C = 150.0
+
     // ===== Pre-compiled regex patterns (v4.1.0-perf) =====
     // Moved from inline Regex(...) to top-level compiled constants.
     // Avoids re-compilation on every call in hot paths (captureFrames, captureMemory, etc.).
@@ -131,8 +161,14 @@ object AdbBridge {
                 val parts = line.split(RE_DEVICE_LINE)
                 if (parts.size >= 2 && parts[1] == "device") {
                     val id = parts[0]
-                    val model = RE_MODEL.find(line)?.groupValues?.get(1) ?: "Unknown"
-                    Device(id = id, model = model, platform = DevicePlatform.ANDROID, isWifi = id.contains(":"))
+                    val rawModel = RE_MODEL.find(line)?.groupValues?.get(1) ?: "Unknown"
+                    // v4.2.5: resolve cryptic codenames (SM-S911B) to marketing names
+                    // (Samsung Galaxy S23). adb devices -l doesn't expose manufacturer
+                    // so we pass empty — the resolver still does prefix matching for
+                    // the codename, which covers Samsung/Xiaomi/OnePlus/etc. that use
+                    // codename schemes the resolver knows about.
+                    val displayModel = DeviceNameResolver.resolve(rawModel)
+                    Device(id = id, model = displayModel, platform = DevicePlatform.ANDROID, isWifi = id.contains(":"))
                 } else null
             }
     }
@@ -147,7 +183,7 @@ object AdbBridge {
     }
 
     fun getDeviceInfo(deviceId: String): DeviceInfo {
-        val model = shell(deviceId, "getprop ro.product.model").trim()
+        val rawModel = shell(deviceId, "getprop ro.product.model").trim()
         val mfr = shell(deviceId, "getprop ro.product.manufacturer").trim()
         val hw = shell(deviceId, "getprop ro.hardware").trim()
         val plat = shell(deviceId, "getprop ro.board.platform").trim()
@@ -159,8 +195,12 @@ object AdbBridge {
         val cores = RE_PROCESSOR.findAll(shell(deviceId, "cat /proc/cpuinfo")).count().let { if (it > 0) it else 4 }
         val sf = shell(deviceId, "dumpsys SurfaceFlinger", timeoutMs = 3000)
         val gpu = RE_GLES.find(sf)?.groupValues?.get(1)?.trim()?.take(60) ?: shell(deviceId, "getprop ro.hardware.egl").trim().ifEmpty { "Unknown" }
+        // v4.2.5: marketing-name resolution. Here we have the manufacturer, so the
+        // fallback for unknown codenames is "<Manufacturer> <Code>" instead of just
+        // the bare code.
+        val displayModel = DeviceNameResolver.resolve(rawModel, mfr).ifEmpty { "Unknown" }
         return DeviceInfo(
-            model = model.ifEmpty { "Unknown" },
+            model = displayModel,
             manufacturer = mfr.ifEmpty { "Unknown" },
             cpu = "$hw $plat".trim().ifEmpty { "Unknown" },
             gpu = gpu,
@@ -211,6 +251,15 @@ object AdbBridge {
     private var prevCpuInitialized: Boolean = false
     private val cpuLock = Any()
 
+    // v4.2.5: per-process CPU state for the new pkg-scoped captureCpuPercent.
+    // We cache the package -> PID mapping so we don't shell out `pidof` every
+    // iteration. PID is invalidated automatically if /proc/<pid>/stat returns
+    // empty (process died, package was reopened, etc.) — see captureProcessCpuPercent.
+    private val pidCpuLock = Any()
+    private val cachedPidByPkg: MutableMap<String, Int> = mutableMapOf()
+    private val prevPidProcJiffies: MutableMap<Int, Long> = mutableMapOf()
+    private val prevPidSystemJiffies: MutableMap<Int, Long> = mutableMapOf()
+
     /** Reset session-scoped state so consecutive captures start clean. */
     fun resetSessionState() {
         cachedLayer = null
@@ -218,6 +267,14 @@ object AdbBridge {
             prevCpuBusy = 0
             prevCpuTotal = 0
             prevCpuInitialized = false
+        }
+        // v4.2.5: also clear the per-process CPU caches so a new session
+        // starts with fresh deltas and the first sample correctly returns -1
+        // (insufficient data) rather than a stale value from the previous session.
+        synchronized(pidCpuLock) {
+            cachedPidByPkg.clear()
+            prevPidProcJiffies.clear()
+            prevPidSystemJiffies.clear()
         }
     }
 
@@ -317,19 +374,90 @@ object AdbBridge {
                 if (ts > 0 && ts < Long.MAX_VALUE / 2 && (times.isEmpty() || ts >= times.last())) times.add(ts)
             }
         }
-        if (times.size < 2) return null
-        val frameTimes = (1 until times.size).mapNotNull { i ->
-            val d = (times[i] - times[i - 1]) / 1_000_000.0
-            if (d in 0.1..1000.0) d else null
+        return computeFrameSnapshot(times)
+    }
+
+    /**
+     * Pure helper — calculates [FrameSnapshot] from a list of frame timestamps in
+     * nanoseconds. Extracted from [captureFrames] so it can be unit-tested without
+     * a real ADB connection.
+     *
+     * v4.2.5 changes (all motivated by user-visible reliability bugs in v4.2.x):
+     *
+     * - **Frame time cap raised 1000ms → 5000ms**: any frame slower than 1 second
+     *   used to be silently discarded, which lost evidence of multi-second hangs
+     *   (e.g. a 2.5s freeze when the GC pauses). 5s is still a reasonable upper
+     *   bound to filter clearly bogus reads (negative timestamps, clock skew).
+     *
+     * - **FPS cap raised 144 → 240**: high-refresh-rate phones (Razer Phone 2,
+     *   ASUS ROG Phone 8, OnePlus 12 in 240hz mode) can legitimately render at
+     *   165-240 fps. The old 144 cap was rounding their numbers down silently.
+     *
+     * - **Jank threshold is now dynamic**, scaled by the inferred target frame
+     *   time (see [inferTargetFrameTime]). Previously it was hardcoded at 16.67ms,
+     *   which made every frame in a 30fps game count as jank (33ms > 16.67ms is
+     *   always true) — the metric was effectively useless for non-60fps games.
+     *   Now jank = frame > 1.5 × target, so a 30fps game with steady 33ms frames
+     *   produces 0 jank, and the same game stuttering to 60ms produces real jank.
+     *
+     * - **Stutter threshold kept at 100ms** (~10fps): visible to the user as
+     *   freeze/dropped-frame regardless of target FPS.
+     */
+    internal fun computeFrameSnapshot(timestampsNs: List<Long>): FrameSnapshot? {
+        if (timestampsNs.size < 2) return null
+
+        val frameTimes = (1 until timestampsNs.size).mapNotNull { i ->
+            val d = (timestampsNs[i] - timestampsNs[i - 1]) / 1_000_000.0
+            if (d in 0.1..MAX_FRAME_TIME_MS) d else null
         }
         if (frameTimes.isEmpty()) return null
+
+        // FPS over the last 1 second of timestamps (instantaneous FPS).
+        // v4.2.5: use Math.round (not truncating toInt) to avoid an off-by-one when
+        // the timestamps barely span less than the full 1s window — e.g. 60 frames
+        // spaced 16.67ms cover 0.983s, and (60-1) / 0.983 = 59.99999... which the
+        // old toInt() truncated to 59. Round-to-nearest gives the correct 60.
         val windowNs = 1_000_000_000L
-        val windowed = times.filter { it >= times.last() - windowNs }
+        val windowed = timestampsNs.filter { it >= timestampsNs.last() - windowNs }
         val fps = if (windowed.size >= 2) {
             val delta = (windowed.last() - windowed.first()) / 1_000_000_000.0
-            if (delta > 0) ((windowed.size - 1) / delta).toInt().coerceIn(1, 144) else 0
+            if (delta > 0) {
+                Math.round((windowed.size - 1) / delta).toInt().coerceIn(1, MAX_FPS)
+            } else 0
         } else 0
-        return FrameSnapshot(fps, frameTimes.average(), frameTimes.count { it > 16.67 }, frameTimes.count { it > 100.0 })
+
+        val avgFrameTime = frameTimes.average()
+        val targetFrameTime = inferTargetFrameTime(avgFrameTime)
+        val jankThreshold = targetFrameTime * JANK_MULTIPLIER
+
+        return FrameSnapshot(
+            fps = fps,
+            avgFrameTime = avgFrameTime,
+            jankCount = frameTimes.count { it > jankThreshold },
+            stutterCount = frameTimes.count { it > STUTTER_THRESHOLD_MS },
+        )
+    }
+
+    /**
+     * Infer the game's target frame time (in ms) from the observed average. Used
+     * to scale jank thresholds proportionally so a 30fps game isn't penalized for
+     * hitting 33ms frames (which is on-target, not jank).
+     *
+     * The buckets correspond to the most common mobile-game refresh strategies:
+     * - <=12ms  → 120 fps (high-refresh competitive games like CoD Mobile, PUBG 90+)
+     * - <=18ms  → 60 fps  (the default for most games)
+     * - <=28ms  → 45 fps  (Unity/Unreal "auto" mode on mid-range, some Pokemon Unite settings)
+     * - <=40ms  → 30 fps  (intentional cap for battery, or low-end devices struggling)
+     * - >40ms   → <20 fps (broken / overheated / GC-thrashing — anything is jank)
+     *
+     * Pure function, unit-testable.
+     */
+    internal fun inferTargetFrameTime(avgMs: Double): Double = when {
+        avgMs <= 12.0 -> 8.33   // 120 fps target
+        avgMs <= 18.0 -> 16.67  // 60 fps target
+        avgMs <= 28.0 -> 22.22  // 45 fps target
+        avgMs <= 40.0 -> 33.33  // 30 fps target
+        else -> 50.0            // <20 fps — anything above 75ms (50*1.5) is jank
     }
 
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot? {
@@ -340,6 +468,33 @@ object AdbBridge {
         val native = RE_NATIVE_HEAP.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
         val java = RE_JAVA_HEAP.find(output)?.groupValues?.get(1)?.toLongOrNull() ?: 0
         return MemSnapshot(total / 1024, native / 1024, java / 1024)
+    }
+
+    /**
+     * Capture CPU usage as a percentage.
+     *
+     * v4.2.5 — overloaded to support per-process measurement:
+     *
+     * - **`captureCpuPercent(deviceId, pkg)`** (NEW): returns the GAME's CPU usage
+     *   as a percentage of the device's total CPU capacity. This is what the user
+     *   actually wants to see in the metrics panel — "how hard is the game working
+     *   the device". Implementation reads `/proc/<pid>/stat` (utime + stime) and
+     *   compares against `/proc/stat` total time.
+     *
+     * - **`captureCpuPercent(deviceId)`** (legacy, kept for back-compat): returns
+     *   the device-wide CPU usage (sum across all processes). Was the only behavior
+     *   pre-v4.2.5; many existing call sites would break if we removed it. The bug
+     *   it caused: AppViewModel was passing only deviceId, so the "CPU 30%" the
+     *   user saw was the entire phone's CPU, not the game's. Fixed in AppViewModel
+     *   by passing pkg as well. Direct callers that haven't migrated still work
+     *   but get the legacy meaning.
+     *
+     * Both overloads return -1 on the first call of a session (no delta yet) and
+     * on any failure; the AppViewModel filters those out before recording history.
+     */
+    fun captureCpuPercent(deviceId: String, pkg: String): Int {
+        if (!isValidPackageName(pkg)) return captureCpuPercent(deviceId)
+        return captureProcessCpuPercent(deviceId, pkg)
     }
 
     fun captureCpuPercent(deviceId: String): Int {
@@ -364,6 +519,106 @@ object AdbBridge {
         }
     }
 
+    /**
+     * Per-process CPU% via `/proc/<pid>/stat`. Returns 0-100 representing the
+     * fraction of the device's total CPU time consumed by the game process between
+     * consecutive samples. Single-threaded games on a quad-core max out around 25%
+     * (one core saturated); a fully multi-threaded game can hit 100%.
+     *
+     * Algorithm:
+     * 1. Resolve package -> PID via `pidof` (cached so we only pay once per session).
+     * 2. Read /proc/<pid>/stat columns 14 (utime) + 15 (stime) = process CPU jiffies.
+     * 3. Read /proc/stat "cpu " line for system total jiffies (sum of all CPU time
+     *    fields, which is "all cores combined").
+     * 4. (procDelta / systemDelta) * 100 = % of device CPU consumed by the process.
+     *
+     * Edge cases handled:
+     * - `pidof` returns empty (game not running): returns -1, caller doesn't record.
+     * - `/proc/<pid>/stat` empty (PID died, process restarted): invalidates the
+     *    cached PID + delta state and returns -1 (next call will re-resolve).
+     * - First call of a session: no previous delta, returns -1.
+     * - Counter rolled back (impossible on real Linux but defensive): returns -1.
+     *
+     * /proc/<pid>/stat format gotcha: the second field `comm` is the process name
+     * wrapped in parens, and CAN CONTAIN SPACES. So we can't split on whitespace
+     * blindly. We find the LAST `)` and split the rest of the line. Field positions
+     * after the parens are:
+     *   [0]=state [1]=ppid [2]=pgrp [3]=session [4]=tty_nr [5]=tpgid [6]=flags
+     *   [7]=minflt [8]=cminflt [9]=majflt [10]=cmajflt [11]=utime [12]=stime
+     *   ... so utime is at index 11, stime at 12.
+     */
+    private fun captureProcessCpuPercent(deviceId: String, pkg: String): Int {
+        val pid = synchronized(pidCpuLock) {
+            cachedPidByPkg[pkg] ?: run {
+                val pidOutput = shell(deviceId, "pidof $pkg", timeoutMs = 2000).trim()
+                val first = pidOutput.split(" ").firstOrNull()?.toIntOrNull() ?: return -1
+                cachedPidByPkg[pkg] = first
+                first
+            }
+        }
+
+        val statOutput = shell(deviceId, "cat /proc/$pid/stat", timeoutMs = 2000)
+        if (statOutput.isBlank()) {
+            // PID died (game restart, kill, OOM). Invalidate cache so next call
+            // resolves the fresh PID via pidof.
+            synchronized(pidCpuLock) {
+                cachedPidByPkg.remove(pkg)
+                prevPidProcJiffies.remove(pid)
+                prevPidSystemJiffies.remove(pid)
+            }
+            return -1
+        }
+
+        // Parse /proc/<pid>/stat — see KDoc above for the format gotcha.
+        val rparen = statOutput.lastIndexOf(')')
+        if (rparen < 0) return -1
+        val afterParen = statOutput.substring(rparen + 1).trim().split(RE_DEVICE_LINE)
+        if (afterParen.size < 13) return -1
+        val utime = afterParen[11].toLongOrNull() ?: return -1
+        val stime = afterParen[12].toLongOrNull() ?: return -1
+        val procJiffies = utime + stime
+
+        val systemOutput = shell(deviceId, "cat /proc/stat", timeoutMs = 2000)
+        val cpuLine = systemOutput.lines().firstOrNull { it.startsWith("cpu ") } ?: return -1
+        val cpuParts = cpuLine.trim().split(RE_DEVICE_LINE)
+        if (cpuParts.size < 8) return -1
+        val systemJiffies = (1..7).sumOf { cpuParts[it].toLongOrNull() ?: 0L }
+
+        return synchronized(pidCpuLock) {
+            val prevProc = prevPidProcJiffies[pid]
+            val prevSys = prevPidSystemJiffies[pid]
+            prevPidProcJiffies[pid] = procJiffies
+            prevPidSystemJiffies[pid] = systemJiffies
+
+            if (prevProc == null || prevSys == null) {
+                -1 // first sample for this PID — no delta yet
+            } else {
+                val deltaProc = procJiffies - prevProc
+                val deltaSys = systemJiffies - prevSys
+                if (deltaSys <= 0L || deltaProc < 0L) -1
+                else (deltaProc * 100 / deltaSys).toInt().coerceIn(0, 100)
+            }
+        }
+    }
+
+    /**
+     * Capture device thermal state.
+     *
+     * v4.2.5 changes:
+     *
+     * - **Take MAX across all sensors of the same kind**, not just the first one.
+     *   BIG.little SoCs have separate sensors per CPU cluster (cpu0-thermal,
+     *   cpu4-thermal, etc.) with sometimes 30°C+ delta between them. Pre-v4.2.5
+     *   the loop bailed out on the first match (`&& cpu < 0`), which on a Snapdragon
+     *   8 Gen 3 typically reported the cool little cluster (~35°C) and silently
+     *   ignored the hot big cluster (~75°C). The hot cluster is what triggers
+     *   thermal throttling, so it's the meaningful number.
+     *
+     * - **Validate temperature range**: -40°C to 150°C is the realistic envelope
+     *   for a phone sensor. Some devices (mostly cheap MTKs) report bogus values
+     *   like 850°C from corrupt thermal zones. Pre-v4.2.5 those got reported as-is
+     *   and ruined the chart axis. Now they're discarded silently.
+     */
     fun captureTemperature(deviceId: String): ThermalSnapshot {
         var cpu = -1.0; var gpu = -1.0; var battery = -1.0; var skin = -1.0
         // Try sysfs first
@@ -372,24 +627,28 @@ object AdbBridge {
             val parts = line.split(":"); if (parts.size != 2) continue
             val type = parts[0].lowercase(); val raw = parts[1].trim().toLongOrNull() ?: continue
             val temp = if (raw > 1000) raw / 1000.0 else raw.toDouble()
+            // v4.2.5: validate physical plausibility — discard sensor read errors.
+            if (temp !in MIN_REALISTIC_TEMP_C..MAX_REALISTIC_TEMP_C) continue
             when {
-                (type.contains("cpu") || type.contains("tsens") || type.contains("soc")) && cpu < 0 -> cpu = temp
-                type.contains("gpu") && gpu < 0 -> gpu = temp
-                (type.contains("battery") || type.contains("batt")) && battery < 0 -> battery = temp
-                (type.contains("skin") || type.contains("quiet")) && skin < 0 -> skin = temp
+                type.contains("cpu") || type.contains("tsens") || type.contains("soc") ->
+                    if (temp > cpu) cpu = temp  // v4.2.5: MAX across all CPU sensors
+                type.contains("gpu") -> if (temp > gpu) gpu = temp
+                type.contains("battery") || type.contains("batt") -> if (temp > battery) battery = temp
+                type.contains("skin") || type.contains("quiet") -> if (temp > skin) skin = temp
             }
         }
-        // Fallback: thermalservice
+        // Fallback: thermalservice (Android 10+ thermal HAL)
         if (cpu < 0 || gpu < 0) {
             val dump = shell(deviceId, "dumpsys thermalservice", timeoutMs = 3000)
             for (m in RE_THERMAL_TEMP.findAll(dump)) {
                 val v = m.groupValues[1].toDoubleOrNull() ?: continue
+                if (v !in MIN_REALISTIC_TEMP_C..MAX_REALISTIC_TEMP_C) continue
                 val n = m.groupValues[2].trim().lowercase()
                 when {
-                    (n == "big" || n == "little" || n == "mid" || n.contains("cpu")) && cpu < 0 -> cpu = v
-                    (n == "g3d" || n.contains("gpu")) && gpu < 0 -> gpu = v
-                    n == "battery" && battery < 0 -> battery = v
-                    (n.contains("skin") || n.contains("quiet") || n == "virtual-skin") && skin < 0 -> skin = v
+                    (n == "big" || n == "little" || n == "mid" || n.contains("cpu")) && v > cpu -> cpu = v
+                    (n == "g3d" || n.contains("gpu")) && v > gpu -> gpu = v
+                    n == "battery" && v > battery -> battery = v
+                    (n.contains("skin") || n.contains("quiet") || n == "virtual-skin") && v > skin -> skin = v
                 }
             }
         }

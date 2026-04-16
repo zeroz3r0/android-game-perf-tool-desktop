@@ -36,6 +36,10 @@ fun CaptureScreen(vm: AppViewModel) {
     val markers by vm.markers.collectAsState()
     val captureError by vm.captureError.collectAsState()
     val captureWarning by vm.captureWarning.collectAsState()
+    // v4.2.5: live status of the post-capture pipeline (stop -> pull -> concat ->
+    // report -> save). Non-null = the modal "procesando..." overlay is visible
+    // and the user knows the app isn't frozen.
+    val processingStatus by vm.processingStatus.collectAsState()
 
     var showNoteField by remember { mutableStateOf(false) }
     var noteText by remember { mutableStateOf("") }
@@ -54,6 +58,8 @@ fun CaptureScreen(vm: AppViewModel) {
     // Focus requester for keyboard shortcuts
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    Box(modifier = Modifier.fillMaxSize()) {
 
     Column(
         modifier = Modifier
@@ -336,6 +342,53 @@ fun CaptureScreen(vm: AppViewModel) {
             textContentColor = TextSecondary
         )
     }
+
+    // ═══════ PROCESSING OVERLAY (v4.2.5) ═══════
+    // Shown after the user clicks "Detener" while the post-capture pipeline runs:
+    // pull video segments from device → ffmpeg concat → generate HTML report →
+    // save session to history. This loop can take 30-90 seconds for a long
+    // session and the screen used to look frozen — multiple users force-closed
+    // the app thinking it had hung. Now the overlay shows the current step.
+    val status = processingStatus
+    if (status != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xCC000000)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .background(DarkCard, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 32.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(color = Cyan, modifier = Modifier.size(48.dp))
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Procesando captura",
+                    color = TextPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    status,
+                    color = TextSecondary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "No cierres la app — esto puede tardar hasta 1 minuto en sesiones largas",
+                    color = TextDim,
+                    fontSize = 12.sp
+                )
+            }
+        }
+    }
+
+    } // closes the outer Box added in v4.2.5 to host the processing overlay
 }
 
 @Composable

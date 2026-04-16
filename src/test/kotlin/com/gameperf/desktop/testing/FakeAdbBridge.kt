@@ -79,6 +79,7 @@ open class FakeAdbBridge(
 
     override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? = null
     override fun captureCpuPercent(deviceId: String): Int = 0
+    override fun captureCpuPercent(deviceId: String, pkg: String): Int = captureCpuPercent(deviceId)
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? = null
     override fun captureTemperature(deviceId: String): ThermalSnapshot =
         ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)

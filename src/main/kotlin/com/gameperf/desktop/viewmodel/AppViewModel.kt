@@ -280,6 +280,22 @@ class AppViewModel(
     val updateError: StateFlow<String?> = updateDelegate.updateError
 
     // ===== Capture Error (device disconnect, etc.) =====
+    /**
+     * v4.2.5: live processing status for the post-capture pipeline.
+     *
+     * Set to a human-readable message ("Descargando video del dispositivo...",
+     * "Generando reporte HTML...") at each step of the stop -> pull -> concat ->
+     * report -> save flow, which can take 30-90 seconds for a long Android session.
+     * Cleared (set to null) once the results screen is ready.
+     *
+     * The UI (CaptureScreen / ResultsScreen) renders an overlay with this message
+     * whenever it's non-null so the user knows the app is busy and not frozen.
+     * Pre-v4.2.5 there was no feedback during this window — multiple users thought
+     * the app had hung and force-closed it before the report was saved.
+     */
+    private val _processingStatus = MutableStateFlow<String?>(null)
+    val processingStatus: StateFlow<String?> = _processingStatus
+
     private val _captureError = MutableStateFlow<String?>(null)
     val captureError: StateFlow<String?> = _captureError
     // v3.1.11: non-fatal warnings (capture continues, but the user should know).
@@ -943,7 +959,11 @@ class AppViewModel(
                     // FAST TIER (every 500ms): FPS, CPU, battery
                     frame = adb.captureFrames(device.id, pkg)
                     if (shouldStop) break
-                    cpu = adb.captureCpuPercent(device.id)
+                    // v4.2.5: pass pkg so we measure the GAME's CPU%, not the
+                    // device-wide CPU% (which used to mislead users into thinking
+                    // a 30% reading meant the game was light when really it was
+                    // 30% across ALL processes including system + idle).
+                    cpu = adb.captureCpuPercent(device.id, pkg)
                     if (shouldStop) break
                     battery = adb.getBatteryLevel(device.id)
                     if (shouldStop) break
@@ -1083,10 +1103,16 @@ class AppViewModel(
             timerJob.cancel()
             recordJob?.cancel()
 
+            // v4.2.5: surface processing status to the UI so the user knows the
+            // post-capture pipeline is running (~30-90s for long sessions). The
+            // overlay disappears when _processingStatus goes back to null.
+            _processingStatus.value = "Deteniendo grabacion..."
+
             // v4.0.0: platform-aware recording stop + pull
             val videoPath: String
             if (isIosDevice) {
                 // iOS: stop sidecar capture → it returns the stitched video path
+                _processingStatus.value = "Descargando video del dispositivo iOS..."
                 val iosVideoPath = if (iosScreenCaptureId != null) {
                     sidecarLifecycle?.client?.stopScreenRecord(device.id, iosScreenCaptureId)
                 } else null
@@ -1095,7 +1121,9 @@ class AppViewModel(
                 // Android: stop adb screenrecord, pull segments, concat
                 adb.stopScreenRecord(recordProcess)
                 recordProcess = null
+                _processingStatus.value = "Esperando que el dispositivo cierre el archivo de video..."
                 delay(3000) // let last segment finalize on device
+                _processingStatus.value = "Descargando video del dispositivo..."
                 val recordings = adb.pullRecordings(device.id, sessionId, videoDir)
 
                 // v4.2.3: Surface "ffmpeg missing" as a distinct, actionable warning
@@ -1110,6 +1138,7 @@ class AppViewModel(
                 videoPath = if (recordings.isNotEmpty()) {
                     val unified = java.io.File(videoDir, "video_${sessionId}.mp4")
                     val result = if (recordings.size > 1) {
+                        _processingStatus.value = "Uniendo ${recordings.size} segmentos de video con ffmpeg..."
                         adb.concatSegments(recordings, unified)
                     } else {
                         if (adb.isValidVideoFile(recordings.first())) recordings.first() else null
@@ -1195,6 +1224,7 @@ class AppViewModel(
             val sessionMarkers = _markers.value
 
             // Generate HTML report (wrapped in try-catch to avoid crash on report failure)
+            _processingStatus.value = "Generando reporte HTML..."
             val reportPath = try {
                 ReportGenerator.generate(
                     pkg = pkg, info = _deviceInfo.value, grade = grade, score = score, duration = finalElapsed,
@@ -1245,6 +1275,7 @@ class AppViewModel(
             // hard 5-session retention limit pushed off the bottom of the list. We
             // forward each evicted entry to FileCleanup so its HTML report and all
             // video segments disappear from disk in the same atomic step.
+            _processingStatus.value = "Guardando sesion en el historial..."
             val captureTag = _sessionTag.value
             val captureCompetitor = _competitorName.value
             val evicted = SessionHistory.addEntry(
@@ -1266,6 +1297,10 @@ class AppViewModel(
 
             captureStartTime = 0L
             _isCapturing.value = false
+            // v4.2.5: clear the processing-status overlay now that we're switching
+            // to RESULTS — the user is about to see all the data and doesn't need
+            // the "procesando..." spinner anymore.
+            _processingStatus.value = null
             _screen.value = AppScreen.RESULTS
         }
     }
@@ -1273,6 +1308,10 @@ class AppViewModel(
     fun stopCapture() {
         shouldStop = true
         _statusMessage.value = "Deteniendo captura..."
+        // v4.2.5: also surface the status as the processing overlay text so the
+        // user sees feedback IMMEDIATELY when clicking "Detener", before the loop
+        // exits and the post-capture pipeline starts emitting its own statuses.
+        _processingStatus.value = "Deteniendo captura..."
     }
 
     fun clearCaptureError() {
