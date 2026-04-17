@@ -173,7 +173,7 @@ private fun extractFrameAtIndex(videoPath: String, frameIndex: Int, fps: Double)
     } catch (_: Exception) {
         null
     } catch (_: OutOfMemoryError) {
-        System.gc()
+        // Let JVM handle OOM — explicit gc() is ineffective and a code smell
         null
     }
 }
