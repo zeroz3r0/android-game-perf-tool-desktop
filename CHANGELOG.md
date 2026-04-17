@@ -14,6 +14,28 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.3.0] — 2026-04-17
+
+### Que hay de nuevo
+
+- **Release de hardening**: esta versión se enfoca en estabilidad, cobertura de tests e integridad del pipeline de releases. Sin cambios visibles de UI.
+
+### Arreglos
+
+- **`sidecar/requirements-lock.txt` contenía versiones ficticias**: fastapi 0.135.3, pydantic 2.13.0, pymobiledevice3 9.9.1 — ninguna de esas versiones existe en PyPI. Regenerado con `pip freeze` en venv limpio Python 3.11 → versiones reales (fastapi 0.136.0, pydantic 2.13.1, pymobiledevice3 4.27.7). Si el job `sidecar` del workflow hubiera limpiado cache, el build entero rompía.
+- **`EmbeddedVideoPlayer.kt:176`: `System.gc()` explícito eliminado del handler de `OutOfMemoryError`**: anti-patrón JVM (no garantiza nada y puede alargar el stall). Se deja que la JVM maneje el OOM.
+- **`ci.yml`: el README afirmaba que CI corría detekt, pero el workflow solo ejecutaba `test` + `classes`**: agregado step `gradlew detekt` al job Kotlin. Ahora la CI falla si detekt encuentra findings, alineando con `./gradlew check` local.
+
+### Detalles tecnicos
+
+- **Cobertura de regresión del bug «No hay JAR disponible»**: la deuda documentada en `CLAUDE.md:40` queda cerrada. Extraída función pura `AutoUpdater.selectFirstReleaseWithAsset(tags, currentVersion, fetchReleaseJson, extractJarAssetUrl): ReleaseInfo?` que permite testear la lógica de iteración sin I/O. Nuevo archivo `AutoUpdaterSelectionTest.kt` con 9 escenarios: todas las releases sin JAR, higher semver sin JAR → cae a la siguiente, fetch failure mid-iteration, empty tags, múltiples fallos consecutivos, version ordering con segment counts distintos, extractJarAssetUrl nulo tratado como missing asset, happy path, y current ya es latest. Funciones auxiliares `compareVersions`, `detectPlatformTag`, `extractJarAssetUrl` bumpadas a `internal` para testing.
+- **Tests del sidecar en CI**: nuevo job `pytest-sidecar` en `ci.yml` (ubuntu-latest, Python 3.11, cache de pip keyed por hash de `requirements-lock.txt`, instala `sidecar[dev]`, corre `pytest sidecar/tests/`). Los 13 tests de contrato (FastAPI TestClient + mocks de pymobiledevice3) ahora se ejercitan en cada push/PR.
+- **Thresholds de detekt recalibrados** (`detekt.yml`) con fecha 2026-04-17 y TODO de refactor real: `AppViewModel.startCapture` complexity 170 → threshold 175, `HomeScreen` 687 líneas → 700, `AdbBridge` object 43 funciones → 45, `AdbBridgeApi` interface 26 → 28. Son subidas temporales, no fixes — el refactor real queda trackeado.
+- **README sincronizado con la realidad**: `README.md` y `README_EN.md` listaban archivos del sidecar que nunca existieron (`gameperf_sidecar.py`, `ios_client.py` flat). Reemplazado por la estructura real del paquete Python (`gameperf_sidecar/{main,devices,metrics,screen_capture}.py` + `pyproject.toml`, `requirements*.txt`, `tests/`).
+- **`.gitignore`**: agregados `__pycache__/`, `*.pyc`, `.venv/` para no comitear basura del sidecar.
+- **Tests totales**: 310 → **319** (9 nuevos en `AutoUpdaterSelectionTest`). 0 failures, 11 skipped por plataforma.
+- **Version bump**: `4.2.12` → `4.3.0`. Minor bump — no hay breaking changes, pero el volumen de cambios en CI + cobertura de tests + deuda cerrada amerita minor en vez de patch.
+
 ## [4.2.12] — 2026-04-16
 
 ### Arreglos
