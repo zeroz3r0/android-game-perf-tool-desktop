@@ -281,9 +281,20 @@ src/main/kotlin/com/gameperf/desktop/
     └── screens/                    # Main screens (Home, Capture, Results, Comparison)
 
 sidecar/                            # Python iOS sidecar (packaged as a binary)
-├── gameperf_sidecar.py             # FastAPI entry point
-├── ios_client.py                   # pymobiledevice3 wrapper
-└── gameperf_sidecar.spec           # PyInstaller config
+├── pyproject.toml                  # Python package config
+├── requirements.txt                # Direct dependencies
+├── requirements-lock.txt           # Locked dependencies
+├── gameperf_sidecar.spec           # PyInstaller config
+├── gameperf_sidecar/               # Main package
+│   ├── __init__.py
+│   ├── __main__.py                 # Allows running with `python -m gameperf_sidecar`
+│   ├── main.py                     # FastAPI app + CLI entry point
+│   ├── devices.py                  # /devices, /device/{udid}/info|apps|foreground-app
+│   ├── metrics.py                  # /device/{udid}/metrics (DVT + Diagnostics)
+│   └── screen_capture.py           # /device/{udid}/screenshot|screen-record/*
+└── tests/
+    ├── __init__.py
+    └── test_contract.py            # 13 FastAPI TestClient tests
 
 src/test/                           # 300+ tests — kotlin.test + JUnit 4 (mixed)
 .github/workflows/                  # CI + Release pipelines
