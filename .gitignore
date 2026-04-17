@@ -9,3 +9,6 @@ gameperf-stderr.log
 hs_err_pid*.log
 replay_pid*.log
 test_rotation.mp4
+__pycache__/
+*.pyc
+.venv/
