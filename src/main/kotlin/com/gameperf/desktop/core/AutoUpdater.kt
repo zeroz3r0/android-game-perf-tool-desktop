@@ -143,43 +143,14 @@ object AutoUpdater {
             // "update that doesn't work".
             //
             // See CLAUDE.md "Patrón de bug recurrente" section for the lesson.
-            val sortedTagsDescending = tagNames.sortedWith { a, b ->
-                val av = a.removePrefix("v").removePrefix("V")
-                val bv = b.removePrefix("v").removePrefix("V")
-                compareVersions(bv, av) // b before a => descending
-            }
-
-            val currentVersion = AppVersion.NAME
-            for (tag in sortedTagsDescending) {
-                val tagVersion = tag.removePrefix("v").removePrefix("V")
-                // Stop as soon as we reach the version we're running — everything
-                // below is older or equal, so no update.
-                if (compareVersions(tagVersion, currentVersion) <= 0) {
-                    // No new version with assets found.
-                    return null
-                }
-
-                val releaseJson = fetchReleaseJson(tag) ?: continue // network error → skip this tag
-                val jarUrl = extractJarAssetUrl(releaseJson)
-
-                if (jarUrl == null) {
-                    // Release exists but its binaries haven't been uploaded yet
-                    // (workflow still building, or workflow failed). Try the
-                    // next lower tag to avoid showing a broken "Update" button.
-                    continue
-                }
-
-                val name = extractJsonString(releaseJson, "name") ?: tag
-                val body = extractJsonString(releaseJson, "body") ?: ""
-                val publishedAt = extractJsonString(releaseJson, "published_at") ?: ""
-                val htmlUrl = extractJsonString(releaseJson, "html_url") ?: ""
-                return ReleaseInfo(tag, tagVersion, name, body, publishedAt, jarUrl, htmlUrl)
-            }
-
-            // Exhausted the tag list without finding any newer release that has
-            // binaries. Treat as "no update available" — normal during the
-            // 6-7 minute window after a release is created.
-            null
+            //
+            // v4.2.13: extracted to selectFirstReleaseWithAsset() for testability.
+            selectFirstReleaseWithAsset(
+                tags = tagNames,
+                currentVersion = AppVersion.NAME,
+                fetchReleaseJson = ::fetchReleaseJson,
+                extractJarAssetUrl = ::extractJarAssetUrl
+            )
         } catch (t: Throwable) {
             lastCheckError = "${t.javaClass.simpleName}: ${t.message ?: "no details"}"
             null
@@ -220,7 +191,7 @@ object AutoUpdater {
      * Compare two version strings numerically: "4.0.0" > "3.2.1" > "3.1.14".
      * Returns negative if a < b, zero if equal, positive if a > b.
      */
-    private fun compareVersions(a: String, b: String): Int {
+    internal fun compareVersions(a: String, b: String): Int {
         val ap = a.split(".").mapNotNull { it.toIntOrNull() }
         val bp = b.split(".").mapNotNull { it.toIntOrNull() }
         for (i in 0 until maxOf(ap.size, bp.size)) {
@@ -229,6 +200,68 @@ object AutoUpdater {
             if (av != bv) return av - bv
         }
         return 0
+    }
+
+    /**
+     * Pure function that iterates releases by semver (descending), fetches each one,
+     * and returns the first release that has a JAR asset for the given platform.
+     *
+     * This logic was extracted from [checkForUpdate] to make it testable without
+     * network I/O. The function stops as soon as it finds a release with:
+     * 1. A version newer than [currentVersion]
+     * 2. A non-null JAR asset URL (from [extractJarAssetUrl])
+     *
+     * If no such release exists (all newer releases lack assets, or all are older/equal),
+     * returns null.
+     *
+     * @param tags List of tag names from the releases API (e.g., ["v4.2.12", "v4.2.11", ...])
+     * @param currentVersion The currently running version (without 'v' prefix)
+     * @param fetchReleaseJson Function that fetches the full JSON for a given tag; returns null on failure
+     * @param extractJarAssetUrl Function that extracts the JAR asset URL from a release JSON; returns null if no matching asset
+     * @return [ReleaseInfo] for the first valid release, or null if none found
+     *
+     * v4.2.13: extracted for testability — closes the "release sin JAR assets" testing debt.
+     */
+    internal fun selectFirstReleaseWithAsset(
+        tags: List<String>,
+        currentVersion: String,
+        fetchReleaseJson: (String) -> String?,
+        extractJarAssetUrl: (String) -> String?
+    ): ReleaseInfo? {
+        // Sort tags by semver descending (highest version first)
+        val sortedTagsDescending = tags.sortedWith { a, b ->
+            val av = a.removePrefix("v").removePrefix("V")
+            val bv = b.removePrefix("v").removePrefix("V")
+            compareVersions(bv, av) // b before a => descending
+        }
+
+        for (tag in sortedTagsDescending) {
+            val tagVersion = tag.removePrefix("v").removePrefix("V")
+            // Stop as soon as we reach the version we're running — everything
+            // below is older or equal, so no update.
+            if (compareVersions(tagVersion, currentVersion) <= 0) {
+                return null
+            }
+
+            val releaseJson = fetchReleaseJson(tag) ?: continue // network error → skip this tag
+            val jarUrl = extractJarAssetUrl(releaseJson)
+
+            if (jarUrl == null) {
+                // Release exists but its binaries haven't been uploaded yet
+                // (workflow still building, or workflow failed). Try the
+                // next lower tag to avoid showing a broken "Update" button.
+                continue
+            }
+
+            val name = extractJsonString(releaseJson, "name") ?: tag
+            val body = extractJsonString(releaseJson, "body") ?: ""
+            val publishedAt = extractJsonString(releaseJson, "published_at") ?: ""
+            val htmlUrl = extractJsonString(releaseJson, "html_url") ?: ""
+            return ReleaseInfo(tag, tagVersion, name, body, publishedAt, jarUrl, htmlUrl)
+        }
+
+        // Exhausted the tag list without finding any newer release that has binaries.
+        return null
     }
 
     /**
@@ -972,7 +1005,7 @@ del /f $qScript
      * Detect the current platform identifier matching the CI artifact naming convention.
      * CI produces: GamePerf-macos-arm64-X.Y.Z.jar, GamePerf-linux-x64-X.Y.Z.jar, GamePerf-windows-x64-X.Y.Z.jar
      */
-    private fun detectPlatformTag(): String {
+    internal fun detectPlatformTag(): String {
         val os = System.getProperty("os.name").lowercase()
         val arch = System.getProperty("os.arch").lowercase()
         return when {
@@ -992,7 +1025,7 @@ del /f $qScript
      * Uses [extractAllJsonStrings] (linear scan) instead of regex to avoid the
      * `StackOverflowError` that the previous regex-based implementation hit on long bodies.
      */
-    private fun extractJarAssetUrl(json: String): String? {
+    internal fun extractJarAssetUrl(json: String): String? {
         val platform = detectPlatformTag()
         val allUrls = extractAllJsonStrings(json, "browser_download_url")
         val jarUrls = allUrls.filter { it.endsWith(".jar") }
