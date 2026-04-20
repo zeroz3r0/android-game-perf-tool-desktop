@@ -85,6 +85,31 @@ La capa 2 es la que realmente resuelve el problema. La capa 1 queda como defensa
 
 ---
 
+## Patrón de bug recurrente: «el video va lentísimo al arrastrar el timeline hacia la derecha»
+
+**Síntoma reportado múltiples veces entre v4.2.3 y v4.3.1** (el usuario insistió diciendo que lo había reportado «millones de veces» sin que se arreglara). Al arrastrar el cursor del timeline hacia la derecha el video se vuelve lentísimo de forma súbita — no desde el primer frame, sino después de unos segundos de scrub.
+
+**Causa raíz (v4.3.2): dos bugs superpuestos que se amplificaban entre sí.**
+
+1. **`FrameCache` sobredimensionado** — la clase documentaba en KDoc que el sweet spot eran 600 frames (~900MB), pero el call site en `EmbeddedVideoPlayer` forzaba 1500. A ~1.5MB por frame decodificado, 1500 × 1.5MB ≈ 2.25GB, por encima del heap cap `-Xmx2048m`. Una vez el cache se llena (rápido arrastrando porque cada scrub agrega frames nuevos) el GC entra en stop-the-world de 200ms-1s cada pocos segundos → síntoma «de repente va lentísimo».
+
+2. **`activeProcesses` compartido entre dos subsistemas** — el extractor de frames on-demand y el generador del thumbnail track (low-res preview) escribían al mismo `Collections.synchronizedSet(mutableSetOf<Process>())`. Cada scrub llamaba `preloadWindow(idx)` → `killActiveProcesses()` → **también** mataba el ffmpeg long-running que estaba generando los thumbnails. Resultado: si el usuario tocaba el timeline durante los 15-60s de generación (lo hacían siempre), el thumbnail track nunca se completaba, y entonces cada scrub caía al ffmpeg on-demand que es 10-20x más lento. Esto **amplificaba** el síntoma del bug #1 — más tiempo por scrub → más scrubs fallidos → más frames al cache → GC más frecuente.
+
+**Fix definitivo (v4.3.2):**
+
+- `FrameCache(1500)` → `FrameCache()` para respetar el default documentado de 600.
+- `activeProcesses` separado en `activeFrameProcesses` (efímero, killed on scrub) + `activeThumbnailProcesses` (long-running, killed SOLO on dispose).
+
+**Por qué tardé en arreglarlo:**
+
+Los intentos anteriores solo miraban UNO de los dos bugs a la vez. Bajar el cache sin arreglar el sharing de procesos dejaba el problema visible (thumbnails seguían sin completarse). Arreglar el sharing sin bajar el cache dejaba el GC thrashing visible (aunque atenuado). Ambos fixes por separado parecían «no cambiar nada» porque el otro bug seguía presente. **Solo la combinación elimina el síntoma.**
+
+**Lección meta:** cuando un bug persiste «misteriosamente» tras varios fixes, asumir que hay **más de una causa** y buscar la combinación. No declarar victoria hasta reproducir el caso reportado por el usuario end-to-end.
+
+**Lección específica:** si dos subsistemas tienen ciclos de vida distintos (uno efímero, uno long-running) y comparten un `Collection<Process>` / `Collection<Job>` / cualquier recurso con `kill()`/`cancel()`, separarlos en dos colecciones. La alternativa («filtrar por tipo/tag dentro del set compartido») siempre termina olvidando algún caso.
+
+---
+
 ## Convención de releases
 
 - Bump `appVersion` en `gradle.properties`

@@ -104,11 +104,32 @@ private fun tryCloseBitmap(bitmap: ImageBitmap) {
 }
 
 /**
- * H-1: Thread-safe set tracking all currently-running ffmpeg [Process] instances
- * spawned by [extractFrameAtIndex]. When a preload is cancelled or the player is
- * disposed, these are forcibly killed to prevent zombie OS processes.
+ * H-1: Thread-safe set tracking ffmpeg [Process] instances spawned by
+ * [extractFrameAtIndex] (single-frame on-demand seeks + preload window).
+ * Killed when a preload is cancelled (user scrubs to a new position) or when
+ * the player leaves composition.
+ *
+ * v4.3.2: this set is **separate** from [activeThumbnailProcesses]. Before
+ * v4.3.2 there was a single `activeProcesses` set shared by both subsystems;
+ * every scrub called `preloadWindow(idx)` → `killActiveProcesses()` which
+ * also killed the long-running ffmpeg spawned by [generateThumbnailTrack].
+ * Result: on any video ≥10s the user could never get the thumbnail track to
+ * finish if they touched the timeline during its 15-60s generation — the
+ * spinner would stall forever and every subsequent scrub fell through to
+ * the 10-20x slower on-demand single-frame seek. That amplified bug #1
+ * (the oversized frame cache causing GC stalls) into the "de repente va
+ * lentísimo" report that persisted across multiple fix attempts.
  */
-private val activeProcesses: MutableSet<Process> =
+private val activeFrameProcesses: MutableSet<Process> =
+    Collections.synchronizedSet(mutableSetOf<Process>())
+
+/**
+ * v4.3.2: Thread-safe set tracking the long-running ffmpeg process spawned
+ * by [generateThumbnailTrack]. Separate from [activeFrameProcesses] so that
+ * scrubbing doesn't kill the thumbnail generator mid-flight. Killed only on
+ * player dispose.
+ */
+private val activeThumbnailProcesses: MutableSet<Process> =
     Collections.synchronizedSet(mutableSetOf<Process>())
 
 /**
@@ -152,7 +173,7 @@ private fun extractFrameAtIndex(videoPath: String, frameIndex: Int, fps: Double)
         ).redirectErrorStream(false).start()
 
         // H-1: track process so it can be killed on cancel/dispose.
-        activeProcesses.add(proc)
+        activeFrameProcesses.add(proc)
         try {
             // Read JPEG bytes from stdout.
             val bytes = proc.inputStream.use { it.readBytes() }
@@ -168,7 +189,7 @@ private fun extractFrameAtIndex(videoPath: String, frameIndex: Int, fps: Double)
             org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
         } finally {
             // H-1: untrack after completion (success or failure).
-            activeProcesses.remove(proc)
+            activeFrameProcesses.remove(proc)
         }
     } catch (_: Exception) {
         null
@@ -267,7 +288,9 @@ private suspend fun generateThumbnailTrack(
         )
 
         val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
-        activeProcesses.add(proc)
+        // v4.3.2: tracked in the thumbnail-specific set so scrub's
+        // killActiveFrameProcesses() no longer kills this long-running process.
+        activeThumbnailProcesses.add(proc)
 
         // Progress monitor: while ffmpeg runs, poll the temp dir and report
         // fraction of target count produced so far. Cancelled cooperatively.
@@ -293,7 +316,7 @@ private suspend fun generateThumbnailTrack(
         } finally {
             progressJob.cancel()
             drainJob.cancel()
-            activeProcesses.remove(proc)
+            activeThumbnailProcesses.remove(proc)
         }
 
         if (!finished) {
@@ -381,7 +404,16 @@ fun EmbeddedVideoPlayer(
     var thumbnailGenerating by remember { mutableStateOf(false) }
 
     // On-demand cache: indexed by frame number. No disk-backed paths anymore.
-    val frameCache = remember { FrameCache(1500) }
+    //
+    // v4.3.2: reverted to 600 (the documented "sweet spot" in FrameCache's KDoc).
+    // The call site here was pinning 1500 for historical reasons — at ~1.5MB per
+    // decoded frame that's ~2.25GB, above the -Xmx2048m heap cap, so the JVM
+    // GC thrashed once the user scrubbed past a few hundred uncached frames.
+    // Symptom from the user: "al arrastrar el timeline hacia la derecha el video
+    // de repente empieza a ir lentísimo" — that was the GC stop-the-world pauses
+    // when the cache filled and old frames had to be evicted while new decodes
+    // were landing. 600 frames ≈ 10s @60fps, ~900MB peak, well under the cap.
+    val frameCache = remember { FrameCache() }
     var displayedIdx by remember { mutableStateOf(-1) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -423,8 +455,10 @@ fun EmbeddedVideoPlayer(
      */
     fun preloadWindow(centerIndex: Int) {
         preloadJob?.cancel()
-        // H-1: kill any ffmpeg processes that were spawned by the cancelled preload.
-        killActiveProcesses()
+        // H-1: kill any ffmpeg processes spawned by the cancelled preload.
+        // v4.3.2: ONLY frame-extractor processes — the thumbnail-track ffmpeg
+        // lives in activeThumbnailProcesses and is immune to scrub cancellation.
+        killActiveFrameProcesses()
         preloadJob = coroutineScope.launch(Dispatchers.IO) {
             val totalFrames = (videoDurationMs / 1000.0 * videoFps).toInt().coerceAtLeast(1)
             val windowRadius = 600
@@ -549,8 +583,10 @@ fun EmbeddedVideoPlayer(
             preloadJob?.cancel()
             thumbnailJob?.cancel()
             fullResDebounceJob?.cancel()
-            // H-1: kill all tracked ffmpeg processes to prevent zombies.
-            killActiveProcesses()
+            // H-1: kill BOTH ffmpeg process sets on dispose — thumbnail generator
+            // included, since the player is leaving composition.
+            killActiveFrameProcesses()
+            killActiveThumbnailProcesses()
             // M-8: clear() now disposes native Skia resources.
             frameCache.clear()
             // Release thumbnail track bitmaps too — same native memory concern.
@@ -703,15 +739,31 @@ fun EmbeddedVideoPlayer(
 }
 
 /**
- * H-1: Force-kill all tracked ffmpeg processes. Called when preloadJob is
- * cancelled (new seek) and on dispose (player leaves the composition).
+ * H-1: Force-kill all tracked **frame-extractor** ffmpeg processes.
+ * Called when preloadJob is cancelled (new seek) and on dispose.
+ *
+ * v4.3.2: does NOT touch the thumbnail-track ffmpeg — that lives in
+ * [activeThumbnailProcesses] and must survive scrub-triggered cancellations.
  */
-private fun killActiveProcesses() {
-    synchronized(activeProcesses) {
-        activeProcesses.forEach { proc ->
+private fun killActiveFrameProcesses() {
+    synchronized(activeFrameProcesses) {
+        activeFrameProcesses.forEach { proc ->
             try { proc.destroyForcibly() } catch (_: Exception) {}
         }
-        activeProcesses.clear()
+        activeFrameProcesses.clear()
+    }
+}
+
+/**
+ * v4.3.2: Force-kill the thumbnail-track ffmpeg process. Called ONLY on
+ * player dispose — not on scrub, not on preload cancel.
+ */
+private fun killActiveThumbnailProcesses() {
+    synchronized(activeThumbnailProcesses) {
+        activeThumbnailProcesses.forEach { proc ->
+            try { proc.destroyForcibly() } catch (_: Exception) {}
+        }
+        activeThumbnailProcesses.clear()
     }
 }
 

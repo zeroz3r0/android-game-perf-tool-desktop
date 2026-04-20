@@ -14,6 +14,19 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.3.2] — 2026-04-20
+
+### Arreglos
+
+- **Fin de «el video va lentísimo al arrastrar el timeline hacia la derecha»** (reportado múltiples veces en sesiones anteriores, cada intento anterior falló): eran dos bugs superpuestos que se amplificaban entre sí. (1) El `FrameCache` del reproductor se instanciaba con tamaño 1500 frames cuando la KDoc de la propia clase documenta que el sweet spot son 600 — a ~1.5MB por frame decodificado, 1500 frames llegan a ~2.25GB, por encima del heap cap `-Xmx2048m`. Una vez que el cache se llenaba (pasaba rápido arrastrando hacia la derecha porque cada scrub agregaba frames nuevos), el GC entraba en stop-the-world pauses de 200ms-1s cada pocos segundos. (2) El generador de la vista previa (thumbnail track) compartía el mismo set de procesos ffmpeg que el extractor de frames on-demand, así que cada scrub llamaba a `killActiveProcesses()` y mataba el ffmpeg que estaba generando los thumbnails. Resultado: los thumbnails nunca llegaban a completarse si el usuario tocaba el timeline durante los 15-60s de generación, y entonces cada scrub caía al ffmpeg on-demand que es 10-20x más lento. Juntos producían el síntoma «al arrastrar el video de repente empieza a ir lentísimo»
+
+### Detalles tecnicos
+
+- **`EmbeddedVideoPlayer.kt:384` — `FrameCache(1500)` → `FrameCache()`**: respeta el default documentado en la KDoc (`maxSize = 600`). El override de 1500 era deuda histórica; el comentario de la propia clase dice «v4.2.0: 1500 OOM'd host OS (5GB heap)» y sin embargo el call site seguía forzando 1500
+- **Separación de `activeProcesses` en dos sets** (`activeFrameProcesses` + `activeThumbnailProcesses`): el extractor de frames efímero y el generador de thumbnails long-running ya no comparten tracking. `killActiveFrameProcesses()` (llamado en cada scrub) solo mata procesos efímeros. `killActiveThumbnailProcesses()` solo se llama en dispose. El thumbnail track sobrevive a 100+ scrubs consecutivos y se completa en segundo plano como estaba documentado que debía hacer desde v4.2.3
+- **KDoc extendida** explicando exactamente qué bug causaba el shared set — este patrón (dos subsistemas con ciclos de vida distintos compartiendo el mismo activeProcesses) se había escapado antes, el comentario ahora lo documenta para que no vuelva a pasar
+- **Version bump**: `4.3.1` → `4.3.2`. Patch
+
 ## [4.3.1] — 2026-04-17
 
 ### Arreglos
