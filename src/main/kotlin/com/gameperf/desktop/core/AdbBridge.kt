@@ -99,28 +99,27 @@ object AdbBridge {
         id.isNotEmpty() && id.matches(RE_VALID_SESSION_ID)
 
     /**
-     * Resolve ADB path. macOS packaged apps don't inherit terminal PATH,
-     * so we check common locations.
+     * Resolve ADB path. macOS packaged apps don't inherit terminal PATH, so we
+     * check common install locations. Delegates to [ToolResolver], which covers
+     * every mainstream adb install vector:
+     *
+     *  - Windows: Android Studio SDK under `%LOCALAPPDATA%\Android\Sdk`, the
+     *    standalone platform-tools zip at `C:\platform-tools\`, and the
+     *    generic `C:\adb\bin\` tutorial path.
+     *  - macOS: Android Studio's `~/Library/Android/sdk`, Homebrew casks for
+     *    both Intel and Apple Silicon, plus Homebrew's `/usr/local/bin`.
+     *  - Linux: Android Studio's `~/Android/Sdk`, system packages (Debian
+     *    android-tools-adb, Arch android-tools), plus `/usr/bin`.
+     *
+     * v4.2.13: was a hand-rolled copy of the same `which`-on-Windows +
+     * single-hardcoded-path bug [ToolResolver] was created to fix for ffmpeg
+     * (see v4.2.3 lesson in `CLAUDE.md`). `which adb` is a no-op on Windows,
+     * and the only Windows candidate was `C:\platform-tools\adb.exe` — users
+     * with the more common Android-Studio install got fallback `"adb"` which
+     * then failed the `isAvailable()` check unless adb was on PATH.
      */
     private val adbPath: String by lazy {
-        // 1. Try PATH first (works from terminal / ./gradlew run)
-        try {
-            val p = ProcessBuilder("which", "adb").start()
-            val result = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor()
-            if (result.isNotEmpty() && java.io.File(result).exists()) return@lazy result
-        } catch (_: Exception) {}
-
-        // 2. Check common install locations
-        val candidates = listOf(
-            "/usr/local/bin/adb",
-            "/opt/homebrew/bin/adb",
-            "${System.getProperty("user.home")}/Library/Android/sdk/platform-tools/adb",
-            "/usr/bin/adb",
-            "C:\\platform-tools\\adb.exe",
-            "${System.getenv("LOCALAPPDATA") ?: ""}\\Android\\Sdk\\platform-tools\\adb.exe"
-        )
-        candidates.firstOrNull { java.io.File(it).exists() } ?: "adb"
+        ToolResolver.find("adb") ?: "adb"
     }
 
     fun exec(vararg args: String, timeoutMs: Long = 5000): String {

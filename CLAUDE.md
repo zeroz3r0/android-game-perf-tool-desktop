@@ -47,9 +47,13 @@ La capa 2 es la que realmente resuelve el problema. La capa 1 queda como defensa
 
 **Causa raíz:** `AdbBridge.findFfmpegImpl` usaba `which ffmpeg` (Unix-only, no-op en Windows) + un solo path hardcoded `C:\ffmpeg\bin\ffmpeg.exe`. Usuarios con ffmpeg via WinGet, Scoop, Chocolatey o carpeta custom tenían `null` y el concat silenciosamente no corría.
 
-**Fix definitivo (implementado en v4.2.3):** `core/ToolResolver.kt` unifica la lógica. En Windows usa `where`, en Unix `which`. Candidates Windows: `C:\ffmpeg\bin\`, `C:\Program Files\ffmpeg\bin\`, `%ProgramData%\chocolatey\bin\`, `%USERPROFILE%\scoop\shims\`, `%USERPROFILE%\scoop\apps\ffmpeg\current\bin\`, y glob de `%LOCALAPPDATA%\Microsoft\WinGet\Packages\*FFmpeg*\ffmpeg-*\bin\`. Tests: `ToolResolverTest` (15 tests).
+**Fix definitivo (implementado en v4.2.3):** `core/ToolResolver.kt` unifica la lógica. En Windows usa `where`, en Unix `which`. Candidates Windows: `C:\ffmpeg\bin\`, `C:\Program Files\ffmpeg\bin\`, `%ProgramData%\chocolatey\bin\`, `%USERPROFILE%\scoop\shims\`, `%USERPROFILE%\scoop\apps\ffmpeg\current\bin\`, y glob de `%LOCALAPPDATA%\Microsoft\WinGet\Packages\*FFmpeg*\ffmpeg-*\bin\`. Tests: `ToolResolverTest`.
 
 **Lección general:** **nunca hardcodear UN solo path de una herramienta externa en un SO**. Usar siempre la búsqueda del OS (`where`/`which`) primero + una lista amplia de candidates por package manager conocido. Factorizar en un helper puro testeable.
+
+**⚠️ Regla operativa — cualquier nueva dependencia externa pasa por `ToolResolver.find` desde el primer commit.** No hand-roll. Si la herramienta tiene paths no-genéricos (ej. Android SDK para adb), agregar una tabla en `toolSpecificCandidates`. Nunca más un `ProcessBuilder("which", ...)` ni un listado Unix-only disperso por el código.
+
+**Reincidencia v4.2.13:** aunque `ToolResolver` existía desde v4.2.3, `AdbBridge.adbPath` e `IosBridge.findFfprobe` tenían cada uno una copia del mismo patrón roto (v4.2.2) — `which` en Windows, lista mínima de Unix paths, `C:\platform-tools\adb.exe` como único Windows candidate para adb. v4.2.13 migra ambos a `ToolResolver.find` y agrega una tabla `adbCandidates` con Android Studio (Win/Mac/Linux), Homebrew casks y distros Linux. **Esta fue la segunda vez que el mismo patrón se escapó; de ahí la regla operativa arriba.**
 
 ---
 

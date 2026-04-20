@@ -3,7 +3,7 @@ package com.gameperf.desktop.core
 import java.io.File
 
 /**
- * Cross-platform locator for external command-line tools (ffmpeg, ffprobe, etc.).
+ * Cross-platform locator for external command-line tools (ffmpeg, ffprobe, adb, etc.).
  *
  * ## Why this exists
  *
@@ -18,18 +18,28 @@ import java.io.File
  *   first ~3-minute segment (`_0.mp4`), capping playback at ~2:56 regardless
  *   of how long the real session was.
  *
- * v4.2.3 consolidates both copies into this object, fixes `where` on Windows,
- * and expands the Windows candidate list to cover the four mainstream package
- * managers. A pure `findInCandidates` function is exposed for unit testing
+ * v4.2.3 consolidates the ffmpeg/ffprobe copies into this object, fixes `where`
+ * on Windows, and expands the Windows candidate list to cover the four mainstream
+ * package managers. A pure `findInCandidates` function is exposed for unit testing
  * without spawning `where`/`which` processes.
+ *
+ * v4.2.13 extends the resolver to cover **adb** as well — `AdbBridge.adbPath`
+ * used to duplicate the same `which`-on-Windows + single-hardcoded-path bug for
+ * adb (`C:\platform-tools\adb.exe` was the only Windows candidate), and
+ * `IosBridge.findFfprobe` had its own third copy of the same broken pattern.
+ * Both now delegate to [find], which routes per-tool candidates through a
+ * dispatch table (see [toolSpecificCandidates]).
  *
  * ## Lookup order
  *
  * 1. **OS-native PATH lookup** — `where <tool>` on Windows, `which <tool>` on
  *    Unix. Honors the user's PATH exactly, so if the tool is available as the
  *    bare name (`ffmpeg`) from a terminal, this step will find it.
- * 2. **Well-known install locations** — a curated list per OS covering:
- *    - Windows: `C:\ffmpeg\bin\`, Program Files, Chocolatey, Scoop (shim +
+ * 2. **Tool-specific well-known locations** — paths that only make sense for a
+ *    single tool (e.g. the Android SDK's `platform-tools/adb` under the user
+ *    home, iTunes's bundled `AppleApplicationSupport` for ios tooling).
+ * 3. **Generic well-known install locations** — a curated list per OS covering:
+ *    - Windows: `C:\<tool>\bin\`, Program Files, Chocolatey, Scoop (shim +
  *      current dir), WinGet (globbed dynamic version folders).
  *    - Unix: `/usr/local/bin`, `/opt/homebrew/bin`, `/usr/bin`, `~/.local/bin`.
  *
@@ -55,7 +65,10 @@ internal object ToolResolver {
         // Step 1: native PATH lookup (respects user PATH, PATHEXT, etc.)
         runPathLookup(tool, isWindows)?.let { return it }
 
-        // Step 2: curated candidate list for the platform
+        // Step 2: tool-specific well-known locations (Android SDK for adb, etc.)
+        findInCandidates(toolSpecificCandidates(tool, exeName, isWindows))?.let { return it }
+
+        // Step 3: generic candidate list for the platform
         return findInCandidates(candidatesFor(tool, exeName, isWindows))
     }
 
@@ -86,6 +99,82 @@ internal object ToolResolver {
      */
     internal fun findInCandidates(candidates: List<String>): String? =
         candidates.firstOrNull { File(it).exists() }
+
+    /**
+     * Tool-specific well-known locations that don't fit the generic
+     * "`C:\<tool>\bin\`, `/usr/local/bin`" template. Consulted BEFORE the
+     * generic candidate list.
+     *
+     * Pure — reads only env vars and system properties. Unit-testable.
+     *
+     * ## Coverage
+     *
+     * **adb**: the Android SDK ships a single canonical sub-path
+     * (`platform-tools/adb`). Users install the SDK either via Android Studio
+     * (which drops it under `~/Library/Android/sdk` on macOS,
+     * `%LOCALAPPDATA%\Android\Sdk` on Windows, `~/Android/Sdk` on Linux),
+     * via `brew install --cask android-platform-tools` on macOS, or as a
+     * standalone zip extracted to `C:\platform-tools\` (the pre-SDK-manager
+     * path that Google still documents). None of those land in a generic
+     * `bin/` directory, so the generic [candidatesFor] list misses all of
+     * them. This entry covers every mainstream install vector.
+     *
+     * Returns empty for any tool that has no tool-specific locations; those
+     * fall through to [candidatesFor].
+     */
+    internal fun toolSpecificCandidates(tool: String, exeName: String, isWindows: Boolean): List<String> {
+        return when (tool) {
+            "adb" -> adbCandidates(exeName, isWindows)
+            else -> emptyList()
+        }
+    }
+
+    /**
+     * Android SDK / platform-tools install locations for `adb`.
+     *
+     * Order (first match wins):
+     * 1. Android Studio SDK under user home (most common — Studio creates this
+     *    on first run and 99% of users leave the default).
+     * 2. `%LOCALAPPDATA%\Android\Sdk` (Windows Android Studio default).
+     * 3. Standalone platform-tools zip extracted to `C:\platform-tools\`
+     *    (Windows-only — the path Google's "SDK platform-tools release notes"
+     *    page still references for zip-only users).
+     * 4. Homebrew casks on macOS (`/usr/local/Caskroom` Intel,
+     *    `/opt/homebrew/Caskroom` Apple Silicon).
+     * 5. Linux package managers that drop adb under `/usr/lib/android-sdk/`
+     *    (Debian `android-tools-adb`, Arch `android-tools`).
+     */
+    internal fun adbCandidates(exeName: String, isWindows: Boolean): List<String> {
+        val userHome = System.getProperty("user.home").orEmpty()
+        val localAppData = System.getenv("LOCALAPPDATA").orEmpty()
+        return if (isWindows) {
+            listOf(
+                // Android Studio default on Windows
+                if (localAppData.isNotEmpty()) """$localAppData\Android\Sdk\platform-tools\$exeName""" else "",
+                // User-scope SDK (some installers pick %USERPROFILE%\AppData\Local\Android\Sdk explicitly,
+                // others fall back to %USERPROFILE%\Android\Sdk)
+                """$userHome\AppData\Local\Android\Sdk\platform-tools\$exeName""",
+                """$userHome\Android\Sdk\platform-tools\$exeName""",
+                // Standalone zip install — the "download platform-tools only" path
+                """C:\platform-tools\$exeName""",
+                """C:\Android\platform-tools\$exeName""",
+                """C:\Android\Sdk\platform-tools\$exeName""",
+            ).filter { it.isNotEmpty() }
+        } else {
+            listOf(
+                // Android Studio default — macOS
+                "$userHome/Library/Android/sdk/platform-tools/adb",
+                // Android Studio default — Linux
+                "$userHome/Android/Sdk/platform-tools/adb",
+                // Homebrew cask — Apple Silicon
+                "/opt/homebrew/Caskroom/android-platform-tools/latest/platform-tools/adb",
+                // Homebrew cask — Intel Mac
+                "/usr/local/Caskroom/android-platform-tools/latest/platform-tools/adb",
+                // Linux distro package (Debian android-tools-adb, Arch android-tools)
+                "/usr/lib/android-sdk/platform-tools/adb",
+            )
+        }
+    }
 
     /**
      * Build the candidate path list for the given tool and platform. Pure —

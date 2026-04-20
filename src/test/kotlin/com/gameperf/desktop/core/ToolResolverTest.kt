@@ -243,6 +243,102 @@ class ToolResolverTest {
         }
     }
 
+    // ═══════ adbCandidates — tool-specific locations (v4.2.13) ═══════
+
+    @Test
+    fun `adbCandidates on Windows includes Android Studio SDK under LOCALAPPDATA`() {
+        val cands = ToolResolver.adbCandidates("adb.exe", isWindows = true)
+        assertTrue(
+            cands.any { it.contains("""Android\Sdk\platform-tools\adb.exe""") },
+            "must cover Android Studio's %LOCALAPPDATA%\\Android\\Sdk layout — the default install path"
+        )
+    }
+
+    @Test
+    fun `adbCandidates on Windows keeps the standalone zip path`() {
+        val cands = ToolResolver.adbCandidates("adb.exe", isWindows = true)
+        assertTrue(
+            cands.any { it == """C:\platform-tools\adb.exe""" },
+            "must keep the standalone `C:\\platform-tools\\` path from the pre-fix resolver — Google still documents this"
+        )
+    }
+
+    @Test
+    fun `adbCandidates on Windows ends every path with adb exe`() {
+        val cands = ToolResolver.adbCandidates("adb.exe", isWindows = true)
+        assertTrue(cands.isNotEmpty())
+        cands.forEach {
+            assertTrue(it.endsWith("adb.exe"), "Windows candidate must end in adb.exe: $it")
+        }
+    }
+
+    @Test
+    fun `adbCandidates on Unix includes Android Studio macOS and Linux defaults`() {
+        val cands = ToolResolver.adbCandidates("adb", isWindows = false)
+        assertTrue(
+            cands.any { it.contains("/Library/Android/sdk/platform-tools/adb") },
+            "must include the Android Studio macOS path (~/Library/Android/sdk/…)"
+        )
+        assertTrue(
+            cands.any { it.endsWith("/Android/Sdk/platform-tools/adb") },
+            "must include the Android Studio Linux path (~/Android/Sdk/…)"
+        )
+    }
+
+    @Test
+    fun `adbCandidates on Unix includes Homebrew cask for both architectures`() {
+        val cands = ToolResolver.adbCandidates("adb", isWindows = false)
+        assertTrue(
+            cands.any { it.startsWith("/opt/homebrew/Caskroom/android-platform-tools/") },
+            "must cover Homebrew on Apple Silicon"
+        )
+        assertTrue(
+            cands.any { it.startsWith("/usr/local/Caskroom/android-platform-tools/") },
+            "must cover Homebrew on Intel Mac"
+        )
+    }
+
+    @Test
+    fun `adbCandidates on Unix includes Linux distro package path`() {
+        val cands = ToolResolver.adbCandidates("adb", isWindows = false)
+        assertTrue(
+            cands.any { it == "/usr/lib/android-sdk/platform-tools/adb" },
+            "must include the Debian android-tools-adb / Arch android-tools path"
+        )
+    }
+
+    // ═══════ toolSpecificCandidates — dispatch ═══════
+
+    @Test
+    fun `toolSpecificCandidates returns empty list for tools without a specific table`() {
+        val ffmpegCands = ToolResolver.toolSpecificCandidates("ffmpeg", "ffmpeg.exe", isWindows = true)
+        val ffprobeCands = ToolResolver.toolSpecificCandidates("ffprobe", "ffprobe", isWindows = false)
+        assertTrue(ffmpegCands.isEmpty(), "ffmpeg has no tool-specific locations — must be empty (fall through to generic)")
+        assertTrue(ffprobeCands.isEmpty(), "ffprobe has no tool-specific locations — must be empty")
+    }
+
+    @Test
+    fun `toolSpecificCandidates dispatches adb to adbCandidates`() {
+        val cands = ToolResolver.toolSpecificCandidates("adb", "adb.exe", isWindows = true)
+        assertTrue(cands.isNotEmpty(), "adb must have tool-specific locations")
+        assertTrue(
+            cands.any { it.contains("platform-tools", ignoreCase = true) },
+            "adb tool-specific table must resolve Android SDK platform-tools paths"
+        )
+    }
+
+    @Test
+    fun `find with adb does not throw when adb is absent`() {
+        // Mirrors the ffmpeg smoke test: contract is "doesn't throw", not "finds
+        // a binary". Protects against future refactors that might reintroduce an
+        // unguarded `which`/`where` call inside adbCandidates.
+        val result = ToolResolver.find("adb")
+        if (result != null) {
+            assertTrue(result.isNotEmpty(), "non-null result must be a real path string")
+            assertTrue(File(result).exists(), "returned path must point to an existing file")
+        }
+    }
+
     @Test
     fun `find does not throw for nonexistent tool name`() {
         // Guarantees the resolver degrades gracefully for bogus tools — null or

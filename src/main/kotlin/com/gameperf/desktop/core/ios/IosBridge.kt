@@ -1,5 +1,6 @@
 package com.gameperf.desktop.core.ios
 
+import com.gameperf.desktop.core.ToolResolver
 import com.gameperf.desktop.core.bridge.DeviceBridgeApi
 import com.gameperf.desktop.core.model.*
 import java.io.File
@@ -192,14 +193,13 @@ class IosBridge(
         }
     }
 
-    private fun findFfprobe(): String? {
-        try {
-            val p = ProcessBuilder("which", "ffprobe").start()
-            val result = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor()
-            if (result.isNotEmpty() && java.io.File(result).exists()) return result
-        } catch (_: Exception) {}
-        val candidates = listOf("/usr/local/bin/ffprobe", "/opt/homebrew/bin/ffprobe", "/usr/bin/ffprobe")
-        return candidates.firstOrNull { java.io.File(it).exists() }
-    }
+    /**
+     * v4.2.13: was a third hand-rolled copy of the same `which`-on-Windows +
+     * Unix-only candidate list pattern that [ToolResolver] already owns for
+     * ffmpeg. Delegating here keeps the "external tool lookup" logic in one
+     * place — in particular, Windows users now get ffprobe from WinGet /
+     * Scoop / Chocolatey installs instead of falling through to the
+     * size-only fallback (`file.length() > 1024`).
+     */
+    private fun findFfprobe(): String? = ToolResolver.find("ffprobe")
 }
