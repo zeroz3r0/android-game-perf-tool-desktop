@@ -14,6 +14,16 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.3.4] — 2026-04-21
+
+### Detalles tecnicos
+
+- **Tests del grading + extracción a `FinalScoreCalculator`**: el bloque inline que calculaba el score final (100 → letra A/B/C/D/F + lista de problemas en castellano) vivía embebido en `AppViewModel.startCapture` entre las líneas 1228 y 1296, sin tests propios. El `CHANGELOG` de v4.2.7 admitía explícitamente «el grading no tiene tests propios todavía». v4.3.4 cierra ese hueco: el cálculo ahora vive en un objeto puro `core/grading/FinalScoreCalculator` y está cubierto por 29 tests unitarios en `FinalScoreCalculatorTest`. La extracción es byte-equivalente — thresholds (85% / 70% / 50% de ratio p50, 60% / 40% de ratio p5, 5% / 10% / 20% de ratio de jank, 5 freezes, 1500/2000 MB de memoria, 45 °C, 85 % de CPU), mensajes en castellano y orden de inserción de los problemas se preservan al byte. `AppViewModel.startCapture` pierde ~50 líneas de lógica inline y su complejidad ciclomática reportada por detekt baja en consecuencia
+- **Cobertura de los 29 tests nuevos**: A — happy paths a 30/60/90/120 fps (ningún target penaliza al juego por llegar a su propio objetivo, garantía de v4.2.6); B — bordes exactos del ratio p50 (84 % → -8 sin mensaje, 70 % exacto → -8, 69 % → -20 con mensaje, 50 % exacto → -20, 49 % → -35); C — bordes del ratio p5 (59 % → -6, 39 % → -15 con mensaje); D — bordes de jank ratio (5 % exacto no penaliza, 5-10 % → -3, 10-20 % → -8, >20 % → -15 con mensaje); E — stutter (5 no penaliza, 6 → -10), memoria (2000 cae al elif → -6, 2001 → -12), temperatura y CPU; F — mapeo de letra (85 → A, 84 → B, 70 → B, 69 → C, 55 → C, 54 → D, 40 → D, 39 → F); G — edge cases (targetFps=0, finalElapsed=0, todos los penalties firing simultáneamente produciendo score negativo, orden de inserción de los 7 mensajes en `problems`)
+- **`peakMem` en `GradingInput` usa `Long` end-to-end**: el primer commit de la extracción narrow-casteaba `AppViewModel.peakMem` (Long, viene de `memHistory.maxOrNull()` donde memHistory es `List<Long>`) a `Int` en la frontera del `GradingInput`. Seguro mientras el heap cap esté por debajo de ~2 GB de memoria (Int.MAX_VALUE es 2_147_483_647), pero un overflow latente si la app alguna vez mide juegos con más RAM. v4.3.4 mantiene Long en toda la cadena; los thresholds `> 2000` y `> 1500` auto-promueven los literales `Int` a `Long` sin cambios de comportamiento
+- **Tests totales**: 328 → **360** (29 nuevos en `FinalScoreCalculatorTest`, el resto de la variación es el test de `AppViewModelGradingTest` existente que continúa verificando la integración). 0 failures, 11 skipped por plataforma
+- **Version bump**: `4.3.3` → `4.3.4`. Patch
+
 ## [4.3.3] — 2026-04-20
 
 ### Arreglos
