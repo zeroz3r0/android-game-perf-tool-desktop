@@ -27,7 +27,7 @@ data class GradingInput(
     val totalJank: Long,
     val finalElapsed: Double,
     val totalStutter: Int,
-    val peakMem: Int,
+    val peakMem: Long,
     val maxTempCpu: Double,
     val avgCpu: Int,
 )

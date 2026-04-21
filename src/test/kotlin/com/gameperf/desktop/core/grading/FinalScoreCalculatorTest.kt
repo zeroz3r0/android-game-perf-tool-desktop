@@ -35,7 +35,7 @@ class FinalScoreCalculatorTest {
         totalJank = 0L,
         finalElapsed = 60.0,
         totalStutter = 0,
-        peakMem = 800,
+        peakMem = 800L,
         maxTempCpu = 35.0,
         avgCpu = 40,
     )
@@ -236,7 +236,7 @@ class FinalScoreCalculatorTest {
 
     @Test
     fun `peakMem above 2000 applies -12 with peak memory problem`() {
-        val input = perfect(60).copy(peakMem = 2100)
+        val input = perfect(60).copy(peakMem = 2100L)
         val result = FinalScoreCalculator.compute(input)
         assertEquals(88, result.score)
         assertEquals(1, result.problems.size)
@@ -248,7 +248,7 @@ class FinalScoreCalculatorTest {
 
     @Test
     fun `peakMem between 1500 and 2000 applies -6 with memoria alta problem`() {
-        val input = perfect(60).copy(peakMem = 1800)
+        val input = perfect(60).copy(peakMem = 1800L)
         val result = FinalScoreCalculator.compute(input)
         assertEquals(94, result.score)
         assertEquals(1, result.problems.size)
@@ -258,7 +258,7 @@ class FinalScoreCalculatorTest {
     @Test
     fun `peakMem at exactly 2000 falls into elif (-6 not -12)`() {
         // 2000 is NOT > 2000 → falls into the elif > 1500 branch → -6, "Memoria alta"
-        val input = perfect(60).copy(peakMem = 2000)
+        val input = perfect(60).copy(peakMem = 2000L)
         val result = FinalScoreCalculator.compute(input)
         assertEquals(94, result.score)
         assertEquals(1, result.problems.size)
@@ -311,7 +311,7 @@ class FinalScoreCalculatorTest {
         assertEquals(70, r70.score); assertEquals('B', r70.grade)
 
         // 69: -15 (p5<0.4) + -10 (stutter) + -6 (memoria>1500) = -31
-        val r69 = FinalScoreCalculator.compute(perfect(60).copy(p5 = 23, totalStutter = 6, peakMem = 1800))
+        val r69 = FinalScoreCalculator.compute(perfect(60).copy(p5 = 23, totalStutter = 6, peakMem = 1800L))
         assertEquals(69, r69.score); assertEquals('C', r69.grade)
     }
 
@@ -335,7 +335,7 @@ class FinalScoreCalculatorTest {
 
         // 39: -20 (p50<0.7) + -15 (p5<0.4) + -8 (jank 10-20%) + -6 (memoria>1500) + -12 (thermal>45) = -61
         val r39 = FinalScoreCalculator.compute(
-            perfect(60).copy(p50 = 41, p5 = 23, totalJank = 540L, peakMem = 1800, maxTempCpu = 47.0)
+            perfect(60).copy(p50 = 41, p5 = 23, totalJank = 540L, peakMem = 1800L, maxTempCpu = 47.0)
         )
         assertEquals(39, r39.score); assertEquals('F', r39.grade)
     }
@@ -355,7 +355,7 @@ class FinalScoreCalculatorTest {
             totalJank = 0L,
             finalElapsed = 60.0,
             totalStutter = 0,
-            peakMem = 800,
+            peakMem = 800L,
             maxTempCpu = 35.0,
             avgCpu = 40,
         )
@@ -386,7 +386,7 @@ class FinalScoreCalculatorTest {
             totalJank = 1000L, // 1000 / 3600 = 0.277 > 0.20 → -15
             finalElapsed = 60.0,
             totalStutter = 100, // -10
-            peakMem = 3000,     // -12
+            peakMem = 3000L,    // -12
             maxTempCpu = 60.0,  // -12
             avgCpu = 99,        // -12
         )
@@ -409,7 +409,7 @@ class FinalScoreCalculatorTest {
             totalJank = 1000L,  // > 0.20 → message #3 ("... frames con jank ...")
             finalElapsed = 60.0,
             totalStutter = 10,  // > 5 → message #4 ("... freezes visibles ...")
-            peakMem = 2500,     // > 2000 → message #5 ("Pico de memoria ...")
+            peakMem = 2500L,    // > 2000 → message #5 ("Pico de memoria ...")
             maxTempCpu = 50.0,  // > 45 → message #6 ("Temperatura CPU ...")
             avgCpu = 95,        // > 85 → message #7 ("CPU saturada ...")
         )

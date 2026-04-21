@@ -1231,7 +1231,7 @@ class AppViewModel(
                     totalJank = totalJank.toLong(),
                     finalElapsed = finalElapsed.toDouble(),
                     totalStutter = totalStutter,
-                    peakMem = peakMem.toInt(),
+                    peakMem = peakMem,
                     maxTempCpu = maxTempCpu,
                     avgCpu = avgCpu,
                 )
