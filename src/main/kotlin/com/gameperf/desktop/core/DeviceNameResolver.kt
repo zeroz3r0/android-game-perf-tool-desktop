@@ -276,21 +276,36 @@ object DeviceNameResolver {
             return manufacturer.trim().capitalizeFirst().ifEmpty { "Unknown device" }
         }
 
+        // v4.3.3: normalize underscores to hyphens before lookup.
+        //
+        // Why: `getprop ro.product.model` returns `SM-S911B` (with hyphen),
+        // but `adb devices -l` prints `model:SM_S911B` (with underscore) —
+        // adb replaces hyphens with underscores in the short device listing
+        // because spaces and dashes would break its space-delimited parser.
+        // The codenameToMarketing table uses the canonical hyphen form (how
+        // Samsung officially names the models), so `SM_S911B` from the
+        // listing never matched and users saw the raw codename instead of
+        // "Samsung Galaxy S23". One normalization at the entry point fixes
+        // both call sites (listDevices + getDeviceInfo) in one shot.
+        val normalized = trimmedModel.replace('_', '-')
+
         // 1. Exact match — Pixel 6, Mi 11 Lite, etc. all match here directly.
-        codenameToMarketing[trimmedModel]?.let { return it }
+        codenameToMarketing[normalized]?.let { return it }
 
         // 2. Prefix match — SM-S911B / SM-S911U / SM-S911N all hit SM-S911.
         for ((prefix, name) in codenameToMarketing) {
-            if (trimmedModel.startsWith(prefix)) return name
+            if (normalized.startsWith(prefix)) return name
         }
 
         // 3. Fallback: "<Manufacturer> <Model>" with manufacturer capitalized.
         // Avoids "samsung SM-S999X" — uses "Samsung SM-S999X".
+        // Uses the normalized form so the fallback shows "Samsung SM-S999X"
+        // rather than the noisier "Samsung SM_S999X".
         val mfr = manufacturer.trim().capitalizeFirst()
-        return if (mfr.isEmpty() || trimmedModel.startsWith(mfr, ignoreCase = true)) {
-            trimmedModel
+        return if (mfr.isEmpty() || normalized.startsWith(mfr, ignoreCase = true)) {
+            normalized
         } else {
-            "$mfr $trimmedModel"
+            "$mfr $normalized"
         }
     }
 

@@ -110,6 +110,23 @@ Los intentos anteriores solo miraban UNO de los dos bugs a la vez. Bajar el cach
 
 ---
 
+## Patrón de bug recurrente: nombres de dispositivo con underscore en vez de guión
+
+**Síntoma (v4.3.3):** Samsung Galaxy S23 aparece en la lista de dispositivos como `SM_S911B` en lugar de `Samsung Galaxy S23`. En el detalle de la sesión se ve correcto.
+
+**Causa raíz:** dos fuentes del modelo devuelven formatos distintos:
+
+- `adb devices -l` → imprime `model:SM_S911B` (guión bajo) porque su parser es space-delimited y reemplaza los guiones para no romper campos.
+- `getprop ro.product.model` → devuelve `SM-S911B` (guión), que es la forma canónica de Samsung.
+
+La tabla `DeviceNameResolver.codenameToMarketing` usa la forma con guión. El prefix match `SM-S911B.startsWith("SM-S911")` funciona, pero `SM_S911B.startsWith("SM-S911")` falla → caída al fallback crudo.
+
+**Fix (v4.3.3):** normalizar el input en `resolve()` — `model.replace('_', '-')` antes del lookup. Una línea, cubre ambos call sites (`listDevices` + `getDeviceInfo`) en un solo lugar.
+
+**Lección general:** cuando un módulo recibe el mismo dato desde dos fuentes y una de ellas aplica una transformación silenciosa (underscore por hyphen, case-folding, trim, etc.), **normalizar en el punto de entrada del módulo, no en cada fuente**. Si normalizás solo en `listDevices`, el próximo call site también vas a tener que parchearlo individualmente. El resolver es responsable de aceptar "todas las formas razonables del mismo código".
+
+---
+
 ## Convención de releases
 
 - Bump `appVersion` en `gradle.properties`

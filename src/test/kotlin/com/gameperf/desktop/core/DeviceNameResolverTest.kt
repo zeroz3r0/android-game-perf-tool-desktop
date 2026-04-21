@@ -107,6 +107,47 @@ class DeviceNameResolverTest {
         assertEquals("Samsung Galaxy S23", DeviceNameResolver.resolve("  SM-S911B  ", " samsung "))
     }
 
+    // ═══ Underscore normalization (v4.3.3) ═══
+    //
+    // `adb devices -l` prints `model:SM_S911B` with an UNDERSCORE because it
+    // uses space-delimited parsing and would misread a hyphen. `getprop
+    // ro.product.model` returns `SM-S911B` with a hyphen. Both codepaths
+    // go through resolve() and must produce the same marketing name — the
+    // bug reported was that the device list view (fed by `adb devices -l`)
+    // showed the raw codename while the session detail view (fed by getprop)
+    // showed the correct name.
+
+    @Test
+    fun `resolve handles underscore variant from adb devices listing`() {
+        // User-reported case: Samsung Galaxy S23 on `adb devices -l` shows up
+        // as `SM_S911B`, not `SM-S911B`. Must resolve identically.
+        assertEquals("Samsung Galaxy S23", DeviceNameResolver.resolve("SM_S911B", "samsung"))
+        assertEquals("Samsung Galaxy S23", DeviceNameResolver.resolve("SM_S911U", "samsung"))
+        assertEquals("Samsung Galaxy S24 Ultra", DeviceNameResolver.resolve("SM_S928B", "samsung"))
+        assertEquals("Samsung Galaxy Z Fold 5", DeviceNameResolver.resolve("SM_F946B", "samsung"))
+    }
+
+    @Test
+    fun `resolve underscore and hyphen forms are interchangeable`() {
+        // The same phone reported via both sources should produce the same
+        // output — proves normalization happens at the entry point.
+        val hyphenForm = DeviceNameResolver.resolve("SM-S911B", "samsung")
+        val underscoreForm = DeviceNameResolver.resolve("SM_S911B", "samsung")
+        assertEquals(hyphenForm, underscoreForm)
+    }
+
+    @Test
+    fun `resolve fallback uses hyphen form even when input had underscores`() {
+        // An unknown codename should fall back to the HYPHEN form, not the
+        // underscore form — the hyphen is the canonical vendor-documented name
+        // and looks less like an internal identifier.
+        assertEquals(
+            "Samsung SM-S999X",
+            DeviceNameResolver.resolve("SM_S999X", "samsung"),
+            "unknown underscore-form codenames must fallback to hyphen-form",
+        )
+    }
+
     // ═══ Coverage smoke check ═══
 
     @Test
