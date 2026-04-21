@@ -19,6 +19,8 @@ import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.core.model.DevicePlatform
 import com.gameperf.desktop.core.bridge.AndroidBridge
+import com.gameperf.desktop.core.grading.FinalScoreCalculator
+import com.gameperf.desktop.core.grading.GradingInput
 import com.gameperf.desktop.core.ios.IosBridge
 import com.gameperf.desktop.core.ios.SidecarClient
 import com.gameperf.desktop.core.ios.SidecarLifecycle
@@ -1211,89 +1213,36 @@ class AppViewModel(
             val maxTempGpu = tempGpuHistory.maxOrNull() ?: 0.0
             val totalDrops = missedEnd - missedStart
 
-            // ═══ Grading (v4.2.6: target-FPS-aware) ═══
+            // ═══ Grading (v4.3.4: extracted to FinalScoreCalculator) ═══
             //
-            // Pre-v4.2.6 the FPS thresholds were hardcoded assuming a 60fps target:
-            //   p50 < 30 → -35
-            //   p50 < 45 → -20
-            //   p50 < 55 → -8
-            //
-            // That penalized 30fps-target games unfairly: a Pokemon Unite or any
-            // mobile game with an intentional 30fps cap landed at p50=30 and got
-            // -35 despite being on-target. Same class of bug we fixed in v4.2.5
-            // for jank — the metric was answering "how does this stream compare
-            // to a 60fps reference?" instead of "how well does this game hit ITS
-            // OWN target?". After v4.2.6 the grading is proportional to the
-            // inferred target.
+            // The grading logic — proportional FPS thresholds (v4.2.6), per-game
+            // jank ratio (v4.2.7), stutter/memory/thermal/CPU penalties — used to
+            // live inline here. v4.3.4 extracted it to a pure object under
+            // core/grading following the CLAUDE.md rule "tests puros sin mocks":
+            // any function with complex logic must have a pure extractable version.
+            // See FinalScoreCalculator.kt for the full penalty table and behavior
+            // notes; FinalScoreCalculatorTest.kt covers every bucket boundary.
             val targetFps = inferGameTargetFps(avgFps = avgFps, maxFps = maxFps)
-            val problems = mutableListOf<String>()
-            var score = 100
-            // FPS median scoring proportional to the game's target.
-            // p50 ≥ 85% of target = on-target, no penalty.
-            // p50 < 85% but ≥ 70% = small penalty (8 pts).
-            // p50 < 70% but ≥ 50% = medium penalty (20 pts).
-            // p50 < 50% = severe (35 pts), the game is broken at its own target.
-            val p50Ratio = if (targetFps > 0) p50.toDouble() / targetFps else 1.0
-            when {
-                p50Ratio < 0.5 -> {
-                    score -= 35
-                    problems.add("FPS mediana $p50 vs target ${targetFps} - Muy bajo para una experiencia fluida")
-                }
-                p50Ratio < 0.7 -> {
-                    score -= 20
-                    problems.add("FPS mediana $p50 vs target ${targetFps} - Se nota falta de fluidez en escenas con accion")
-                }
-                p50Ratio < 0.85 -> score -= 8
-            }
-            // P5 scoring proportional to target. p5 ≥ 60% of target = OK.
-            // Below 40% of target = severe drops; between 40-60% = mild.
-            val p5Ratio = if (targetFps > 0) p5.toDouble() / targetFps else 1.0
-            when {
-                p5Ratio < 0.4 -> {
-                    score -= 15
-                    problems.add("P5 FPS: $p5 - Caidas severas que causan congelaciones visibles")
-                }
-                p5Ratio < 0.6 -> score -= 6
-            }
-            // ═══ Jank ratio (v4.2.7: per-game, not global) ═══
-            //
-            // Pre-v4.2.7 the grading used `totalDrops` (SurfaceFlinger's global
-            // missed-frame counter), which counts drops from ALL apps' surfaces
-            // not just the game's. We had a low penalty (12 pts) to avoid
-            // unfairly tanking the game's grade for unrelated drops, but the
-            // metric was still polluted.
-            //
-            // v4.2.7: switch the grading penalty to use `totalJank`, which is
-            // counted per-game inside computeFrameSnapshot using the dynamic
-            // jank threshold (1.5 × inferred target). This is a true per-game
-            // metric and the penalty can be more meaningful. We normalize as a
-            // RATIO (jank frames / approximate total frames in session) so
-            // long sessions aren't penalized just for accumulating jank over
-            // time.
-            //
-            // totalDrops kept in the report as supplementary info (with a
-            // disclaimer about being device-wide) but no longer drives grading.
-            val approxTotalFrames = (finalElapsed * targetFps).toLong().coerceAtLeast(1)
-            val jankRatio = totalJank.toDouble() / approxTotalFrames
-            when {
-                jankRatio > 0.20 -> {
-                    score -= 15
-                    problems.add("$totalJank frames con jank (${(jankRatio * 100).toInt()}% de la sesion) - Falta de fluidez perceptible")
-                }
-                jankRatio > 0.10 -> score -= 8
-                jankRatio > 0.05 -> score -= 3
-            }
-            // Stutter penalty (frames > 100ms = visible freezes regardless of target).
-            // These are user-visible problems even on a 30fps game; harsh penalty.
-            if (totalStutter > 5) {
-                score -= 10
-                problems.add("$totalStutter freezes visibles (frames > 100ms) durante la sesion")
-            }
-            if (peakMem > 2000) { score -= 12; problems.add("Pico de memoria ${peakMem}MB - Riesgo de cierre forzado en dispositivos con poca RAM") }
-            else if (peakMem > 1500) { score -= 6; problems.add("Memoria alta: ${peakMem}MB") }
-            if (maxTempCpu > 45) { score -= 12; problems.add("Temperatura CPU ${maxTempCpu.toInt()}C - Thermal throttling activo, reduce rendimiento") }
-            if (avgCpu > 85) { score -= 12; problems.add("CPU saturada al ${avgCpu}% - Cuello de botella principal") }
-            val grade = when { score >= 85 -> 'A'; score >= 70 -> 'B'; score >= 55 -> 'C'; score >= 40 -> 'D'; else -> 'F' }
+            val gradingResult = FinalScoreCalculator.compute(
+                GradingInput(
+                    targetFps = targetFps,
+                    p50 = p50,
+                    p5 = p5,
+                    totalJank = totalJank.toLong(),
+                    finalElapsed = finalElapsed.toDouble(),
+                    totalStutter = totalStutter,
+                    peakMem = peakMem.toInt(),
+                    maxTempCpu = maxTempCpu,
+                    avgCpu = avgCpu,
+                )
+            )
+            val score = gradingResult.score
+            val grade = gradingResult.grade
+            // Kept as MutableList because downstream call sites (HardwareScoring,
+            // ReportGenerator, SessionResult) currently only read it, but a future
+            // change might want to append device-tier-specific messages here. Cheap
+            // safety guarantee — `.toMutableList()` is O(n) on a small list.
+            val problems = gradingResult.problems.toMutableList()
 
             // Device-specific grade
             val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(_deviceInfo.value?.gpu ?: "")
