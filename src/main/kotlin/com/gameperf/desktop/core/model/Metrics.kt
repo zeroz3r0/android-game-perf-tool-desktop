@@ -32,10 +32,25 @@ data class MemSnapshot(
  * Sentinel: -1.0 means the metric is unavailable on this platform.
  * For iOS: [skin] is always -1.0 (never exposed by iOS).
  * For iOS: [gpu] is -1.0 when unavailable.
+ *
+ * v4.3.6 — semantics of [cpu] vs [dieCpu]:
+ *  - [dieCpu] is the silicon (junction) temperature of the CPU. Routinely
+ *    80-95°C under sustained load and NOT a problem unless > 95°C. Captured
+ *    via the [com.gameperf.desktop.core.ThermalZoneClassifier] DieCpu bucket.
+ *  - [cpu] is the LEGACY user-facing CPU temp field, kept for serialization
+ *    compat with `.gameperf` exports written before v4.3.6. Its semantics are
+ *    "the temperature the user sees as 'CPU temp' in the HUD/report" — equal
+ *    to [skin] when skin is available, else equal to [dieCpu]. New callers
+ *    SHOULD prefer [skin] / [dieCpu] explicitly.
+ *  - [skin] is the case/skin estimator. Throttle threshold ~42°C.
+ *
+ *  v4.3.6 default for [dieCpu] is -1.0 to keep the data class compatible
+ *  with kotlinx.serialization decoders for old exports that lack the field.
  */
 data class ThermalSnapshot(
     val cpu: Double,
     val gpu: Double,
     val battery: Double,
     val skin: Double,
+    val dieCpu: Double = -1.0,
 )

@@ -955,6 +955,10 @@ class AppViewModel(
             val tempCpuHistory = mutableListOf<Double>()
             val tempGpuHistory = mutableListOf<Double>()
             val tempSkinHistory = mutableListOf<Double>()
+            // v4.3.6: separate die-CPU history. Pre-v4.3.6 `tempCpuHistory`
+            // conflated skin and die into one timeline. The new field tracks
+            // the silicon temp explicitly so the report can show both.
+            val tempDieCpuHistory = mutableListOf<Double>()
             val frameTimeAvgHistory = mutableListOf<Double>()
             val allFrameTimes = mutableListOf<Double>()
             var totalJank = 0
@@ -1141,8 +1145,18 @@ class AppViewModel(
                 // v4.1.0: thermal fields use NaN as sentinel. NaN > 0 is false in IEEE 754,
                 // so the guard works identically, but we use !isNaN() for clarity.
                 if (shouldRecordThermal) {
-                    if (!lastThermal.cpu.isNaN() && lastThermal.cpu > 0) {
-                        tempCpuHistory.add(lastThermal.cpu)
+                    // v4.3.6: prefer skin for the user-facing `tempCpuHistory`
+                    // when skin is available. Falls back to die when no skin
+                    // sensor exists. Old `.gameperf` exports stay readable
+                    // because the field type didn't change.
+                    val userFacingTemp = when {
+                        !lastThermal.skin.isNaN() && lastThermal.skin > 0 -> lastThermal.skin
+                        !lastThermal.dieCpu.isNaN() && lastThermal.dieCpu > 0 -> lastThermal.dieCpu
+                        !lastThermal.cpu.isNaN() && lastThermal.cpu > 0 -> lastThermal.cpu
+                        else -> Double.NaN
+                    }
+                    if (!userFacingTemp.isNaN()) {
+                        tempCpuHistory.add(userFacingTemp)
                         if (tempCpuHistory.size > MAX_HISTORY_SIZE) tempCpuHistory.removeFirst()
                     }
                     if (!lastThermal.gpu.isNaN() && lastThermal.gpu > 0) {
@@ -1152,6 +1166,10 @@ class AppViewModel(
                     if (!lastThermal.skin.isNaN() && lastThermal.skin > 0) {
                         tempSkinHistory.add(lastThermal.skin)
                         if (tempSkinHistory.size > MAX_HISTORY_SIZE) tempSkinHistory.removeFirst()
+                    }
+                    if (!lastThermal.dieCpu.isNaN() && lastThermal.dieCpu > 0) {
+                        tempDieCpuHistory.add(lastThermal.dieCpu)
+                        if (tempDieCpuHistory.size > MAX_HISTORY_SIZE) tempDieCpuHistory.removeFirst()
                     }
                 }
                 if (frame != null && frame.avgFrameTime > 0) {
@@ -1183,7 +1201,15 @@ class AppViewModel(
                     memMb = lastMem?.totalMb ?: 0,
                     nativeMb = lastMem?.nativeMb ?: 0,
                     javaMb = lastMem?.javaMb ?: 0,
-                    tempCpu = lastThermal.cpu,
+                    // v4.3.6: HUD `tempCpu` shows the user-facing temp. Prefer
+                    // skin (case temp the user feels) over die (silicon, often
+                    // alarming-looking 80-95°C under load but normal). Falls
+                    // back to die or legacy `cpu` when skin is unavailable.
+                    tempCpu = when {
+                        !lastThermal.skin.isNaN() && lastThermal.skin > 0 -> lastThermal.skin
+                        !lastThermal.dieCpu.isNaN() && lastThermal.dieCpu > 0 -> lastThermal.dieCpu
+                        else -> lastThermal.cpu
+                    },
                     tempGpu = lastThermal.gpu,
                     tempBattery = lastThermal.battery,
                     tempSkin = lastThermal.skin,
@@ -1311,6 +1337,11 @@ class AppViewModel(
             val maxCpu = cpuHistory.maxOrNull() ?: 0
             val maxTempCpu = tempCpuHistory.maxOrNull() ?: 0.0
             val maxTempGpu = tempGpuHistory.maxOrNull() ?: 0.0
+            // v4.3.6: skin and die history maxes for the new thermal split.
+            // tempCpuHistory carries the user-facing temp (skin if available,
+            // else die fallback) for back-compat with old `.gameperf` exports.
+            val maxTempSkin = tempSkinHistory.maxOrNull() ?: 0.0
+            val maxTempDieCpu = tempDieCpuHistory.maxOrNull() ?: 0.0
             val totalDrops = missedEnd - missedStart
 
             // ═══ Grading (v4.3.4: extracted to FinalScoreCalculator) ═══
@@ -1332,8 +1363,13 @@ class AppViewModel(
                     finalElapsed = finalElapsed.toDouble(),
                     totalStutter = totalStutter,
                     peakMem = peakMem,
+                    // v4.3.6: maxTempCpu is now semantically "user-facing temp"
+                    // (skin if available, else die fallback). The dual thermal
+                    // threshold uses peakThermalDie to fire when only the
+                    // silicon is overheated.
                     maxTempCpu = maxTempCpu,
                     avgCpu = avgCpu,
+                    peakThermalDie = maxTempDieCpu,
                 )
             )
             val score = gradingResult.score
@@ -1346,7 +1382,15 @@ class AppViewModel(
 
             // Device-specific grade
             val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(_deviceInfo.value?.gpu ?: "")
-            val (deviceGrade, deviceScore) = com.gameperf.desktop.core.HardwareScoring.calculateDeviceGrade(avgFps, p1, tier, problems)
+            val (deviceGrade, deviceScore) = com.gameperf.desktop.core.HardwareScoring.calculateDeviceGrade(
+                avgFps = avgFps,
+                p1Fps = p1,
+                tier = tier,
+                problems = problems,
+                // v4.3.6: pass the inferred game target so the device-adjusted
+                // grade is proportional too. Path B of the dual-grading fix.
+                targetFps = targetFps,
+            )
 
             // Snapshot markers before generating report
             val sessionMarkers = _markers.value
@@ -1365,13 +1409,20 @@ class AppViewModel(
                     avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
                     p99FrameTime = p99ft,
                     peakMem = peakMem, avgCpu = avgCpu, maxCpu = maxCpu,
-                    maxTempCpu = maxTempCpu, maxTempGpu = maxTempGpu,
+                    // v4.3.6: maxTempCpu is now the user-facing peak (skin if
+                    // available, else die fallback). maxTempSkin lets the
+                    // report card render a separate "Die máx" sub-line and
+                    // pick the right throttle copy (42°C skin vs 95°C die).
+                    maxTempCpu = if (maxTempDieCpu > 0) maxTempDieCpu else maxTempCpu,
+                    maxTempGpu = maxTempGpu,
                     batteryStart = batteryStart, batteryEnd = batteryEnd,
                     frameDrops = totalDrops, jank = totalJank, stutter = totalStutter,
                     problems = problems, isWifi = isWifiMode,
                     deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
                     fpsTimestamps = fpsTimed.map { it.second to it.value.toInt() },
-                    markers = sessionMarkers
+                    markers = sessionMarkers,
+                    targetFps = targetFps,
+                    maxTempSkin = maxTempSkin,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")

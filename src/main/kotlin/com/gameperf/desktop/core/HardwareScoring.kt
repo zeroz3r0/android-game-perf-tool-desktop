@@ -204,19 +204,40 @@ object HardwareScoring {
      * "between expected and floor" zone (where good-enough performance lives) and
      * still strict below floor (where actually broken performance lives).
      *
+     * v4.3.6: proportional grading — Path B of the dual-grading-system fix. Pre-v4.3.6
+     * `expectedFps` came directly from `tier.expectedFps` (60 on HIGH/ULTRA_HIGH),
+     * which made a 30-fps Unity-vsync game on a Galaxy S23 score F because p50=30
+     * was always compared against 60. The fix: take MIN(tier.expectedFps, targetFps)
+     * so a 30-fps-target game is graded against a 30-fps yardstick on every tier.
+     * `targetFps` defaults to 60 to preserve back-compat for any caller that hasn't
+     * been migrated yet (the FinalScoreCalculator path uses the same logic via a
+     * different code path; see `sdd/grading-thermal-realism/explore`).
+     *
      * Sentinel: avgFps == 0 means the tool failed to read FPS at all (capture-side
      * bug, not user fault). Returns the previous behavior of grade F + score 0 so
      * the report makes it obvious something went wrong on capture, not on the device.
      */
-    fun calculateDeviceGrade(avgFps: Int, p1Fps: Int, tier: DeviceTier, problems: List<String>): Pair<Char, Int> {
+    fun calculateDeviceGrade(
+        avgFps: Int,
+        p1Fps: Int,
+        tier: DeviceTier,
+        problems: List<String>,
+        targetFps: Int = 60,
+    ): Pair<Char, Int> {
         // v3.1.11: capture-side failure (tool couldn't measure) — distinct from
         // device performance. Don't reward an unmeasured session with a real grade.
         if (avgFps <= 0) return 'F' to 0
 
         var score = 100
 
-        val expectedFps = tier.expectedFps
-        val fpsFloor = tier.fpsFloor
+        // v4.3.6: effective targets bounded above by the game's inferred target
+        // FPS. A 30-fps target game on a HIGH tier device should be graded
+        // against 30, not 60. Floor scales the same way so a 30-fps target
+        // doesn't keep a 50-fps floor. We never INCREASE the floor above what
+        // the tier defaults already define — this is one-way clamping.
+        val effectiveTargetFps = if (targetFps > 0) targetFps else tier.expectedFps
+        val expectedFps = minOf(tier.expectedFps, effectiveTargetFps)
+        val fpsFloor = minOf(tier.fpsFloor, maxOf(effectiveTargetFps - 5, (effectiveTargetFps * 0.85).toInt()))
 
         // FPS penalty relative to device tier expectations
         // v3.1.11: softened middle brackets. A device hitting 90% of its expected

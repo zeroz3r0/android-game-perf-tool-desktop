@@ -30,6 +30,7 @@ object ReportGenerator {
                 ?: error("Missing classpath resource: $path")
     }
 
+    @Suppress("LongParameterList")
     fun generate(
         pkg: String, info: DeviceInfo?, grade: Char, score: Int, duration: Int,
         fpsHistory: List<Int>, memHistory: List<Long>, nativeHistory: List<Long>, javaHistory: List<Long>,
@@ -42,7 +43,15 @@ object ReportGenerator {
         problems: List<String>, isWifi: Boolean,
         deviceGrade: Char = ' ', deviceScore: Int = 0, deviceTier: String = "",
         fpsTimestamps: List<Pair<Int, Int>> = emptyList(),
-        markers: List<SessionMarker> = emptyList()
+        markers: List<SessionMarker> = emptyList(),
+        // v4.3.6: target FPS used by [ReportGrading] for proportional metric-card
+        // grading (Path C of the dual-grading fix). Defaults to 60 for back-compat
+        // with the only legacy fixture caller (`ReportRenderingTest`).
+        targetFps: Int = 60,
+        // v4.3.6: peak skin (case) temperature. When > 0 the temperature card
+        // shows "Skin" + sub-line "Die máx: X°C". When ≤ 0 the card falls back
+        // to die-CPU semantics (legacy behavior).
+        maxTempSkin: Double = 0.0,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -72,12 +81,19 @@ object ReportGenerator {
         }
 
         // Metric grades
-        val fpsGrade = metricGrade(avgFps, 55, 45, 30, 20)
-        val ftGrade = metricGrade(100 - avgFrameTime.toInt().coerceIn(0, 100), 84, 67, 50, 34)
+        // v4.3.6: FPS + frame-time cards now use proportional helpers from
+        // [ReportGrading]. A 30-fps Unity-vsync game on an S23 hits its own
+        // target → A on both cards instead of the legacy hardcoded C/B.
+        val fpsGrade = ReportGrading.fpsCardGrade(avgFps = avgFps, targetFps = targetFps)
+        val ftGrade = ReportGrading.frameTimeCardGrade(avgFrameTime = avgFrameTime, targetFps = targetFps)
         val memGrade = metricGrade(100 - (peakMem.toInt() / 30).coerceIn(0, 100), 80, 60, 40, 20)
         val cpuGrade = metricGrade(100 - avgCpu, 70, 55, 40, 20)
-        val tempGrade = if (maxTempCpu <= 0) 'A' else metricGrade(
-            100 - ((maxTempCpu - 30).toInt().coerceIn(0, 30) * 100 / 30), 80, 60, 40, 20
+        // v4.3.6: temperature card now grades against the SKIN temp when available.
+        // Skin throttling is ~42°C, die throttling is ~95°C — separate yardsticks.
+        val showSkinAsPrimary = maxTempSkin > 0
+        val tempForGrade = if (showSkinAsPrimary) maxTempSkin else maxTempCpu
+        val tempGrade = if (tempForGrade <= 0) 'A' else metricGrade(
+            100 - ((tempForGrade - 30).toInt().coerceIn(0, 30) * 100 / 30), 80, 60, 40, 20
         )
 
         // Chart data
@@ -284,7 +300,25 @@ $CSS
         ${metricCard("Frame Time", "${fmtUS("%.1f", avgFrameTime)}ms", "frametime", ftGrade, gradeColor(ftGrade), "P99 ${fmtUS("%.1f", p99FrameTime)}ms / Jank $jank")}
         ${metricCard("Memoria", "${peakMem}MB", "memory", memGrade, gradeColor(memGrade), "Inicio ${memHistory.firstOrNull() ?: "?"}MB / Final ${memHistory.lastOrNull() ?: "?"}MB")}
         ${metricCard("CPU", "${avgCpu}%", "cpu", cpuGrade, gradeColor(cpuGrade), "Max ${maxCpu}%")}
-        ${metricCard("Temperatura", if (maxTempCpu > 0) "${maxTempCpu.toInt()}\u00B0C" else "N/A", "temp", tempGrade, gradeColor(tempGrade), if (maxTempGpu > 0) "GPU ${maxTempGpu.toInt()}\u00B0C" else "Solo CPU")}
+        ${
+            // v4.3.6: card title + value + sub-line all depend on whether the
+            // device exposed a skin sensor. Skin = case temp the user feels.
+            // Die = silicon temp, routinely 80-95°C under load (NORMAL).
+            run {
+                val cardTitle = if (showSkinAsPrimary) "Temperatura piel" else "Temperatura die"
+                val primaryValue = when {
+                    showSkinAsPrimary -> "${maxTempSkin.toInt()}\u00B0C"
+                    maxTempCpu > 0 -> "${maxTempCpu.toInt()}\u00B0C"
+                    else -> "N/A"
+                }
+                val subLine = when {
+                    showSkinAsPrimary && maxTempCpu > 0 -> "Die máx: ${maxTempCpu.toInt()}\u00B0C"
+                    maxTempGpu > 0 -> "GPU ${maxTempGpu.toInt()}\u00B0C"
+                    else -> "Solo CPU"
+                }
+                metricCard(cardTitle, primaryValue, "temp", tempGrade, gradeColor(tempGrade), subLine)
+            }
+        }
         ${metricCard("Bateria", "${batteryDrain}%", "battery",
                 if (batteryDrain <= 3) 'A' else if (batteryDrain <= 6) 'B' else if (batteryDrain <= 10) 'C' else 'D',
                 gradeColor(if (batteryDrain <= 3) 'A' else if (batteryDrain <= 6) 'B' else if (batteryDrain <= 10) 'C' else 'D'),
@@ -362,9 +396,23 @@ $CSS
         <h2>&#127777; Temperatura</h2>
         <span class="card-badge" style="background:${gradeColor(tempGrade)}20;color:${gradeColor(tempGrade)}">${tempGrade}</span>
     </div>
-    <p class="card-desc">Por encima de ~42°C se activa el thermal throttling que reduce CPU/GPU automaticamente.</p>
+    <p class="card-desc">${
+        // v4.3.6: copy depends on whether we have skin or only die. Skin throttle
+        // ~42°C; die throttle ~95°C. Mixing them was the v4.3.5 UX bug that made
+        // a 93°C die reading look catastrophic.
+        if (showSkinAsPrimary) {
+            "Temperatura piel (case): por encima de ~42&deg;C se activa el thermal throttling que reduce CPU/GPU. La temperatura del die de CPU rutinariamente alcanza 80-95&deg;C bajo carga y NO indica un problema salvo que supere los 95&deg;C."
+        } else {
+            "Temperatura del die de CPU. El silicio rutinariamente alcanza 80-95&deg;C bajo carga sostenida y carga USB simultanea; solo se considera throttling severo por encima de los 95&deg;C. Si tu dispositivo no expone un sensor de piel, este es el unico valor disponible."
+        }
+    }</p>
     <div class="stats-row">
-        <div class="stat-pill"><span class="stat-pill-label">CPU Max</span><span class="stat-pill-value ${cls(maxTempCpu.toInt(), 45, 40)}">${if (maxTempCpu > 0) "${maxTempCpu.toInt()}\u00B0C" else "N/A"}</span></div>
+        ${
+            if (showSkinAsPrimary) {
+                """<div class="stat-pill"><span class="stat-pill-label">Piel Max</span><span class="stat-pill-value ${cls(maxTempSkin.toInt(), 45, 40)}">${maxTempSkin.toInt()}&deg;C</span></div>"""
+            } else ""
+        }
+        <div class="stat-pill"><span class="stat-pill-label">CPU die Max</span><span class="stat-pill-value ${cls(maxTempCpu.toInt(), 95, 85)}">${if (maxTempCpu > 0) "${maxTempCpu.toInt()}\u00B0C" else "N/A"}</span></div>
         <div class="stat-pill"><span class="stat-pill-label">GPU Max</span><span class="stat-pill-value">${if (maxTempGpu > 0) "${maxTempGpu.toInt()}\u00B0C" else "N/A"}</span></div>
     </div>
     <div class="chart-container"><canvas id="tempChart"></canvas></div>

@@ -16,9 +16,18 @@ package com.gameperf.desktop.core.grading
  *   for the jank ratio normalization).
  * @property totalStutter frames whose render time exceeded 100ms (visible freezes).
  * @property peakMem peak PSS App Summary in MB.
- * @property maxTempCpu max CPU temperature observed (°C).
+ * @property maxTempCpu max user-facing CPU temperature observed (°C). v4.3.6:
+ *   semantically this is the SKIN temperature when the device exposes a skin
+ *   sensor; otherwise it falls back to die-CPU. The threshold for firing the
+ *   thermal penalty is 45°C (skin throttle).
  * @property avgCpu average CPU% across the session, scoped to the game pid (per-process,
  *   see v4.2.5 reliability fix).
+ * @property peakThermalDie max CPU die (silicon junction) temperature observed (°C).
+ *   v4.3.6: separate input from [maxTempCpu]. Threshold 95°C (die throttle).
+ *   Fires ONLY when [maxTempCpu] did not already trigger the skin penalty —
+ *   prevents double-counting when both indicators are simultaneously high.
+ *   Defaults to 0.0 so existing call sites that haven't been migrated remain
+ *   byte-equivalent to pre-v4.3.6.
  */
 data class GradingInput(
     val targetFps: Int,
@@ -30,6 +39,7 @@ data class GradingInput(
     val peakMem: Long,
     val maxTempCpu: Double,
     val avgCpu: Int,
+    val peakThermalDie: Double = 0.0,
 )
 
 /**
@@ -131,7 +141,18 @@ object FinalScoreCalculator {
         }
         if (peakMem > 2000) { score -= 12; problems.add("Pico de memoria ${peakMem}MB - Riesgo de cierre forzado en dispositivos con poca RAM") }
         else if (peakMem > 1500) { score -= 6; problems.add("Memoria alta: ${peakMem}MB") }
-        if (maxTempCpu > 45) { score -= 12; problems.add("Temperatura CPU ${maxTempCpu.toInt()}C - Thermal throttling activo, reduce rendimiento") }
+        // v4.3.6 — dual thermal threshold:
+        //   - Skin path: legacy `maxTempCpu > 45` fires -12 + skin-throttle message.
+        //   - Die path:  fires ONLY when skin did NOT already fire AND die > 95°C.
+        //                Prevents double-counting when both rails are hot.
+        val skinFired = maxTempCpu > 45
+        if (skinFired) {
+            score -= 12
+            problems.add("Temperatura CPU ${maxTempCpu.toInt()}C - Thermal throttling activo, reduce rendimiento")
+        } else if (input.peakThermalDie > 95) {
+            score -= 12
+            problems.add("Temperatura die CPU ${input.peakThermalDie.toInt()}C - Throttling severo a nivel de silicio")
+        }
         if (avgCpu > 85) { score -= 12; problems.add("CPU saturada al ${avgCpu}% - Cuello de botella principal") }
         val grade = when { score >= 85 -> 'A'; score >= 70 -> 'B'; score >= 55 -> 'C'; score >= 40 -> 'D'; else -> 'F' }
 

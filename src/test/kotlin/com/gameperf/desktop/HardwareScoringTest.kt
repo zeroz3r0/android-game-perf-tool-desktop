@@ -327,4 +327,119 @@ class HardwareScoringTest {
         assertEquals('F', grade)
         assertEquals(0, score)
     }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // v4.3.6 — proportional grading via targetFps. Path B of the dual-grading
+    // fix described in `sdd/grading-thermal-realism/explore`. The hardcoded
+    // tier.expectedFps was making 30-fps Unity-vsync games on flagship S23
+    // devices (HIGH tier, expected=60) score F. The new contract: the
+    // effective expected FPS is `min(tier.expectedFps, targetFps)` so a
+    // 30-fps game is graded against a 30-fps yardstick on EVERY tier.
+    // ═════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `30fps Unity game on HIGH tier scores A when proportional`() {
+        // p50 = 30, p1 = 28 — basically perfect for a 30fps target. Pre-v4.3.6
+        // this scored F because expected was hardcoded to 60. With targetFps=30
+        // wired in, the effective expected drops to min(60,30)=30 and the
+        // device hits target → grade A.
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 30, p1Fps = 28, tier = DeviceTier.HIGH, problems = emptyList(), targetFps = 30
+        )
+        assertEquals('A', grade, "30fps Unity on S23 (HIGH) at target should be A, got $grade ($score)")
+    }
+
+    @Test
+    fun `30fps Unity game on MID tier also scores A when proportional`() {
+        // MID expected=45. min(45,30) = 30 → 30 hits target → A.
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 30, p1Fps = 28, tier = DeviceTier.MID, problems = emptyList(), targetFps = 30
+        )
+        assertEquals('A', grade, "30fps Unity on MID at target should be A, got $grade ($score)")
+    }
+
+    @Test
+    fun `30fps Unity game on LOW tier scores A when proportional`() {
+        // LOW expected=30. min(30,30) = 30 → at target → A.
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 30, p1Fps = 25, tier = DeviceTier.LOW, problems = emptyList(), targetFps = 30
+        )
+        assertEquals('A', grade, "30fps on LOW at target should be A, got $grade ($score)")
+    }
+
+    @Test
+    fun `45fps target on HIGH tier at 45fps scores A`() {
+        // 45fps Auto-mode game; HIGH tier expected=60, effective expected=45.
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 45, p1Fps = 42, tier = DeviceTier.HIGH, problems = emptyList(), targetFps = 45
+        )
+        assertEquals('A', grade, "45fps on HIGH at target should be A, got $grade ($score)")
+    }
+
+    @Test
+    fun `60fps target on HIGH tier at 60fps scores A (back-compat behavior)`() {
+        // The pre-v4.3.6 default: targetFps=60 on HIGH, expected=min(60,60)=60.
+        // Behavior identical to the old code path. Verify back-compat.
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 60, p1Fps = 55, tier = DeviceTier.HIGH, problems = emptyList(), targetFps = 60
+        )
+        assertEquals('A', grade)
+        assertEquals(100, score)
+    }
+
+    @Test
+    fun `90fps target on ULTRA_HIGH at 90fps scores A`() {
+        // For high-refresh games (Genshin 90hz mode etc) the effective expected
+        // takes the MIN of tier.expectedFps and targetFps — for ULTRA_HIGH
+        // (expected=60) and targetFps=90 the effective expected stays at 60.
+        // 90 >> 60 → easy A.
+        val (grade, score) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 90, p1Fps = 85, tier = DeviceTier.ULTRA_HIGH, problems = emptyList(), targetFps = 90
+        )
+        assertEquals('A', grade, "90fps on ULTRA_HIGH at target should be A, got $grade ($score)")
+    }
+
+    @Test
+    fun `targetFps below tier expected lowers the grading floor`() {
+        // 30fps target on HIGH. At p1=15 (way below the new effective floor
+        // of min(50, max(25, 25))=25) the grade should still penalise — but
+        // less than the pre-v4.3.6 case where p1=15 was compared against 50.
+        val (gradeProp, scoreProp) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 28, p1Fps = 15, tier = DeviceTier.HIGH, problems = emptyList(), targetFps = 30
+        )
+        // 28 fps is 93% of effective expected (30) → small penalty (-3)
+        // p1=15 vs effective floor 25 → 15/25 = 60% → small dip (-12).
+        // 100 - 3 - 12 = 85 → A boundary.
+        assert(gradeProp == 'A' || gradeProp == 'B') {
+            "30fps target with p1 dip should still be A or B, got $gradeProp ($scoreProp)"
+        }
+    }
+
+    @Test
+    fun `flagship at 30fps with 60fps target STILL scores poorly (regression guard)`() {
+        // Negative regression: if the user's game IS targeting 60 but the
+        // flagship lands at 30, the device IS underperforming. The fix must
+        // NOT mask this — only proportional scaling for actual lower-target
+        // games matters. With targetFps=60 and avgFps=30, behavior is the
+        // same as pre-v4.3.6.
+        val (grade, _) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 30, p1Fps = 20, tier = DeviceTier.ULTRA_HIGH, problems = emptyList(), targetFps = 60
+        )
+        assert(grade == 'D' || grade == 'F') {
+            "ULTRA_HIGH at 30fps with 60fps target should still be D/F, got $grade"
+        }
+    }
+
+    @Test
+    fun `default targetFps overload preserves pre-v4_3_6 behavior`() {
+        // The 4-arg form (no targetFps) defaults to 60 → identical to old code.
+        val (grade1, score1) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 60, p1Fps = 55, tier = DeviceTier.HIGH, problems = emptyList()
+        )
+        val (grade2, score2) = HardwareScoring.calculateDeviceGrade(
+            avgFps = 60, p1Fps = 55, tier = DeviceTier.HIGH, problems = emptyList(), targetFps = 60
+        )
+        assertEquals(grade2, grade1)
+        assertEquals(score2, score1)
+    }
 }

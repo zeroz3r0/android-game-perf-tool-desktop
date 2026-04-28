@@ -397,6 +397,90 @@ class FinalScoreCalculatorTest {
         assertFalse(r.score >= 0, "score must be allowed to go negative — this is not a bug")
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // H — v4.3.6: skin vs die thermal split
+    // The thermal penalty now distinguishes user-visible skin temp (throttle
+    // ~42°C) from CPU die silicon temp (routinely 80-95°C, throttle ~95°C).
+    // The penalty fires on EITHER threshold but never DOUBLE-counts.
+    // ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `skin-only over 45 fires thermal penalty (legacy path)`() {
+        // Skin is delivered via the existing maxTempCpu input (legacy semantic
+        // when no skin sensor: maxTempCpu = die. When skin available:
+        // AppViewModel passes skin in maxTempCpu. Either way the >45 trigger
+        // fires the legacy -12 penalty.) peakThermalDie = 0 → no double-count.
+        val input = perfect(60).copy(maxTempCpu = 47.0, peakThermalDie = 0.0)
+        val r = FinalScoreCalculator.compute(input)
+        assertEquals(88, r.score)
+        assertEquals(1, r.problems.size)
+        assertTrue(r.problems[0].startsWith("Temperatura"))
+    }
+
+    @Test
+    fun `die-only path - skin under 45 but die over 95 fires the die penalty`() {
+        // Real S23 scenario: skin = 41°C (well under throttle), die = 96°C
+        // (just above the silicon throttle threshold). Pre-v4.3.6 the user
+        // would see no thermal warning because maxTempCpu was conflated with
+        // die. v4.3.6: separate die threshold guards real silicon throttling.
+        val input = perfect(60).copy(maxTempCpu = 41.0, peakThermalDie = 96.0)
+        val r = FinalScoreCalculator.compute(input)
+        assertEquals(88, r.score, "die threshold should fire at 96°C")
+        assertEquals(1, r.problems.size)
+        assertTrue(
+            r.problems[0].contains("die") || r.problems[0].lowercase().contains("die"),
+            "die-path message must mention die, got '${r.problems[0]}'",
+        )
+    }
+
+    @Test
+    fun `skin and die both over thresholds - penalty fires ONCE not twice`() {
+        // Anti-double-count guard: if skin already triggered -12, die must NOT
+        // also subtract -12. The contract is "report whichever indicator fires
+        // first" — the user only sees one thermal problem.
+        val input = perfect(60).copy(maxTempCpu = 47.0, peakThermalDie = 99.0)
+        val r = FinalScoreCalculator.compute(input)
+        assertEquals(88, r.score, "must not double-count thermal penalty (88 not 76)")
+        assertEquals(1, r.problems.size)
+    }
+
+    @Test
+    fun `skin under 45 and die under 95 - no thermal penalty (S23 idle case)`() {
+        // Idle S23: skin=35, die=70. Nothing fires.
+        val input = perfect(60).copy(maxTempCpu = 35.0, peakThermalDie = 70.0)
+        val r = FinalScoreCalculator.compute(input)
+        assertEquals(100, r.score)
+        assertTrue(r.problems.isEmpty())
+    }
+
+    @Test
+    fun `die at exactly 95 does NOT fire (boundary)`() {
+        // The threshold is "> 95", not ">= 95". Pre-v4.3.6 stayed strict on
+        // the > 45 boundary; the new die path keeps the same > semantics.
+        val input = perfect(60).copy(maxTempCpu = 41.0, peakThermalDie = 95.0)
+        val r = FinalScoreCalculator.compute(input)
+        assertEquals(100, r.score)
+        assertTrue(r.problems.isEmpty())
+    }
+
+    @Test
+    fun `die at 96 fires (just above boundary)`() {
+        val input = perfect(60).copy(maxTempCpu = 41.0, peakThermalDie = 96.0)
+        val r = FinalScoreCalculator.compute(input)
+        assertEquals(88, r.score)
+    }
+
+    @Test
+    fun `die input default is 0 - existing tests preserved`() {
+        // Sanity: any test that constructs GradingInput without peakThermalDie
+        // gets the default 0.0 → die path never fires → behavior identical to
+        // pre-v4.3.6.
+        val input = perfect(60)
+        val r = FinalScoreCalculator.compute(input)
+        assertEquals(100, r.score)
+        assertEquals('A', r.grade)
+    }
+
     @Test
     fun `problems list preserves insertion order FPS then P5 then jank then stutter then mem then thermal then cpu`() {
         // Trip every bucket that emits a message and assert the EXACT order.

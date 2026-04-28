@@ -117,9 +117,15 @@ fun CaptureScreen(vm: AppViewModel) {
             metrics.cpu > 70 -> Yellow
             else -> Green
         }
+        // v4.3.6: thresholds depend on whether we're showing skin or die.
+        // Skin throttle ~42°C; die throttle ~95°C. Mixing them was the v4.3.5
+        // UX bug that made a 93°C die reading scream "RED" at the user.
+        val showingSkin = !metrics.tempSkin.isNaN() && metrics.tempSkin > 0
         val tempColor = when {
-            metrics.tempCpu > 45 -> Red
-            metrics.tempCpu > 40 -> Yellow
+            showingSkin && metrics.tempCpu > 45 -> Red
+            showingSkin && metrics.tempCpu > 40 -> Yellow
+            !showingSkin && metrics.tempCpu > 95 -> Red
+            !showingSkin && metrics.tempCpu > 85 -> Yellow
             metrics.tempCpu > 0 -> Green
             else -> TextDim
         }
@@ -141,8 +147,17 @@ fun CaptureScreen(vm: AppViewModel) {
         ) {
             MetricCard("Memoria", if (metrics.memMb > 0) "${metrics.memMb}MB" else "--", Cyan,
                 modifier = Modifier.weight(1f))
-            MetricCard("Temp", if (metrics.tempCpu > 0) "${metrics.tempCpu.toInt()}C" else "--", tempColor,
-                modifier = Modifier.weight(1f))
+            // v4.3.6: label depends on which sensor we're showing. Skin (case
+            // temp) is what the user feels; die is silicon, often 80-95°C
+            // under load and not a problem until > 95°C. Pre-v4.3.6 the HUD
+            // labelled both as "Temp" and showed 93°C on a Galaxy S23 making
+            // the user think the case was 93°C.
+            run {
+                val isSkin = !metrics.tempSkin.isNaN() && metrics.tempSkin > 0
+                val label = if (isSkin) "Piel" else "CPU die"
+                MetricCard(label, if (metrics.tempCpu > 0) "${metrics.tempCpu.toInt()}C" else "--", tempColor,
+                    modifier = Modifier.weight(1f))
+            }
             MetricCard("Bateria", if (metrics.battery > 0) "${metrics.battery}%" else "--",
                 if (metrics.battery < 20) Red else Green, modifier = Modifier.weight(1f))
         }

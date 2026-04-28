@@ -444,11 +444,30 @@ fun ResultsScreen(vm: AppViewModel) {
                         if (result.avgCpu > 85) Red else if (result.avgCpu > 70) Yellow else Green,
                         Modifier.weight(1f)
                     )
-                    CompactMetric(
-                        "Temp", "${result.maxTempCpu.toInt()}°C",
-                        if (result.maxTempCpu > 45) Red else if (result.maxTempCpu > 40) Yellow else Green,
-                        Modifier.weight(1f)
-                    )
+                    // v4.3.6: pick label + thresholds based on which value
+                    // `maxTempCpu` represents. AppViewModel writes the SKIN max
+                    // when the device exposes a skin sensor, else the die max.
+                    // Skin throttle is ~42°C; die throttle is ~95°C — we MUST
+                    // not paint a 93°C die reading red the way the pre-v4.3.6
+                    // code did.
+                    run {
+                        // Heuristic: if maxTempCpu is in the die range (>60°C),
+                        // assume it's a die value. If it's <60°C, treat it as skin.
+                        val isDie = result.maxTempCpu > 60
+                        val label = if (isDie) "CPU die" else "Piel"
+                        val color = when {
+                            !isDie && result.maxTempCpu > 45 -> Red
+                            !isDie && result.maxTempCpu > 40 -> Yellow
+                            isDie && result.maxTempCpu > 95 -> Red
+                            isDie && result.maxTempCpu > 85 -> Yellow
+                            else -> Green
+                        }
+                        CompactMetric(
+                            label, "${result.maxTempCpu.toInt()}°C",
+                            color,
+                            Modifier.weight(1f)
+                        )
+                    }
                     CompactMetric(
                         "Batería", "${result.batteryDrain}%",
                         if (result.batteryDrain > 10) Red else Green,

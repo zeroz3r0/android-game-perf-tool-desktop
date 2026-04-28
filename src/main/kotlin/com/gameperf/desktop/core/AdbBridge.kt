@@ -678,39 +678,17 @@ object AdbBridge {
      *   and ruined the chart axis. Now they're discarded silently.
      */
     fun captureTemperature(deviceId: String): ThermalSnapshot {
-        var cpu = -1.0; var gpu = -1.0; var battery = -1.0; var skin = -1.0
-        // Try sysfs first
+        // v4.3.6: classifier-based extraction lives in [AdbThermalParser] so
+        // the parsing logic stays pure, unit-testable, and detached from the
+        // adb shell I/O. AdbBridge only orchestrates the two shells.
         val zones = shell(deviceId, "for z in /sys/class/thermal/thermal_zone*; do echo \"\$(cat \$z/type 2>/dev/null):\$(cat \$z/temp 2>/dev/null)\"; done", timeoutMs = 3000)
-        for (line in zones.lines()) {
-            val parts = line.split(":"); if (parts.size != 2) continue
-            val type = parts[0].lowercase(); val raw = parts[1].trim().toLongOrNull() ?: continue
-            val temp = if (raw > 1000) raw / 1000.0 else raw.toDouble()
-            // v4.2.5: validate physical plausibility — discard sensor read errors.
-            if (temp !in MIN_REALISTIC_TEMP_C..MAX_REALISTIC_TEMP_C) continue
-            when {
-                type.contains("cpu") || type.contains("tsens") || type.contains("soc") ->
-                    if (temp > cpu) cpu = temp  // v4.2.5: MAX across all CPU sensors
-                type.contains("gpu") -> if (temp > gpu) gpu = temp
-                type.contains("battery") || type.contains("batt") -> if (temp > battery) battery = temp
-                type.contains("skin") || type.contains("quiet") -> if (temp > skin) skin = temp
-            }
-        }
-        // Fallback: thermalservice (Android 10+ thermal HAL)
-        if (cpu < 0 || gpu < 0) {
+        var snapshot = AdbThermalParser.parseThermalZonesOutput(zones)
+        // Fallback: thermalservice (Android 10+ thermal HAL).
+        if (snapshot.dieCpu < 0 || snapshot.gpu < 0) {
             val dump = shell(deviceId, "dumpsys thermalservice", timeoutMs = 3000)
-            for (m in RE_THERMAL_TEMP.findAll(dump)) {
-                val v = m.groupValues[1].toDoubleOrNull() ?: continue
-                if (v !in MIN_REALISTIC_TEMP_C..MAX_REALISTIC_TEMP_C) continue
-                val n = m.groupValues[2].trim().lowercase()
-                when {
-                    (n == "big" || n == "little" || n == "mid" || n.contains("cpu")) && v > cpu -> cpu = v
-                    (n == "g3d" || n.contains("gpu")) && v > gpu -> gpu = v
-                    n == "battery" && v > battery -> battery = v
-                    (n.contains("skin") || n.contains("quiet") || n == "virtual-skin") && v > skin -> skin = v
-                }
-            }
+            snapshot = AdbThermalParser.mergeThermalServiceFallback(snapshot, dump, RE_THERMAL_TEMP)
         }
-        return ThermalSnapshot(cpu, gpu, battery, skin)
+        return snapshot
     }
 
     fun getMissedFrames(deviceId: String): Int {
