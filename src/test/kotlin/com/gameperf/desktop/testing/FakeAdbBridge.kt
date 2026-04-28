@@ -77,6 +77,13 @@ open class FakeAdbBridge(
 
     override fun resetSessionState() { /* no-op */ }
 
+    /** Records every [invalidateLayerCache] call so tests can assert the
+     *  capture-loop forced re-discovery K times. v4.3.5. */
+    val invalidateLayerCacheCalls: MutableList<Pair<String, String>> = mutableListOf()
+    override fun invalidateLayerCache(deviceId: String, pkg: String) {
+        invalidateLayerCacheCalls += deviceId to pkg
+    }
+
     override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? = null
     override fun captureCpuPercent(deviceId: String): Int = 0
     override fun captureCpuPercent(deviceId: String, pkg: String): Int = captureCpuPercent(deviceId)

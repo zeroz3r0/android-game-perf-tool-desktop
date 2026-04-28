@@ -204,6 +204,99 @@ class CaptureLoopTest {
         }
     }
 
+    // ===== v4.3.5 — FPS-resume-after-ad: forced layer-cache invalidation =====
+
+    /**
+     * Fake that returns null FrameSnapshots until [nullFramesBeforeRecovery] calls
+     * to captureFrames have happened, then starts returning real frames again.
+     * Mirrors the exact ad-close scenario: the live cache locks onto a zombie
+     * layer, captureFrames returns null repeatedly, the loop must force a cache
+     * invalidation, then the next poll finds the fresh layer and recovers.
+     */
+    private class RecoveringFake(
+        val nullFramesBeforeRecovery: Int,
+        val recoveryFps: Int = 30,
+    ) : FakeAdbBridge() {
+        @Volatile var captureFramesCalls: Int = 0
+        override fun detectGame(deviceId: String): String = "com.test.game"
+        override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
+            val n = ++captureFramesCalls
+            return if (n <= nullFramesBeforeRecovery) {
+                null
+            } else {
+                FrameSnapshot(fps = recoveryFps, avgFrameTime = 33.3, jankCount = 0, stutterCount = 0)
+            }
+        }
+        override fun captureCpuPercent(deviceId: String): Int = 50
+        override fun captureCpuPercent(deviceId: String, pkg: String): Int = 50
+        override fun getBatteryLevel(deviceId: String): Int = 80
+    }
+
+    @Test
+    fun `capture loop invalidates layer cache after 3 consecutive null frames`() {
+        runBlocking {
+            val fake = RecoveringFake(nullFramesBeforeRecovery = 3)
+            fake.queueNull(); fake.queueNull() // suppress recording
+
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.initForCapture()
+
+                vm.startCapture(durationSeconds = 0)
+                // Need at least 4 captureFrames calls (3 nulls + 1 recovery).
+                // Each iteration takes delay(500) + ~50ms work, so 4 iterations = ~2.2s.
+                // Give 3500ms to be safe under CI jitter.
+                delay(3500)
+
+                assertTrue(
+                    fake.invalidateLayerCacheCalls.isNotEmpty(),
+                    "expected at least one invalidateLayerCache call after 3 null frames; " +
+                        "captureFramesCalls=${fake.captureFramesCalls}, " +
+                        "invalidateLayerCacheCalls=${fake.invalidateLayerCacheCalls.size}",
+                )
+                // Should not invalidate every cycle — only after 3 consecutive nulls.
+                // With 4-5 captureFrames calls in the window, expect 1 invalidation.
+                assertTrue(
+                    fake.invalidateLayerCacheCalls.size <= 2,
+                    "must NOT invalidate on every cycle — got " +
+                        "${fake.invalidateLayerCacheCalls.size} calls in " +
+                        "${fake.captureFramesCalls} iterations",
+                )
+
+                vm.stopCapture()
+                delay(4500)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
+    @Test
+    fun `capture loop does not invalidate when frames are non-null`() {
+        runBlocking {
+            // Healthy path: every captureFrames returns a valid FrameSnapshot.
+            // The forced-invalidation counter must reset on every success and
+            // never trigger.
+            val fake = RecoveringFake(nullFramesBeforeRecovery = 0)
+            fake.queueNull(); fake.queueNull()
+            val vm = AppViewModel(adb = fake)
+            try {
+                vm.initForCapture()
+                vm.startCapture(durationSeconds = 0)
+                delay(3500)
+                assertTrue(
+                    fake.invalidateLayerCacheCalls.isEmpty(),
+                    "must not invalidate while frames are flowing; got " +
+                        "${fake.invalidateLayerCacheCalls.size} unwanted calls",
+                )
+                vm.stopCapture()
+                delay(4500)
+            } finally {
+                vm.cleanup()
+            }
+        }
+    }
+
     // ===== 4. Guard: no game package =====
 
     @Test

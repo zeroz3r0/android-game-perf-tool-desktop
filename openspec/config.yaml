@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Kotlin 1.9.22 + Compose Desktop 1.6.1 + Coroutines + Serialization
+  Architecture: MVVM with Delegates (AppViewModel → Delegates per feature)
+  Testing: kotlin-test + kotlinx-coroutines-test with FakeAdbBridge pattern
+  Static analysis: detekt 1.23.7 (lenient baseline)
+  Build: Gradle Kotlin DSL, JVM 17 toolchain
+  Packaging: Multi-platform (Windows MSI, macOS DMG)
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected modules/packages (core/, viewmodel/, ui/)
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group tasks by phase (infrastructure, implementation, testing)
+    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Keep tasks small enough to complete in one session
+  apply:
+    - Follow existing code patterns in CLAUDE.md
+    - Tests must be pure without mocks
+    - Any external tool (adb, ffmpeg) must use ToolResolver
+  verify:
+    - Run ./gradlew check (detekt + tests)
+    - Compare implementation against every spec scenario

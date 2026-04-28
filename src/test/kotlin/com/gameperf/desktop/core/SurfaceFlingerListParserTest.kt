@@ -7,7 +7,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Unit tests for [AdbBridge.parseSurfaceFlingerListOutput].
+ * Unit tests for [LayerSelector.parseSurfaceFlingerListOutput] (moved out of
+ * AdbBridge in v4.3.5 — pure parser, no adb dependency).
  *
  * Background — this parser exists because the output format of `dumpsys SurfaceFlinger
  * --list` changed between Android 10/11 and Android 12+. v3.1.9 only handled the newer
@@ -38,7 +39,7 @@ class SurfaceFlingerListParserTest {
             Background for -SurfaceView[com.touch2goal.soccer/com.unity3d.player.UnityPlayerActivity]@0#0
         """.trimIndent()
 
-        val result = AdbBridge.parseSurfaceFlingerListOutput(output, "com.touch2goal.soccer")
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.touch2goal.soccer")
 
         assertNotNull(result, "must resolve a layer for a known package")
         assertTrue(
@@ -56,7 +57,7 @@ class SurfaceFlingerListParserTest {
         // SurfaceFlinger needs the exact layer name including @0#0 for --latency to work.
         // Regression guard: make sure we don't strip those characters.
         val output = "SurfaceView[com.foo.bar/com.foo.bar.MainActivity]@0#0"
-        val result = AdbBridge.parseSurfaceFlingerListOutput(output, "com.foo.bar")
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.foo.bar")
         assertEquals("SurfaceView[com.foo.bar/com.foo.bar.MainActivity]@0#0", result)
     }
 
@@ -70,7 +71,7 @@ class SurfaceFlingerListParserTest {
              RequestedLayerState{SurfaceView[com.example.game/com.unity3d.player.UnityPlayerActivity]@0#0  parentId=42 flags=0x0}
         """.trimIndent()
 
-        val result = AdbBridge.parseSurfaceFlingerListOutput(output, "com.example.game")
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.example.game")
 
         assertEquals(
             "SurfaceView[com.example.game/com.unity3d.player.UnityPlayerActivity]@0#0",
@@ -82,12 +83,15 @@ class SurfaceFlingerListParserTest {
     fun `android 12 modern format prefers BLAST SurfaceView`() {
         // When both BLAST and non-BLAST SurfaceViews exist for the same package, prefer BLAST
         // because that's the one receiving actual frames on modern devices.
+        // v4.3.5: with recency ranking now in effect, both candidates carry the
+        // same `@0#0` suffix so the BLAST tie-breaker decides — same outcome as
+        // pre-v4.3.5, just expressed via the ranking compositor.
         val output = """
              RequestedLayerState{SurfaceView[com.example.game/foo]@0#0  parentId=10 flags=0x0}
-             RequestedLayerState{SurfaceView[com.example.game/foo](BLAST)#0  parentId=11 flags=0x0}
+             RequestedLayerState{SurfaceView[com.example.game/foo](BLAST)@0#0  parentId=11 flags=0x0}
         """.trimIndent()
 
-        val result = AdbBridge.parseSurfaceFlingerListOutput(output, "com.example.game")
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.example.game")
 
         assertNotNull(result)
         assertTrue(result.contains("BLAST"), "expected BLAST layer, got: $result")
@@ -103,13 +107,13 @@ class SurfaceFlingerListParserTest {
             SurfaceView[com.other.app/MainActivity]@0#0
         """.trimIndent()
 
-        val result = AdbBridge.parseSurfaceFlingerListOutput(output, "com.missing.pkg")
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.missing.pkg")
         assertNull(result)
     }
 
     @Test
     fun `returns null for empty output`() {
-        assertNull(AdbBridge.parseSurfaceFlingerListOutput("", "com.any"))
+        assertNull(LayerSelector.parseSurfaceFlingerListOutput("", "com.any"))
     }
 
     @Test
@@ -117,8 +121,62 @@ class SurfaceFlingerListParserTest {
         // Edge case: package is mentioned but not in a SurfaceView (very rare, but should
         // not crash). The fallback should return the first matching line.
         val output = "com.foo.bar/MainActivity#0"
-        val result = AdbBridge.parseSurfaceFlingerListOutput(output, "com.foo.bar")
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.foo.bar")
         assertEquals("com.foo.bar/MainActivity#0", result)
+    }
+
+    // ===== v4.3.5 — recency ranking (zombie layer after ad close) =====
+
+    @Test
+    fun `recency picks newest SurfaceView when multiple suffixes are present`() {
+        // After an ad close, SurfaceFlinger transiently exposes BOTH the old
+        // (zombie) and the new game SurfaceView. The two layers differ only
+        // in the trailing `#N` counter. The selector must pick the newer one
+        // so that --latency returns a real frame stream, not the dead one.
+        // Pre-v4.3.5 this returned the first match in dumpsys order, which
+        // was deterministically the zombie on at least one Unity ad SDK and
+        // caused the FPS HUD to stay stuck on `--` after the ad closed.
+        val output = """
+            Display 4630946409886133889
+            SurfaceView[com.example.game/com.unity3d.player.UnityPlayerActivity]@0#0
+            SurfaceView[com.example.game/com.unity3d.player.UnityPlayerActivity]@0#1
+        """.trimIndent()
+
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.example.game")
+
+        assertEquals(
+            "SurfaceView[com.example.game/com.unity3d.player.UnityPlayerActivity]@0#1",
+            result,
+        )
+    }
+
+    // ===== v4.3.5 — multi-candidate API (parseSurfaceFlingerListAllCandidates) =====
+
+    @Test
+    fun `parseAllCandidates returns ranked list with newest first`() {
+        // captureFrames needs to iterate candidates if the cached one returns
+        // <3 lines from --latency. The pure parser exposes all of them ranked
+        // by the same selector, so the caller can try each in order until
+        // one succeeds.
+        val output = """
+            SurfaceView[com.example.game/foo]@0#0
+            SurfaceView[com.example.game/foo]@0#2
+            Background for -SurfaceView[com.example.game/foo]@0#0
+        """.trimIndent()
+
+        val all = LayerSelector.parseSurfaceFlingerListAllCandidates(output, "com.example.game")
+
+        // Background must be filtered out, fresh #2 must be ranked above #0.
+        assertEquals(2, all.size, "expected 2 non-noise candidates, got $all")
+        assertEquals("SurfaceView[com.example.game/foo]@0#2", all[0])
+        assertEquals("SurfaceView[com.example.game/foo]@0#0", all[1])
+    }
+
+    @Test
+    fun `parseAllCandidates returns empty list when no layer matches`() {
+        val output = "SurfaceView[com.other.app/MainActivity]@0#0"
+        val all = LayerSelector.parseSurfaceFlingerListAllCandidates(output, "com.missing.pkg")
+        assertTrue(all.isEmpty(), "expected empty candidates list, got $all")
     }
 
     @Test
@@ -130,7 +188,7 @@ class SurfaceFlingerListParserTest {
             SurfaceView[com.example.game/foo]@0#0
         """.trimIndent()
 
-        val result = AdbBridge.parseSurfaceFlingerListOutput(output, "com.example.game")
+        val result = LayerSelector.parseSurfaceFlingerListOutput(output, "com.example.game")
 
         assertNotNull(result)
         assertTrue(

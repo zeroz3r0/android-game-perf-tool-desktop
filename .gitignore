@@ -12,3 +12,4 @@ test_rotation.mp4
 __pycache__/
 *.pyc
 .venv/
+.atl/

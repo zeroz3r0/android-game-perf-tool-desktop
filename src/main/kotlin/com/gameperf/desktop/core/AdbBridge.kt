@@ -74,7 +74,6 @@ object AdbBridge {
     private val RE_JAVA_HEAP = Regex("(?:Dalvik|Java) Heap\\s+(\\d+)")
     private val RE_MISSED_FRAMES = Regex("Total missed frame count:\\s*(\\d+)")
     private val RE_THERMAL_TEMP = Regex("Temperature\\{mValue=([\\d.]+),\\s*mType=\\d+,\\s*mName=([^,]+),")
-    private val RE_SF_MODERN = Regex("RequestedLayerState\\{(.+?)\\s+parentId=")
     private val RE_ROTATION = Regex("mCurrentRotation=ROTATION_(\\d+)")
 
     // ===== Cached tool paths (v4.1.0-perf) =====
@@ -245,6 +244,14 @@ object AdbBridge {
 
     @Volatile
     private var cachedLayer: Pair<String, String>? = null
+
+    // v4.3.5: cache the FULL ranked candidate list (not just the top one) so
+    // captureFrames can fall back to the second-best candidate when the cached
+    // top pick returns <3 lines from --latency. Without this, an ad SDK leaving
+    // a zombie SurfaceView at the top of the dumpsys output causes the HUD to
+    // stick on `--` for the rest of the session — see the v4.3.5 changelog.
+    @Volatile
+    private var cachedCandidates: Pair<String, List<String>>? = null
     private var prevCpuBusy: Long = 0
     private var prevCpuTotal: Long = 0
     private var prevCpuInitialized: Boolean = false
@@ -262,6 +269,7 @@ object AdbBridge {
     /** Reset session-scoped state so consecutive captures start clean. */
     fun resetSessionState() {
         cachedLayer = null
+        cachedCandidates = null
         synchronized(cpuLock) {
             prevCpuBusy = 0
             prevCpuTotal = 0
@@ -298,82 +306,90 @@ object AdbBridge {
      * parsing logic — that function is unit-testable because it takes the raw output as
      * a string instead of calling adb.
      */
-    fun findLayer(deviceId: String, pkg: String): String? {
+    /**
+     * Resolve ALL ranked SurfaceFlinger layer candidates for the package. Caches
+     * the full list so subsequent captures don't re-shell `dumpsys --list` on
+     * every poll. The cached list is invalidated when:
+     *
+     *  - The package changes (a new game is selected).
+     *  - [resetSessionState] is called (start of capture).
+     *  - [invalidateLayerCache] is called explicitly (e.g., after K consecutive
+     *    null FPS frames in the live capture loop — a hint that the foreground
+     *    layer changed because of an ad close).
+     *
+     * v4.3.5: introduced for the FPS-resume-after-ad fix. Pre-fix `findLayer`
+     * cached only the single top pick; if that pick was a zombie layer, every
+     * captureFrames call re-elected it and HUD stuck on `--`.
+     */
+    fun findLayerCandidates(deviceId: String, pkg: String): List<String> {
         require(isValidPackageName(pkg)) { "Invalid package name: $pkg" }
-        cachedLayer?.let { (p, l) -> if (p == pkg) return l }
+        cachedCandidates?.let { (p, list) -> if (p == pkg) return list }
         val output = exec("adb", "-s", deviceId, "shell", "dumpsys", "SurfaceFlinger", "--list")
-        val found = parseSurfaceFlingerListOutput(output, pkg)
-        if (found != null) cachedLayer = pkg to found
-        return found
+        val candidates = LayerSelector.parseSurfaceFlingerListAllCandidates(output, pkg)
+        if (candidates.isNotEmpty()) {
+            cachedCandidates = pkg to candidates
+            cachedLayer = pkg to candidates.first()
+        }
+        return candidates
     }
 
     /**
-     * Pure parser for `dumpsys SurfaceFlinger --list` output. Extracted from [findLayer]
-     * so it can be unit-tested without mocking adb.
-     *
-     * Handles both the Android 12+ `RequestedLayerState{<name> parentId=<n>}` format
-     * and the pre-12 plain-line format. Candidate selection: prefer `SurfaceView[BLAST]`,
-     * then `SurfaceView` excluding `Background`, then the first layer containing the
-     * package name.
-     *
-     * Returns null if no candidate line mentions the package.
+     * Drop the cached layer list so the next captureFrames forces a fresh
+     * `dumpsys --list`. Call this from the polling loop after K consecutive
+     * null FPS frames to recover from an ad-close that swapped the underlying
+     * SurfaceView. v4.3.5.
      */
-    internal fun parseSurfaceFlingerListOutput(output: String, pkg: String): String? {
-        val layers = output.lines().filter { it.contains(pkg) }
-        val extracted = layers.mapNotNull { line ->
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) return@mapNotNull null
-            // Android 12+ format: `RequestedLayerState{<name>  parentId=<n>}`
-            val modern = RE_SF_MODERN.find(trimmed)
-            if (modern != null) {
-                modern.groupValues[1].trim().takeIf { it.isNotBlank() }
-            } else {
-                // Pre-Android-12 format (including Android 10 SDK 29 on the Pixel XL):
-                // the line IS the layer name, just trimmed. Don't strip anything else —
-                // SurfaceFlinger needs the exact string including any `#N` or `@N` suffix.
-                trimmed
-            }
-        }
-
-        return extracted.find { it.contains("SurfaceView") && it.contains("BLAST") }
-            ?: extracted.find { it.contains("SurfaceView") && !it.contains("Background") }
-            ?: extracted.firstOrNull()
+    @Suppress("UNUSED_PARAMETER")
+    fun invalidateLayerCache(deviceId: String, pkg: String) {
+        require(isValidPackageName(pkg)) { "Invalid package name: $pkg" }
+        // We always clear regardless of pkg match — if the cache holds a
+        // different package, clearing it is a no-op for the current session.
+        // [deviceId] is part of the API for symmetry with the rest of
+        // [AdbBridgeApi]; future implementations may scope the cache per
+        // device once we support multi-device captures.
+        cachedLayer = null
+        cachedCandidates = null
     }
 
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? {
-        var layer = findLayer(deviceId, pkg) ?: run {
-            // No layer at all — game might be hidden behind an ad.
-            // Clear cache so next call does a fresh lookup.
+        // v4.3.5: iterate ALL ranked candidates instead of retrying findLayer
+        // exactly once. The first candidate whose --latency query yields ≥3
+        // lines wins; the cache is reordered so the winner moves to the top
+        // for the next poll. If every candidate fails, drop the cache so the
+        // next captureFrames does a fresh dumpsys --list.
+        val candidates = findLayerCandidates(deviceId, pkg)
+        if (candidates.isEmpty()) {
             cachedLayer = null
+            cachedCandidates = null
             return null
         }
         // Shell-quote the layer name: names like "SurfaceView[...](BLAST)#N"
         // contain parentheses that cause /system/bin/sh syntax errors when
         // passed as separate ProcessBuilder args (adb concatenates them into
         // a single shell command).
-        var output = shell(deviceId, "dumpsys SurfaceFlinger --latency '$layer'")
-        var lines = output.lines()
-        // Stale layer detection: ads, scene changes, or Unity recreating its
-        // SurfaceView change the layer number suffix (#N). The cached name
-        // becomes invalid → --latency returns only the refresh rate (1 line).
-        // Always invalidate and re-resolve so that returning from an ad
-        // picks up the new layer immediately.
-        if (lines.size < 3) {
+        val result = LayerSelector.captureFramesFromCandidates(candidates) { layer ->
+            shell(deviceId, "dumpsys SurfaceFlinger --latency '$layer'")
+        }
+        if (result == null) {
+            // Every candidate is dead. Force a fresh dumpsys --list next call.
             cachedLayer = null
-            layer = findLayer(deviceId, pkg) ?: return null
-            output = shell(deviceId, "dumpsys SurfaceFlinger --latency '$layer'")
-            lines = output.lines()
-            if (lines.size < 3) return null
+            cachedCandidates = null
+            return null
         }
-        val times = mutableListOf<Long>()
-        for (i in 1 until lines.size) {
-            val parts = lines[i].trim().split(RE_DEVICE_LINE)
-            if (parts.size >= 2) {
-                val ts = parts[1].toLongOrNull() ?: continue
-                if (ts > 0 && ts < Long.MAX_VALUE / 2 && (times.isEmpty() || ts >= times.last())) times.add(ts)
-            }
+        // Promote the winning candidate to the front of the cache so the next
+        // poll tries it first (avoids re-paying the per-poll iteration cost
+        // when the new layer stays stable for the rest of the session).
+        promoteCandidate(pkg, result.winningLayer)
+        return result.snapshot
+    }
+
+    private fun promoteCandidate(pkg: String, winner: String) {
+        val current = cachedCandidates
+        if (current != null && current.first == pkg && current.second.firstOrNull() != winner) {
+            val reordered = listOf(winner) + current.second.filter { it != winner }
+            cachedCandidates = pkg to reordered
         }
-        return computeFrameSnapshot(times)
+        cachedLayer = pkg to winner
     }
 
     /**

@@ -62,6 +62,11 @@ internal object ToolResolver {
             .contains("win")
         val exeName = if (isWindows) "$tool.exe" else tool
 
+        // Step 0 (v4.2.14): UserToolsDir - user-installed tools take priority
+        // to ensure the app works offline with the exact version it bundled or downloaded.
+        // This is checked BEFORE PATH to ensure consistent behavior across machines.
+        findInCandidates(userToolsDirCandidates(tool, exeName, isWindows))?.let { return it }
+
         // Step 1: native PATH lookup (respects user PATH, PATHEXT, etc.)
         runPathLookup(tool, isWindows)?.let { return it }
 
@@ -70,6 +75,43 @@ internal object ToolResolver {
 
         // Step 3: generic candidate list for the platform
         return findInCandidates(candidatesFor(tool, exeName, isWindows))
+    }
+
+    /**
+     * Build candidate path for UserToolsDir (user-installed tools directory).
+     *
+     * Pure function - uses injected/testable parameters for OS detection.
+     * Returns empty list if UserToolsDir doesn't exist (caller checks existence).
+     */
+    @Suppress("UNUSED_PARAMETER") // exeName kept for API symmetry with sibling candidate fns; UserToolsDir.tool() resolves the extension internally.
+    internal fun userToolsDirCandidates(
+        tool: String,
+        exeName: String,
+        isWindows: Boolean,
+        isMac: Boolean = System.getProperty("os.name").orEmpty().lowercase().contains("mac"),
+        localAppData: String = System.getenv("LOCALAPPDATA").orEmpty(),
+        userHome: String = System.getProperty("user.home").orEmpty()
+    ): List<String> {
+        if (!UserToolsDir.exists(isWindows, isMac, localAppData, userHome)) {
+            return emptyList()
+        }
+        val baseDir = UserToolsDir.base(isWindows, localAppData, isMac, userHome)
+        val toolPath = UserToolsDir.tool(baseDir, tool)
+        return listOf(toolPath.absolutePath)
+    }
+
+    /**
+     * Check if UserToolsDir exists on this system.
+     *
+     * Pure - parameters allow testing without mocking System properties.
+     */
+    internal fun userToolsDirExists(
+        isWindows: Boolean,
+        isMac: Boolean = System.getProperty("os.name").orEmpty().lowercase().contains("mac"),
+        localAppData: String = System.getenv("LOCALAPPDATA").orEmpty(),
+        userHome: String = System.getProperty("user.home").orEmpty()
+    ): Boolean {
+        return UserToolsDir.exists(isWindows, isMac, localAppData, userHome)
     }
 
     /**

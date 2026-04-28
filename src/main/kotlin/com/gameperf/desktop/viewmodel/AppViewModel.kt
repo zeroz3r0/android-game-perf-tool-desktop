@@ -8,6 +8,7 @@ import com.gameperf.desktop.core.AutoUpdater
 import com.gameperf.desktop.core.CURRENT_VERSION
 import com.gameperf.desktop.core.ConnectFailureReason
 import com.gameperf.desktop.core.ConnectResult
+import com.gameperf.desktop.core.DependencyBootstrap
 import com.gameperf.desktop.core.FileCleanup
 import com.gameperf.desktop.core.MdnsService
 import com.gameperf.desktop.core.MdnsServiceType
@@ -161,6 +162,25 @@ class AppViewModel(
     companion object {
         internal const val MAX_HISTORY_SIZE = 7_200
         internal const val MAX_FRAME_TIMES_SIZE = 500_000
+
+        /**
+         * v4.3.5 — FPS resume after ad / interstitial.
+         * Number of consecutive null FrameSnapshots we tolerate before forcing
+         * the AdbBridge layer cache to invalidate. At the 500ms poll cadence
+         * this is ≈1.5s — long enough to ride out a transient SurfaceFlinger
+         * blip on its own, short enough that the user perceives the recovery
+         * as instant after an ad closes.
+         */
+        internal const val FORCED_LAYER_REDISCOVERY_THRESHOLD = 3
+
+        /**
+         * v4.3.5 — last-known FPS fallback window in milliseconds. While the
+         * underlying layer is briefly stale (typically 0–3 polls during the
+         * ad-close transient) we keep emitting the previous valid FPS instead
+         * of flickering the HUD to "--". Outside this window we emit 0 so
+         * the user has visible feedback that something is wrong.
+         */
+        internal const val LAST_KNOWN_FPS_WINDOW_MS = 1_500L
 
         /**
          * v4.2.6: infer the game's intended target FPS from the observed avg + max.
@@ -337,6 +357,19 @@ class AppViewModel(
 
     private val _iosAvailable = MutableStateFlow(false)
     val iosAvailable: StateFlow<Boolean> = _iosAvailable
+
+    // ===== Dependency Bootstrap (v4.2.14) =====
+    /** Missing dependencies detected at startup (adb, ffmpeg). */
+    private val _missingDeps = MutableStateFlow<List<DependencyBootstrap.MissingTool>>(emptyList())
+    val missingDeps: StateFlow<List<DependencyBootstrap.MissingTool>> = _missingDeps
+
+    /** Bootstrap progress for download/extraction. */
+    private val _bootstrapProgress = MutableStateFlow<DependencyBootstrap.BootstrapProgress?>(null)
+    val bootstrapProgress: StateFlow<DependencyBootstrap.BootstrapProgress?> = _bootstrapProgress
+
+    /** Bootstrap error message for display. */
+    private val _bootstrapError = MutableStateFlow<String?>(null)
+    val bootstrapError: StateFlow<String?> = _bootstrapError
 
     @Volatile private var shouldStop = false
     @Volatile private var captureStartTime: Long = 0L
@@ -517,12 +550,29 @@ class AppViewModel(
             }
             _history.value = SessionHistory.load()
             _adbAvailable.value = adb.isAvailable()
+
+            // v4.2.14: Check for missing dependencies (adb, ffmpeg)
+            // Run after adb check so we distinguish "adb not in PATH" from "adb bundled available"
+            val missing = DependencyBootstrap.check()
+            _missingDeps.value = missing
+
+            // If adb is missing, decide based on the reason
             if (!_adbAvailable.value) {
-                _statusMessage.value = "ADB no encontrado. Instala Android SDK."
-                return@launch
+                val adbMissing = missing.find { it.toolName == "adb" }
+                when (adbMissing?.reason) {
+                    DependencyBootstrap.MissingReason.BUNDLED_AVAILABLE -> {
+                        // Bundled adb available - proceed normally, UI shows "install" banner
+                        _statusMessage.value = "ADB no está instalado. Instala ADB desde la app."
+                    }
+                    else -> {
+                        _statusMessage.value = "ADB no encontrado. Instala Android SDK."
+                        return@launch
+                    }
+                }
+            } else {
+                _statusMessage.value = "ADB disponible. Buscando dispositivos..."
+                refreshDevices()
             }
-            _statusMessage.value = "ADB disponible. Buscando dispositivos..."
-            refreshDevices()
         }
         startDevicePolling()
         checkForUpdates()
@@ -935,6 +985,25 @@ class AppViewModel(
             var lastMem: com.gameperf.desktop.core.model.MemSnapshot? = null
             var lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
 
+            // v4.3.5 — FPS resume after ad / interstitial:
+            // After an ad close the SurfaceFlinger layer cache (inside AdbBridge)
+            // can lock onto a zombie SurfaceView and return null FrameSnapshots
+            // every poll. We track how many consecutive nulls we've seen; once
+            // we hit [FORCED_LAYER_REDISCOVERY_THRESHOLD] (≈1.5s at 500ms ticks)
+            // we force the cache to drop so the next captureFrames does a fresh
+            // dumpsys --list and re-ranks candidates. The counter resets on the
+            // first non-null frame.
+            var consecutiveNullFrames = 0
+            // v4.3.5 — last-known FPS fallback (Fix 4):
+            // [LastKnownFpsTracker] keeps the previous valid FPS sticky for
+            // [LAST_KNOWN_FPS_WINDOW_MS] so the HUD doesn't flicker to "--"
+            // during the ad-close transient. After the window expires it
+            // returns 0 and the HUD shows "--". History/report fields stay
+            // truthful — only the live UI emission consults this tracker.
+            val lastKnownFpsTracker = com.gameperf.desktop.core.LastKnownFpsTracker(
+                windowMs = LAST_KNOWN_FPS_WINDOW_MS,
+            )
+
             while (!shouldStop) {
                 val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 if (durationSeconds > 0 && elapsed >= durationSeconds) break
@@ -1018,8 +1087,34 @@ class AppViewModel(
                     consecutiveAdbFailures = 0
                 }
 
+                // v4.3.5 — FPS resume after ad / interstitial.
+                // Track null FrameSnapshots specifically (not the broader allFailed
+                // heuristic). When we hit the threshold, force the layer cache to
+                // drop so the next captureFrames does a fresh dumpsys --list and
+                // re-ranks candidates. Reset on any non-null frame so transient
+                // single-frame nulls don't trigger unnecessary re-discovery.
+                if (!isIosDevice) {
+                    if (frame == null) {
+                        consecutiveNullFrames++
+                        if (consecutiveNullFrames >= FORCED_LAYER_REDISCOVERY_THRESHOLD) {
+                            adb.invalidateLayerCache(device.id, pkg)
+                            consecutiveNullFrames = 0  // give re-discovery a fresh window
+                        }
+                    } else {
+                        consecutiveNullFrames = 0
+                    }
+                }
+
                 val sampleSecond = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 val fps = frame?.fps ?: 0
+                // v4.3.5 — last-known FPS fallback (sticky HUD across ad close).
+                // History/report fields use the raw [fps]; only [displayFps]
+                // (consumed by the live LiveMetrics emission) goes through the
+                // sticky tracker. See [LastKnownFpsTracker] for details.
+                val displayFps: Int = lastKnownFpsTracker.update(
+                    rawFps = fps,
+                    nowMs = System.currentTimeMillis(),
+                )
                 if (fps > 0) {
                     fpsHistory.add(fps)
                     fpsTimed.add(TimedSample(sampleSecond, fps.toDouble()))
@@ -1076,7 +1171,12 @@ class AppViewModel(
                 val snapshotHistories = iterCount % 4 == 0
                 val prev = _liveMetrics.value
                 _liveMetrics.value = LiveMetrics(
-                    elapsed = currentElapsed, fps = fps,
+                    // v4.3.5: HUD shows the sticky last-known FPS during the
+                    // ad-close transient (≤1.5s). Outside the window
+                    // displayFps falls back to 0 and the HUD shows "--".
+                    // History/report fields below intentionally use the raw
+                    // [fps] so persisted data stays truthful.
+                    elapsed = currentElapsed, fps = displayFps,
                     avgFps = if (fpsHistory.isNotEmpty()) fpsHistory.average() else 0.0,
                     frameTime = frame?.avgFrameTime ?: 0.0,
                     cpu = cpu,
@@ -1536,6 +1636,69 @@ class AppViewModel(
      *  after a brief display (typically 4-5 seconds). */
     fun clearSessionPackMessage() {
         _sessionPackMessage.value = null
+    }
+
+    // ===== Dependency Bootstrap actions (v4.2.14) =====
+
+    /**
+     * Trigger the in-app download of a missing tool (adb / ffmpeg).
+     *
+     * Resolves the official URL from [DependencyBootstrap.TOOL_URLS], invokes
+     * [ToolInstaller.download] into the user-writable tools directory, and
+     * updates [bootstrapProgress] / [bootstrapError] accordingly. On success,
+     * removes the tool from [missingDeps] so the banner dismisses itself.
+     *
+     * Spec: "Download succeeds with progress feedback" — see in-app-dep-bootstrap spec.
+     */
+    fun installMissingDep(toolName: String) {
+        val url = DependencyBootstrap.downloadUrl(toolName) ?: run {
+            _bootstrapError.value = "URL desconocida para $toolName."
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            _bootstrapError.value = null
+            _bootstrapProgress.value = DependencyBootstrap.BootstrapProgress.Downloading(0f)
+            val targetDir = com.gameperf.desktop.core.UserToolsDir.base(
+                isWindows = System.getProperty("os.name").orEmpty().lowercase().contains("win")
+            )
+            val sha = DependencyBootstrap.sha256(toolName)
+            val result = com.gameperf.desktop.core.ToolInstaller.download(url, targetDir, sha)
+            if (result.isSuccess) {
+                _bootstrapProgress.value = DependencyBootstrap.BootstrapProgress.Completed
+                // Refresh missing list — the tool is now in UserToolsDir.
+                _missingDeps.value = DependencyBootstrap.check()
+                // Re-check adb availability so the rest of init() can proceed.
+                _adbAvailable.value = adb.isAvailable()
+                if (_adbAvailable.value) {
+                    _statusMessage.value = "$toolName instalado. Buscando dispositivos..."
+                    refreshDevices()
+                }
+            } else {
+                val msg = result.exceptionOrNull()?.message ?: "Error desconocido"
+                _bootstrapError.value = "Error al descargar $toolName: $msg. Verifica tu conexión o proxy."
+                _bootstrapProgress.value = DependencyBootstrap.BootstrapProgress.Failed(msg)
+            }
+        }
+    }
+
+    /**
+     * Open the official download page for [toolName] in the system browser.
+     * Manual fallback when the in-app downloader fails (corporate proxy, etc.).
+     */
+    fun openToolDownloadUrl(toolName: String) {
+        val url = DependencyBootstrap.downloadUrl(toolName) ?: return
+        try {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                Desktop.getDesktop().browse(java.net.URI(url))
+            }
+        } catch (e: Exception) {
+            _bootstrapError.value = "No se pudo abrir el navegador: ${e.message}"
+        }
+    }
+
+    /** Dismiss the bootstrap error banner. */
+    fun dismissBootstrapError() {
+        _bootstrapError.value = null
     }
 
     fun renameHistoryEntry(id: String, newName: String) {

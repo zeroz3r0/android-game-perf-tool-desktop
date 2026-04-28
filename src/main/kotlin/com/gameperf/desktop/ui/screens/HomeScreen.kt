@@ -51,6 +51,13 @@ fun HomeScreen(vm: AppViewModel) {
     val updateProgress by vm.updateProgress.collectAsState()
     val updateError by vm.updateError.collectAsState()
 
+    // v4.2.14 — In-app dependency bootstrap state. Mirrors the UpdateBanner
+    // pattern: missingDeps drives banner visibility, bootstrapProgress shows
+    // the download bar, bootstrapError shows the failure + browser fallback.
+    val missingDeps by vm.missingDeps.collectAsState()
+    val bootstrapProgress by vm.bootstrapProgress.collectAsState()
+    val bootstrapError by vm.bootstrapError.collectAsState()
+
     val exportStatus by vm.exportStatus.collectAsState()
 
     // v4.2.8 hotfix: observe sessionPackMessage from the ViewModel and auto-clear
@@ -233,6 +240,20 @@ fun HomeScreen(vm: AppViewModel) {
                 }
             }
         }
+
+        // ===== v4.2.14 — Dependency Bootstrap Banner =====
+        // Shown when adb / ffmpeg is missing and needs to be installed.
+        // Follows the UpdateBanner visual pattern: card with primary CTA
+        // (in-app download) + secondary fallback (open browser) + progress
+        // bar during download + error message on failure.
+        DepsBootstrapBanner(
+            missingDeps = missingDeps,
+            progress = bootstrapProgress,
+            error = bootstrapError,
+            onInstall = { toolName -> vm.installMissingDep(toolName) },
+            onOpenBrowser = { toolName -> vm.openToolDownloadUrl(toolName) },
+            onDismissError = { vm.dismissBootstrapError() }
+        )
 
         // Header
         Text(
@@ -1705,4 +1726,157 @@ private fun summarizeReleaseBody(body: String?): List<String> {
         .sortedWith(compareBy({ it.priority }, { it.order }))
         .take(5)
         .map { it.text }
+}
+
+// ============================================================================
+// ===== v4.2.14 — Dependency Bootstrap Banner                                 =
+// =====                                                                       =
+// ===== Surfaces missing external dependencies (adb, ffmpeg) and offers the   =
+// ===== user two paths to resolve them:                                       =
+// =====   1. Primary CTA: in-app download into UserToolsDir (zero-config).    =
+// =====   2. Fallback: open the official download URL in the system browser  =
+// =====      so users behind corporate proxies can still proceed manually.   =
+// =====                                                                       =
+// ===== Visual pattern mirrors UpdateBanner: yellow card, icon, title,        =
+// ===== buttons, optional progress bar + error text. The banner auto-hides    =
+// ===== once the missing list is empty (after a successful install).          =
+// ============================================================================
+@Composable
+private fun DepsBootstrapBanner(
+    missingDeps: List<com.gameperf.desktop.core.DependencyBootstrap.MissingTool>,
+    progress: com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress?,
+    error: String?,
+    onInstall: (String) -> Unit,
+    onOpenBrowser: (String) -> Unit,
+    onDismissError: () -> Unit,
+) {
+    if (missingDeps.isEmpty()) return
+
+    // Show one banner per missing tool. In practice the list is short (1-2 tools).
+    missingDeps.forEach { tool ->
+        val toolLabel = when (tool.toolName) {
+            "adb" -> "ADB"
+            "ffmpeg" -> "FFmpeg"
+            else -> tool.toolName
+        }
+        val message = when (tool.reason) {
+            com.gameperf.desktop.core.DependencyBootstrap.MissingReason.NOT_FOUND ->
+                "$toolLabel no está instalado"
+            com.gameperf.desktop.core.DependencyBootstrap.MissingReason.BUNDLED_AVAILABLE ->
+                "$toolLabel disponible para instalar (incluido con la app)"
+            com.gameperf.desktop.core.DependencyBootstrap.MissingReason.USER_DIR_AVAILABLE ->
+                "$toolLabel listo para usar"
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            colors = CardDefaults.cardColors(containerColor = Yellow.copy(alpha = 0.12f)),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        Icons.Default.Build,
+                        contentDescription = null,
+                        tint = Yellow,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Dependencia requerida",
+                            color = Yellow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            message,
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+                    if (progress == null || progress is com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Failed) {
+                        Button(
+                            onClick = { onInstall(tool.toolName) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Yellow),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                "Descargar $toolLabel",
+                                color = Color.Black,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+
+                // Progress bar — visible during downloading / extracting / verifying.
+                if (progress != null && progress !is com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Failed) {
+                    val pct = when (progress) {
+                        is com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Downloading -> progress.percent
+                        com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Completed -> 1f
+                        else -> 0.5f // indeterminate-ish for Extracting / Verifying
+                    }
+                    val label = when (progress) {
+                        is com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Downloading ->
+                            "Descargando... ${String.format(java.util.Locale.US, "%.0f", pct * 100)}%"
+                        com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Extracting -> "Extrayendo..."
+                        com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Verifying -> "Verificando..."
+                        com.gameperf.desktop.core.DependencyBootstrap.BootstrapProgress.Completed -> "Completado"
+                        else -> ""
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    LinearProgressIndicator(
+                        progress = { pct },
+                        modifier = Modifier.fillMaxWidth().height(6.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = Yellow,
+                        trackColor = Yellow.copy(alpha = 0.15f)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        label,
+                        color = Yellow,
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Error + browser fallback.
+                if (error != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        error,
+                        color = Red,
+                        fontSize = 11.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = { onOpenBrowser(tool.toolName) },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan)
+                        ) {
+                            Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Abrir en navegador", fontSize = 12.sp)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(
+                            onClick = onDismissError,
+                            colors = ButtonDefaults.textButtonColors(contentColor = TextDim)
+                        ) {
+                            Text("Cerrar", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

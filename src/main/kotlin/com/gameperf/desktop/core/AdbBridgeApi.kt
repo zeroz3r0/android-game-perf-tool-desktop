@@ -30,6 +30,14 @@ interface AdbBridgeApi {
 
     fun resetSessionState()
 
+    /**
+     * v4.3.5: drop the cached SurfaceFlinger layer list for [pkg] so the next
+     * captureFrames forces a fresh `dumpsys --list`. Used by the polling loop
+     * after K consecutive null FPS frames to recover from an ad close that
+     * swapped the underlying SurfaceView (the FPS-resume-after-ad fix).
+     */
+    fun invalidateLayerCache(deviceId: String, pkg: String)
+
     fun captureFrames(deviceId: String, pkg: String): FrameSnapshot?
 
     /** Device-wide CPU% (legacy — sum of all processes). Pre-v4.2.5 default. */
@@ -95,6 +103,9 @@ class RealAdbBridge : AdbBridgeApi {
     override fun restoreCharging(deviceId: String): String = AdbBridge.restoreCharging(deviceId)
 
     override fun resetSessionState() = AdbBridge.resetSessionState()
+
+    override fun invalidateLayerCache(deviceId: String, pkg: String) =
+        AdbBridge.invalidateLayerCache(deviceId, pkg)
 
     override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? =
         AdbBridge.captureFrames(deviceId, pkg)
