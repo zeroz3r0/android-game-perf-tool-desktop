@@ -421,6 +421,13 @@ fun EmbeddedVideoPlayer(
     // spot, we cancel the previous preload so stale work doesn't compete with
     // the new window for ffmpeg throughput.
     var preloadJob by remember { mutableStateOf<Job?>(null) }
+    // v4.3.4: last center index we preloaded around. Used by [PreloadStrategy]
+    // to decide whether a new preload trigger is "steady playback" (extend the
+    // existing window — do NOT kill in-flight ffmpegs) or "scrub/seek" (reset
+    // the window). Without this, the playback loop's `preloadWindow` call
+    // every 50 frames killed the very ffmpegs the previous call had spawned,
+    // dropping effective playback to ~25% speed.
+    var lastPreloadCenter by remember { mutableStateOf<Int?>(null) }
     // v4.2.3: separate job for thumbnail track generation — runs once per videoPath,
     // cancelled on dispose. Kept independent from preloadJob so scrubbing doesn't
     // cancel the thumbnail pre-gen.
@@ -443,27 +450,56 @@ fun EmbeddedVideoPlayer(
     }
 
     /**
-     * Preload a window of ±600 frames around [centerIndex] in the background.
-     * At 60fps that's ~10s of video, at 30fps ~20s — enough to cover both
-     * small scrubs and continuous playback without cache misses.
+     * Preload a window of frames around [centerIndex] in the background.
      *
-     * Runs up to 4 ffmpeg processes in parallel. More than that saturates disk
-     * I/O and context switches; 4 is the empirical sweet spot on a Mac.
+     * Two modes, decided by [PreloadStrategy.shouldReset]:
      *
-     * The previous preload Job (if any) is cancelled first, so rapid scrubs
-     * don't accumulate stale work.
+     *   - **Reset** (scrub / seek / first call): cancel the in-flight preload
+     *     job, kill its ffmpeg processes, and start a fresh symmetric window
+     *     ([PreloadStrategy.SCRUB_WINDOW]). This is the original v3.2.1
+     *     behavior, correct when the playhead jumps.
+     *
+     *   - **Extend** (steady playback, small forward delta): if the previous
+     *     preload job is still running, no-op — let it finish; killing it
+     *     and respawning the same ffmpegs is the v4.3.x bug. If it has
+     *     completed, kick off a new asymmetric window
+     *     ([PreloadStrategy.PLAYBACK_WINDOW], heavy forward bias) without
+     *     killing anything, so the cache stays warm ahead of the playhead.
+     *
+     * Runs up to 3 ffmpeg processes in parallel. More than that saturates
+     * disk I/O and context switches; 3 is the empirical sweet spot.
+     *
+     * Total window size stays under [FrameCache] capacity (600) so that
+     * no in-window frame is evicted by another in-window frame — same
+     * invariant that the v4.3.2 fix locked in.
      */
     fun preloadWindow(centerIndex: Int) {
-        preloadJob?.cancel()
-        // H-1: kill any ffmpeg processes spawned by the cancelled preload.
-        // v4.3.2: ONLY frame-extractor processes — the thumbnail-track ffmpeg
-        // lives in activeThumbnailProcesses and is immune to scrub cancellation.
-        killActiveFrameProcesses()
+        val reset = PreloadStrategy.shouldReset(centerIndex, lastPreloadCenter)
+        val window = if (reset) PreloadStrategy.SCRUB_WINDOW else PreloadStrategy.PLAYBACK_WINDOW
+
+        if (reset) {
+            preloadJob?.cancel()
+            // H-1: kill any ffmpeg processes spawned by the cancelled preload.
+            // v4.3.2: ONLY frame-extractor processes — the thumbnail-track ffmpeg
+            // lives in activeThumbnailProcesses and is immune to scrub cancellation.
+            killActiveFrameProcesses()
+        } else {
+            // v4.3.4: steady-playback path. If the previous preload is still
+            // running, do NOT touch it — the playback loop fires every 50
+            // frames, and killing+respawning every 50 frames is exactly the
+            // bug. Let in-flight ffmpegs finish; they're warming the cache
+            // for the very frames the playhead is about to consume.
+            val active = preloadJob
+            if (active != null && active.isActive) {
+                lastPreloadCenter = centerIndex
+                return
+            }
+        }
+
         preloadJob = coroutineScope.launch(Dispatchers.IO) {
             val totalFrames = (videoDurationMs / 1000.0 * videoFps).toInt().coerceAtLeast(1)
-            val windowRadius = 600
-            val start = (centerIndex - windowRadius).coerceAtLeast(0)
-            val end = (centerIndex + windowRadius).coerceAtMost(totalFrames - 1)
+            val start = (centerIndex - window.backward).coerceAtLeast(0)
+            val end = (centerIndex + window.forward).coerceAtMost(totalFrames - 1)
 
             // Forward priority: frames ahead of the playhead are more urgent
             // than frames behind it (playback goes forward, scrub direction is
@@ -486,6 +522,7 @@ fun EmbeddedVideoPlayer(
                 }
             }
         }
+        lastPreloadCenter = centerIndex
     }
 
     // ---- Error / not found UI ----
@@ -517,6 +554,9 @@ fun EmbeddedVideoPlayer(
         thumbnailTrack = null
         thumbnailProgress = 0f
         thumbnailGenerating = false
+        // v4.3.4: reset preload tracker so first preload of the new video
+        // is correctly classified as "first call" → reset (seed cache).
+        lastPreloadCenter = null
 
         withContext(Dispatchers.IO) {
             if (!isFfmpegAvailable()) {
