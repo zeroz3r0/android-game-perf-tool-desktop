@@ -41,6 +41,27 @@ class SessionHistoryTest {
             videoPath = "/tmp/video_$id.mp4"
         )
 
+    /**
+     * Helper: builds an entry that [SessionHistory.isFakeOrTestSession] classifies as fake
+     * (deviceModel = "Fake" + gamePackage = "com.test.game"). Tests that exercise the
+     * eviction cap need this so the v4.3.7 auto-favorite logic does not silently rescue
+     * the seeded entries (which would otherwise prevent any eviction).
+     */
+    private fun makeFakeEntry(id: String, date: String = "01/01/2026 00:00"): SessionHistory.HistoryEntry =
+        SessionHistory.HistoryEntry(
+            id = id,
+            name = "session-$id",
+            gamePackage = "com.test.game",
+            deviceModel = "Fake",
+            grade = 'A',
+            deviceGrade = 'A',
+            avgFps = 60,
+            duration = 60,
+            date = date,
+            reportPath = "/tmp/informe_$id.html",
+            videoPath = "/tmp/video_$id.mp4"
+        )
+
     @BeforeTest
     fun setUp() {
         // Use a tempfile inside a fresh dir so the parentFile mkdirs() in save() is harmless.
@@ -72,19 +93,21 @@ class SessionHistoryTest {
 
     @Test
     fun `addEntry at limit returns oldest as pruned`() {
-        // 5 entries already (MAX_ENTRIES). The new one pushes the bottom one out.
+        // MAX_ENTRIES entries already (the cap). The new one pushes the bottom one out.
+        // Use the fake helper to keep the auto-favorite logic from rescuing entries:
+        // makeFakeEntry returns sessions that isFakeOrTestSession will classify as fake,
+        // so addEntry will NOT auto-favorite them and the eviction path under test fires.
         SessionHistory.save(
-            (1..SessionHistory.MAX_ENTRIES).map { makeEntry("e$it") }
+            (1..SessionHistory.MAX_ENTRIES).map { makeFakeEntry("e$it") }
         )
         assertEquals(SessionHistory.MAX_ENTRIES, SessionHistory.load().size)
 
-        val pruned = SessionHistory.addEntry(makeEntry("new"))
+        val pruned = SessionHistory.addEntry(makeFakeEntry("new"))
 
         assertEquals(1, pruned.size, "exactly one entry should be evicted")
-        // The list is sorted by insertion order: e1 was inserted first → ends up at the bottom.
-        // After save() we get [e1, e2, e3, e4, e5]. Then addEntry inserts "new" at index 0 →
-        // [new, e1, e2, e3, e4, e5] → take(5) = [new, e1, e2, e3, e4] → evicted = [e5].
-        assertEquals("e5", pruned.first().id)
+        // After save() we get [e1, e2, ..., eN]. Then addEntry inserts "new" at index 0 →
+        // [new, e1, e2, ..., eN] → take(MAX_ENTRIES) keeps the freshest → evicted = [eN].
+        assertEquals("e${SessionHistory.MAX_ENTRIES}", pruned.first().id)
         assertEquals(SessionHistory.MAX_ENTRIES, SessionHistory.load().size)
     }
 
@@ -156,12 +179,15 @@ class SessionHistoryTest {
 
     @Test
     fun `favorites are never evicted when recents reach MAX_ENTRIES`() {
-        // 1 favorite + MAX_ENTRIES recents
+        // 1 favorite + MAX_ENTRIES non-favorite recents.
+        // We use makeFakeEntry for the recents so v4.3.7 auto-favoriting does not
+        // promote them out of the recents bucket — keeping the eviction path under test.
         val favorite = makeEntry("fav").copy(isFavorite = true)
-        SessionHistory.save(listOf(favorite) + (1..SessionHistory.MAX_ENTRIES).map { makeEntry("r$it") })
+        SessionHistory.save(listOf(favorite) + (1..SessionHistory.MAX_ENTRIES).map { makeFakeEntry("r$it") })
 
-        // Add one more recent — should evict r5, NOT the favorite
-        SessionHistory.addEntry(makeEntry("new-recent"))
+        // Add one more recent (also fake, so it stays as a recent) — should evict the
+        // oldest fake recent, NOT the favorite.
+        SessionHistory.addEntry(makeFakeEntry("new-recent"))
 
         val all = SessionHistory.load()
         assertTrue(all.any { it.id == "fav" }, "favorite must survive eviction")
@@ -222,9 +248,11 @@ class SessionHistoryTest {
         // The file must still be parseable as a valid history (no corruption).
         val finalEntries = SessionHistory.load()
         // The exact size depends on interleaving; what matters is no exceptions and parseable JSON.
-        // Bound check: at most MAX_ENTRIES (retention enforced) and at least 0.
-        assertTrue(finalEntries.size <= SessionHistory.MAX_ENTRIES,
-            "history must not exceed MAX_ENTRIES after concurrent ops")
+        // v4.3.7 — Layer 2 auto-favorites real sessions, so what is bounded is the
+        // non-favorite ("recents") subset, not the total history. Favorites have no cap.
+        val recentsCount = finalEntries.count { !it.isFavorite }
+        assertTrue(recentsCount <= SessionHistory.MAX_ENTRIES,
+            "non-favorite history must not exceed MAX_ENTRIES after concurrent ops")
         // No duplicate ids — every entry should have a unique id field.
         val ids = finalEntries.map { it.id }
         assertEquals(ids.size, ids.toSet().size, "no duplicate ids in final state")

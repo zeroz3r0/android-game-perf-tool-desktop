@@ -30,6 +30,7 @@ import com.gameperf.desktop.core.MdnsService
 import com.gameperf.desktop.core.MdnsServiceType
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.core.model.DevicePlatform
+import com.gameperf.desktop.ui.components.EvictionConfirmDialog
 import com.gameperf.desktop.ui.components.ExportBanner
 import com.gameperf.desktop.ui.components.StatRow
 import com.gameperf.desktop.ui.theme.*
@@ -74,6 +75,27 @@ fun HomeScreen(vm: AppViewModel) {
 
     if (showGuide) {
         com.gameperf.desktop.ui.components.GuideDialog(onDismiss = { showGuide = false })
+    }
+
+    // v4.3.7 — Layer 4: surface the eviction confirmation dialog when the AppViewModel
+    // raised an EvictionPendingState. The user choice is forwarded straight to the VM,
+    // which performs the actual disk insert / favorite toggle / cancel.
+    val evictionPending by vm.evictionPending.collectAsState()
+    evictionPending?.let { pending ->
+        EvictionConfirmDialog(
+            pending = pending,
+            onDecision = { vm.confirmEviction(it) },
+        )
+    }
+
+    // v4.3.7 — recovery toast (Layer 4 companion to the recovery button further down).
+    // Auto-clear after 4s so the toast is transient like sessionPackMessage.
+    val recoveryStatus by vm.recoveryStatus.collectAsState()
+    LaunchedEffect(recoveryStatus) {
+        if (recoveryStatus != null) {
+            kotlinx.coroutines.delay(4000)
+            vm.clearRecoveryStatus()
+        }
     }
 
     // v4.2.8: outer Box hosts both the main content Column AND the sessionPack
@@ -737,13 +759,50 @@ fun HomeScreen(vm: AppViewModel) {
                             Spacer(Modifier.width(6.dp))
                             Text("Recientes", color = TextDim, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.width(6.dp))
+                            // v4.3.7: warn when ≥90% of cap (was: only at exactly MAX_ENTRIES).
+                            // The cap is now 100 so a hard-equal comparison would only ever fire
+                            // at the very last slot — useless. We use a stable threshold via
+                            // SessionHistory.WARNING_THRESHOLD_RATIO so the warning lights up
+                            // with breathing room left.
+                            val warnThreshold = (SessionHistory.MAX_ENTRIES * SessionHistory.WARNING_THRESHOLD_RATIO).toInt()
                             Text(
                                 "${recentEntries.size}/${SessionHistory.MAX_ENTRIES}",
-                                color = if (recentEntries.size == SessionHistory.MAX_ENTRIES) Red.copy(alpha = 0.8f) else TextDim,
+                                color = if (recentEntries.size >= warnThreshold) Red.copy(alpha = 0.8f) else TextDim,
                                 fontSize = 10.sp
                             )
+                            Spacer(Modifier.width(8.dp))
+                            // v4.3.7 — Layer 4 recovery button. Always visible as a tiny secondary
+                            // action; click triggers recoverHistoryFromBackup() which is a no-op
+                            // when no backup contains more data than the live history.
+                            TextButton(
+                                onClick = { vm.recoverHistoryFromBackup() },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Restore,
+                                    contentDescription = "Recuperar historial desde respaldo",
+                                    tint = Cyan.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "Recuperar",
+                                    color = Cyan.copy(alpha = 0.7f),
+                                    fontSize = 10.sp,
+                                )
+                            }
                         }
-                        if (recentEntries.size == SessionHistory.MAX_ENTRIES) {
+                        // v4.3.7 — recovery toast (transient; auto-cleared after 4s by HomeScreen).
+                        recoveryStatus?.let { msg ->
+                            Text(
+                                msg,
+                                color = Cyan,
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        val warnThreshold2 = (SessionHistory.MAX_ENTRIES * SessionHistory.WARNING_THRESHOLD_RATIO).toInt()
+                        if (recentEntries.size >= warnThreshold2) {
                             Text(
                                 "La próxima captura reemplazará la más antigua · marca como ⭐ para conservar",
                                 color = TextSecondary.copy(alpha = 0.7f),

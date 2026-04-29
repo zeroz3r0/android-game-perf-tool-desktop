@@ -14,6 +14,24 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.3.7] — 2026-04-28
+
+### Arreglos
+
+- **Las sesiones ya no se borran solas cuando guardas pruebas nuevas**: el limite anterior era de 5 sesiones — la sexta echaba la primera sin avisar. Ahora son 100. Ademas, las sesiones reales (con un dispositivo conectado de verdad) se marcan como favoritas automaticamente, asi que aunque hagas muchas pruebas, las reales no se borran nunca solas
+- **`history.json` ahora tiene respaldos automaticos**: cada vez que se guarda, se rotan tres copias (`history.json.bak.1`, `bak.2`, `bak.3`). Si algo se borra mal, hay un boton de "Recuperar de respaldo" en la pantalla principal que restaura la version mas completa
+- **Dialogo de confirmacion antes de borrar una sesion real**: si vas a guardar una sesion nueva y eso obligaria a echar una real (no fake) que no es favorita, sale un dialogo: "Marcala como favorita primero", "Eliminala de todas formas" o "Cancela"
+
+### Detalles tecnicos
+
+- **`SessionHistory.MAX_ENTRIES`**: 5 → 100
+- **`SessionHistory.isFakeOrTestSession`** (nuevo, puro): detecta `deviceModel == "Fake"` / `gamePackage == "com.test.game"` / `deviceModel.startsWith("emulator-")` / strings vacios
+- **`SessionHistory.addEntry`**: auto-favorea sesiones reales antes de insertar; raise `EvictionPending` para sesiones reales no-favoritas que se irian al cap
+- **Backups rotativos**: `save()` hace atomic-rename via `Files.move(ATOMIC_MOVE)` y rota tres backups antes de escribir
+- **`SessionHistory.recoverFromBackup`** (nuevo): escanea `bak.1/2/3`, restaura el de mas entries
+- **`EvictionConfirmDialog`** (Composable nuevo): UI safety net para evictions de reales
+- **Version bump**: 4.3.6 → 4.3.7
+
 ## [4.3.6] — 2026-04-28
 
 ### Arreglos

@@ -30,7 +30,26 @@ import java.util.Date
  */
 object SessionHistory {
 
-    const val MAX_ENTRIES = 5
+    /**
+     * Hard retention cap for non-favorite ("recent") sessions. Raised in v4.3.7 from 5 → 100
+     * after a real QA user lost their entire S23 history doing five quick Fake-mode tests
+     * in a row (the 5 fakes silently evicted all five real sessions). The cap is now wide
+     * enough that no realistic test session burst will erase the user's real captures.
+     *
+     * Layered safety nets ALSO present (defense-in-depth, see Layers 2-4 in v4.3.7):
+     *  - Real sessions auto-favorite on save, so they cannot be evicted at all
+     *  - Every save rotates a 3-deep `.bak.{1,2,3}` backup so a corrupted history.json
+     *    can be recovered from disk
+     *  - The UI raises a confirmation dialog before evicting a non-fake non-favorite entry
+     */
+    const val MAX_ENTRIES = 100
+
+    /**
+     * Threshold (as a fraction of [MAX_ENTRIES]) at which the UI counter turns red
+     * to warn the user that the recents list is approaching capacity. Pulled out of
+     * HomeScreen so the warning logic stays consistent with the cap.
+     */
+    const val WARNING_THRESHOLD_RATIO = 0.9
 
     /** Test-only override. When non-null, overrides the history file location. */
     internal var historyFileOverride: File? = null
@@ -199,10 +218,60 @@ object SessionHistory {
         }
     }
 
+    /**
+     * Maximum number of `history.json.bak.{N}` backups kept in rotation. v4.3.7 chose 3 as
+     * a balance: deep enough that two consecutive bad saves still leave a usable backup,
+     * shallow enough that the user's reports folder doesn't accumulate dozens of stale
+     * snapshots. The chain is rotated on every [save] call.
+     */
+    private const val BACKUP_DEPTH = 3
+
+    private fun backupFile(n: Int): File =
+        File(historyFile.parentFile, "${historyFile.name}.bak.$n")
+
+    /**
+     * Rotate the backup chain. After this returns:
+     *  - `history.json.bak.{N}` holds the contents of what was previously `bak.{N-1}`
+     *  - `history.json.bak.1` holds the contents of the current `history.json`
+     *  - The previous `bak.{BACKUP_DEPTH}` is evicted (oldest snapshot lost).
+     *
+     * If the current `history.json` does not yet exist (first save ever), no rotation
+     * happens — there is nothing to back up.
+     *
+     * Defensive: any failure inside rotation is logged and swallowed. We never let a
+     * backup-rotation failure crash the actual save path; losing a backup is recoverable
+     * (we still have other backups + the live save), but losing the save itself is not.
+     */
+    private fun rotateBackups() {
+        try {
+            if (!historyFile.exists()) return
+            // Walk from the OLDEST (BACKUP_DEPTH) down to 2: each becomes the next slot.
+            // Order matters — going top-down would clobber files we still need.
+            for (n in BACKUP_DEPTH downTo 2) {
+                val src = backupFile(n - 1)
+                val dst = backupFile(n)
+                if (src.exists()) {
+                    Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+            }
+            // Current → bak.1
+            Files.copy(historyFile.toPath(), backupFile(1).toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: Exception) {
+            System.err.println("[GamePerf] Backup rotation failed (non-fatal): ${e.message}")
+        }
+    }
+
     @Synchronized
     fun save(entries: List<HistoryEntry>) {
         try {
             historyFile.parentFile?.mkdirs()
+
+            // v4.3.7 — Layer 3: rotate backups BEFORE overwriting history.json.
+            // If the new payload is wrong (corrupt entry, accidental eviction), the
+            // user can recover via SessionHistory.recoverFromBackup() because the
+            // pre-overwrite state lives in history.json.bak.1.
+            rotateBackups()
+
             // Favorites are always persisted. Recents are capped at MAX_ENTRIES.
             val favorites = entries.filter { it.isFavorite }
             val recents = entries.filter { !it.isFavorite }.take(MAX_ENTRIES)
@@ -219,10 +288,115 @@ object SessionHistory {
         }
     }
 
+    /**
+     * Outcome of a [recoverFromBackup] call.
+     *
+     * @property entriesBefore  number of entries in `history.json` BEFORE recovery ran
+     * @property entriesAfter   number of entries in `history.json` AFTER recovery — equals
+     *                          [entriesBefore] when no backup beat the live count
+     * @property restoredFrom   filename (NOT path) of the backup we restored from, or null
+     *                          when no recovery happened
+     */
+    data class RecoveryReport(
+        val entriesBefore: Int,
+        val entriesAfter: Int,
+        val restoredFrom: String?,
+    )
+
+    /**
+     * Try to repopulate `history.json` from the deepest still-usable backup. v4.3.7
+     * surfaces this as a "Recuperar de respaldo" UI button — only invoked on explicit
+     * user request (it's destructive: the live history is overwritten).
+     *
+     * Picks the backup with the most parseable entries; on a tie, picks the most recent
+     * by mtime. NEVER restores a backup that has fewer entries than the live history —
+     * doing so would PROVOKE the data loss the feature is trying to prevent.
+     *
+     * Returns a [RecoveryReport] so the UI can render a meaningful toast even when
+     * nothing was restored (e.g. "0 sesiones recuperadas — los respaldos no contienen
+     * más datos que tu historial actual").
+     */
+    @Synchronized
+    fun recoverFromBackup(): RecoveryReport {
+        val before = load().size
+        // Build (file, entryCount, mtime) for every existing backup that parses cleanly.
+        val candidates = (1..BACKUP_DEPTH).mapNotNull { n ->
+            val f = backupFile(n)
+            if (!f.exists()) return@mapNotNull null
+            val parsed = try {
+                json.decodeFromString<List<SerializableEntry>>(f.readText())
+            } catch (e: Exception) {
+                System.err.println("[GamePerf] Backup ${f.name} unreadable, skipping: ${e.message}")
+                return@mapNotNull null
+            }
+            Triple(f, parsed.size, f.lastModified())
+        }
+        if (candidates.isEmpty()) {
+            return RecoveryReport(entriesBefore = before, entriesAfter = before, restoredFrom = null)
+        }
+        // Pick the backup with the largest entry count, tie-break on most recent mtime.
+        val best = candidates.maxWithOrNull(
+            compareBy<Triple<File, Int, Long>> { it.second }.thenBy { it.third }
+        ) ?: return RecoveryReport(before, before, null)
+        if (best.second <= before) {
+            // No backup contains more data than the live history — restoring would lose data.
+            return RecoveryReport(entriesBefore = before, entriesAfter = before, restoredFrom = null)
+        }
+        return try {
+            // Copy the backup into history.json. We use copy (not move) so the backup
+            // chain stays intact for any subsequent recovery attempt.
+            Files.copy(best.first.toPath(), historyFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            RecoveryReport(
+                entriesBefore = before,
+                entriesAfter = best.second,
+                restoredFrom = best.first.name,
+            )
+        } catch (e: Exception) {
+            System.err.println("[GamePerf] Recovery copy failed: ${e.message}")
+            RecoveryReport(entriesBefore = before, entriesAfter = before, restoredFrom = null)
+        }
+    }
+
+    /**
+     * Pure classifier: returns true if [entry] looks like a fake / test / emulator session
+     * that the user does NOT want auto-favorited. v4.3.7 introduced this rule after a real
+     * QA user lost their entire S23 session history because five quick Fake-mode runs
+     * (deviceModel = "Fake", gamePackage = "com.test.game") silently evicted the cap of
+     * real sessions. Real sessions are auto-favorited on insert (see [addEntry]) so a
+     * burst of fakes can never push them out again.
+     *
+     * Detection rules (evaluated in order; ANY match → fake/test):
+     *   1. deviceModel == "Fake" (literal, used by FakeAdbBridge in tests/demo mode)
+     *   2. deviceModel.isEmpty() (no device probe attached)
+     *   3. deviceModel.startsWith("emulator-") (Android emulator AVDs)
+     *   4. gamePackage == "com.test.game" (literal, the test placeholder package)
+     *   5. gamePackage.isEmpty() (probe ran with no package selected)
+     * Otherwise → real session.
+     *
+     * The user can still manually toggle [isFavorite] off on a real session if they
+     * intentionally want it auto-evictable; addEntry only ADDS the flag, it never strips it.
+     */
+    fun isFakeOrTestSession(entry: HistoryEntry): Boolean {
+        if (entry.deviceModel == "Fake") return true
+        if (entry.deviceModel.isEmpty()) return true
+        if (entry.deviceModel.startsWith("emulator-")) return true
+        if (entry.gamePackage == "com.test.game") return true
+        if (entry.gamePackage.isEmpty()) return true
+        return false
+    }
+
     @Synchronized
     fun addEntry(entry: HistoryEntry): List<HistoryEntry> {
         val all = load().toMutableList()
-        all.add(0, entry)
+        // v4.3.7 — Layer 2: real sessions auto-favorite so a burst of fake/test runs
+        // cannot silently evict them. We never CLEAR isFavorite here — if the user
+        // manually starred a fake, that intent is preserved.
+        val incoming = if (!entry.isFavorite && !isFakeOrTestSession(entry)) {
+            entry.copy(isFavorite = true)
+        } else {
+            entry
+        }
+        all.add(0, incoming)
         // Favorites are never evicted — only recents respect MAX_ENTRIES.
         val favorites = all.filter { it.isFavorite }
         val recents = all.filter { !it.isFavorite }
@@ -230,6 +404,99 @@ object SessionHistory {
         val evicted = if (recents.size > MAX_ENTRIES) recents.drop(MAX_ENTRIES) else emptyList()
         save(favorites + topRecents)
         return evicted
+    }
+
+    /**
+     * v4.3.7 — Layer 4: outcome of analyzing whether inserting a new entry into the
+     * current snapshot will evict any existing entry, and whether that eviction is
+     * safe to perform silently. The AppViewModel uses this to decide:
+     *
+     *  - [NoEviction]: the recents bucket has room, just insert the new entry.
+     *  - [SilentEviction]: cap reached, but the entry about to be evicted is a fake /
+     *    test session, so we can drop it without bothering the user.
+     *  - [ConfirmationRequired]: cap reached AND the entry about to be evicted is a
+     *    REAL non-favorite session — show the [evictableEntry] in a dialog and let the
+     *    user choose to (a) star it as favorite first, (b) confirm the eviction, or
+     *    (c) cancel the new insert entirely.
+     *  - [RequiresManualEviction]: reserved sealed branch for the future case where
+     *    the analyzer detects a structurally impossible situation (e.g. an explicit
+     *    favorited candidate that would push favorites past a hard cap). Not currently
+     *    returned by [analyzeEvictionRisk] because Layer 2's auto-favoriting + an
+     *    unbounded favorites bucket makes the situation unreachable; kept on the type
+     *    so future cap policy changes don't have to break the API.
+     */
+    sealed interface EvictionAnalysis {
+        /** No eviction needed — the recents bucket has room. */
+        data class NoEviction(val candidate: HistoryEntry) : EvictionAnalysis
+        /**
+         * Cap reached and the entry about to be dropped is a fake/test session.
+         * [evictableEntry] is the entry that will be removed when the new candidate
+         * is inserted.
+         */
+        data class SilentEviction(
+            val candidate: HistoryEntry,
+            val evictableEntry: HistoryEntry,
+        ) : EvictionAnalysis
+        /**
+         * Cap reached and the entry about to be dropped is a REAL non-favorite session.
+         * The UI must show a confirmation dialog naming [evictableEntry] before
+         * the candidate is allowed to land.
+         */
+        data class ConfirmationRequired(
+            val candidate: HistoryEntry,
+            val evictableEntry: HistoryEntry,
+        ) : EvictionAnalysis
+        /**
+         * Every recent slot is taken by a favorite — no automatic choice is safe.
+         * The UI must ask the user to unfavorite a session before retrying the insert.
+         */
+        data class RequiresManualEviction(val candidate: HistoryEntry) : EvictionAnalysis
+    }
+
+    /**
+     * Pure analyzer used by AppViewModel to decide whether [candidate]'s insertion needs
+     * a confirmation dialog or can proceed silently. Does NOT touch disk; takes the
+     * snapshot in as a parameter so tests are deterministic and tiny.
+     *
+     * Logic mirrors [addEntry]'s eviction path:
+     *  1. New favorites never evict anyone (they live in the unbounded favorites bucket).
+     *  2. With auto-favorite (Layer 2), any insert that classifies as REAL becomes a
+     *     favorite — and so this analyzer treats it as a favorite for sizing purposes.
+     *  3. After accounting for the candidate, if the recents bucket would still fit
+     *     under [MAX_ENTRIES] → [NoEviction].
+     *  4. Otherwise the entry that WOULD be dropped is the oldest non-favorite. If it
+     *     is fake → [SilentEviction]. If it is real → [ConfirmationRequired].
+     *  5. Special case: every existing recent is a favorite → there is no candidate to
+     *     drop → [RequiresManualEviction].
+     */
+    fun analyzeEvictionRisk(
+        snapshot: List<HistoryEntry>,
+        candidate: HistoryEntry,
+    ): EvictionAnalysis {
+        val candidateGoesToFavorites =
+            candidate.isFavorite || !isFakeOrTestSession(candidate)
+        // Recents-only view of what's already on disk.
+        val recents = snapshot.filter { !it.isFavorite }
+        // Will the new candidate enter the recents bucket?
+        val recentsAfterInsert = recents.size + (if (candidateGoesToFavorites) 0 else 1)
+        if (recentsAfterInsert <= MAX_ENTRIES) {
+            return EvictionAnalysis.NoEviction(candidate)
+        }
+        // Eviction would happen — find the entry that would be dropped.
+        // The save path stores favorites first then `recents.take(MAX_ENTRIES)`; the new
+        // candidate sits at index 0, so the oldest non-favorite (last in `recents`) is
+        // the one that falls off the tail. We re-order to be explicit about this:
+        val evictable = recents.lastOrNull()
+            // Unreachable: recentsAfterInsert > MAX_ENTRIES > 0 implies recents is non-empty,
+            // OR candidate goes to recents (so even if existing recents were empty, the
+            // candidate itself would be the only thing in the bucket and there's nothing
+            // to drop). Surface it as a structural conflict for the UI to show a generic error.
+            ?: return EvictionAnalysis.RequiresManualEviction(candidate)
+        return if (isFakeOrTestSession(evictable)) {
+            EvictionAnalysis.SilentEviction(candidate, evictable)
+        } else {
+            EvictionAnalysis.ConfirmationRequired(candidate, evictable)
+        }
     }
 
     /** Toggle the favorite flag for a session. Favorited sessions are never auto-evicted. */

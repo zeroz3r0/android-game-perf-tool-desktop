@@ -1450,28 +1450,49 @@ class AppViewModel(
             // P95 frame time
             val p95ft = if (ftSorted.isNotEmpty()) ftSorted[(ftSorted.size * 0.95).toInt().coerceIn(0, ftSorted.size - 1)] else 0.0
 
-            // Save to history. The legacy overload returns the entries that the new
-            // hard 5-session retention limit pushed off the bottom of the list. We
-            // forward each evicted entry to FileCleanup so its HTML report and all
-            // video segments disappear from disk in the same atomic step.
+            // Save to history. The legacy overload returns the entries that the
+            // retention cap pushed off the bottom of the list. We forward each
+            // evicted entry to FileCleanup so its HTML report and all video segments
+            // disappear from disk in the same atomic step.
+            //
+            // v4.3.7 — Layer 4: build the HistoryEntry up front so we can analyze it
+            // through SessionHistory.analyzeEvictionRisk BEFORE persisting. If the
+            // analysis says we'd silently evict a real non-favorite session, we defer
+            // the insert by raising _evictionPending and let the UI dialog drive the
+            // resolution via confirmEviction(EvictionDecision). Fakes still go through
+            // the silent path unchanged.
             _processingStatus.value = "Guardando sesion en el historial..."
             val captureTag = _sessionTag.value
             val captureCompetitor = _competitorName.value
-            val evicted = SessionHistory.addEntry(
-                gamePackage = pkg, deviceModel = _deviceInfo.value?.model ?: device.model,
-                grade = grade, deviceGrade = deviceGrade,
-                avgFps = avgFps, duration = finalElapsed,
-                reportPath = reportPath, videoPath = videoPath,
-                tag = captureTag, competitorName = captureCompetitor,
+            val pendingEntry = SessionHistory.HistoryEntry(
+                id = System.currentTimeMillis().toString(),
+                name = if (captureTag == SessionHistory.SessionTag.COMPETITION && captureCompetitor.isNotEmpty())
+                    "$captureCompetitor - ${_deviceInfo.value?.model ?: device.model}"
+                else "$pkg - ${_deviceInfo.value?.model ?: device.model}",
+                gamePackage = pkg,
+                deviceModel = _deviceInfo.value?.model ?: device.model,
+                grade = grade,
+                deviceGrade = deviceGrade,
+                avgFps = avgFps,
+                duration = finalElapsed,
+                date = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm").format(java.util.Date()),
+                reportPath = reportPath,
+                videoPath = videoPath,
+                tag = captureTag,
+                competitorName = captureCompetitor,
                 p1Fps = p1, p5Fps = p5,
                 avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
                 p95FrameTime = p95ft, p99FrameTime = p99ft,
                 peakMemMb = peakMem, avgCpu = avgCpu,
                 maxTemp = maxTempCpu, score = score,
                 markers = sessionMarkers,
-                fpsTimed = fpsTimed.map { it.second to it.value.toInt() }
+                fpsTimed = fpsTimed.map { it.second to it.value.toInt() },
             )
-            evicted.forEach { FileCleanup.deleteSessionFiles(it) }
+            val deferredForDialog = analyzePendingEviction(pendingEntry)
+            if (!deferredForDialog) {
+                val evicted = SessionHistory.addEntry(pendingEntry)
+                evicted.forEach { FileCleanup.deleteSessionFiles(it) }
+            }
             _history.value = SessionHistory.load()
 
             captureStartTime = 0L
@@ -1927,6 +1948,109 @@ class AppViewModel(
 
     private fun currentDateString(): String =
         java.text.SimpleDateFormat("dd/MM/yyyy HH:mm").format(java.util.Date())
+
+    // ===== v4.3.7 — Session-history loss prevention (Layer 4: dialog + recovery) =====
+
+    /**
+     * State raised by [analyzePendingEviction] when a new history insert would evict a
+     * REAL non-favorite session. The HomeScreen observes this and shows the
+     * EvictionConfirmDialog. The user resolves it via [confirmEviction].
+     *
+     * @property newEntry        the entry the user is trying to add (deferred until they decide)
+     * @property evictableEntry  the existing entry that will be removed if the user confirms
+     */
+    data class EvictionPendingState(
+        val newEntry: SessionHistory.HistoryEntry,
+        val evictableEntry: SessionHistory.HistoryEntry,
+    )
+
+    private val _evictionPending = MutableStateFlow<EvictionPendingState?>(null)
+    val evictionPending: StateFlow<EvictionPendingState?> = _evictionPending
+
+    /**
+     * Outcome of the recovery action; the UI uses this to show a status toast.
+     * `null` means no recovery has been attempted yet (or it's been dismissed).
+     */
+    private val _recoveryStatus = MutableStateFlow<String?>(null)
+    val recoveryStatus: StateFlow<String?> = _recoveryStatus
+
+    /**
+     * v4.3.7 — invoked by the HomeScreen "Recuperar de respaldo" button. Restores
+     * `history.json` from the deepest still-usable backup (see
+     * [SessionHistory.recoverFromBackup]) and pushes the result into [_history] so the
+     * UI refreshes. Sets [_recoveryStatus] for the toast.
+     */
+    fun recoverHistoryFromBackup() {
+        val report = SessionHistory.recoverFromBackup()
+        _history.value = SessionHistory.load()
+        _recoveryStatus.value = if (report.restoredFrom != null) {
+            val ts = java.text.SimpleDateFormat("HH:mm").format(java.util.Date())
+            "Restauradas ${report.entriesAfter} sesiones desde respaldo ($ts)"
+        } else {
+            "No hay respaldo con más datos que tu historial actual"
+        }
+    }
+
+    /** Clears the recovery status toast after the UI dismisses it. */
+    fun clearRecoveryStatus() {
+        _recoveryStatus.value = null
+    }
+
+    /**
+     * Resolution choice for the eviction confirmation dialog. The HomeScreen sends one
+     * of these into [confirmEviction] when the user picks a button.
+     */
+    enum class EvictionDecision {
+        /** "Marcar favorita" — promote the evictable to favorite, then re-attempt the insert. */
+        FAVORITE_EXISTING,
+        /** "Eliminar de todas formas" — proceed with the eviction. */
+        EVICT,
+        /** "Cancelar" — discard the new entry. */
+        CANCEL,
+    }
+
+    /**
+     * Resolve a pending eviction state with the user's [decision]. Idempotent if no
+     * eviction is currently pending. The actual disk insert / favorite toggle happens here.
+     */
+    fun confirmEviction(decision: EvictionDecision) {
+        val pending = _evictionPending.value ?: return
+        when (decision) {
+            EvictionDecision.FAVORITE_EXISTING -> {
+                SessionHistory.toggleFavorite(pending.evictableEntry.id)
+                // Re-insert the new entry — with the legacy entry now favorited, the next
+                // analyzeEvictionRisk pass will pick a different evictable (or none).
+                val evicted = SessionHistory.addEntry(pending.newEntry)
+                evicted.forEach { FileCleanup.deleteSessionFiles(it) }
+            }
+            EvictionDecision.EVICT -> {
+                val evicted = SessionHistory.addEntry(pending.newEntry)
+                evicted.forEach { FileCleanup.deleteSessionFiles(it) }
+            }
+            EvictionDecision.CANCEL -> {
+                // Nothing to do — the new entry was deferred and is now discarded.
+            }
+        }
+        _history.value = SessionHistory.load()
+        _evictionPending.value = null
+    }
+
+    /**
+     * Pure VM-side wrapper around [SessionHistory.analyzeEvictionRisk]. Returns true
+     * when the caller should defer the insert (i.e. a confirmation dialog has been raised);
+     * false when the caller can proceed with the insert immediately.
+     *
+     * Sets [_evictionPending] as a side effect when confirmation is required, so the
+     * UI Composable observing [evictionPending] can render the dialog.
+     */
+    fun analyzePendingEviction(candidate: SessionHistory.HistoryEntry): Boolean {
+        val analysis = SessionHistory.analyzeEvictionRisk(_history.value, candidate)
+        if (analysis is SessionHistory.EvictionAnalysis.ConfirmationRequired) {
+            _evictionPending.value = EvictionPendingState(candidate, analysis.evictableEntry)
+            return true
+        }
+        return false
+    }
 
     // ===== v3.2.0 — Wireless ADB (delegated v4.1.0) =====
     private val wifiDelegate = WifiDelegate(adb, scope) { refreshDevices() }
