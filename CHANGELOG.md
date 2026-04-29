@@ -14,6 +14,30 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.3.8] — 2026-04-29
+
+### Arreglos
+
+- **El boton "Actualizar" ya funciona cuando GamePerf esta instalado en `C:\Program Files\`**: hasta v4.3.7, los usuarios con instalacion de fabrica (la del MSI oficial) veian el banner amarillo "Nueva version disponible", pulsaban "Actualizar" y al final aparecia el error rojo `"Error al aplicar actualización: C:\Program Files\GamePerf\app\... (Acceso denegado)"`. Causa: la app corria sin permisos de administrador y `Program Files` requiere admin para escribir. Ahora, cuando detecta una instalacion en una carpeta protegida de Windows (`Program Files`, `Program Files (x86)`, `ProgramData`, `Windows`), GamePerf lanza un actualizador auxiliar que pide UAC ("Permitir cambios"), espera a que la app cierre, reemplaza el JAR con permisos de admin y reabre la app sola. Ya no hace falta volver a instalar el MSI manualmente
+
+### Que hay de nuevo
+
+- **Mensaje claro cuando se aplica la actualizacion en Program Files**: ahora aparece "Cerrando GamePerf para aplicar la actualización con permisos de administrador. Volverá a abrir automáticamente." en vez de cerrarse en silencio. El cierre tarda 1.5s para que se alcance a leer
+
+### Detalles tecnicos
+
+- **`core/InstallLocation.kt` (puro, nuevo)** — `requiresAdmin(installDir, isWindows)` hace prefix-match case-insensitive contra `c:\program files`, `c:\program files (x86)`, `c:\windows`, `c:\programdata`. `currentInstallDir()` lee `java.class.path` y devuelve el parent del primer entry. 14 tests cubren: las 4 prefijos + insensibilidad case + non-Windows siempre false + classpath vacio + multiple entries (toma el primero)
+- **`AutoUpdater.UpdateResult.pendingElevatedExit: Boolean`** — campo nuevo con default `false` para no romper macOS / Linux / fat-jar. Cuando llega `true`, `UpdateDelegate` muestra mensaje de cierre y llama `exitProcess(0)` tras 1.5s
+- **`AutoUpdater.planElevatedUpdate(...)` (internal, puro-ish)** — valida inputs (newJar existe + ≥ 50 MB), escribe `update-helper.ps1` al `helperDir`, retorna `UpdateResult(success=true, pendingElevatedExit=true)`. El template del script es CONSTANTE — los paths se pasan como parametros PowerShell al lanzar, no se hornean en el body. 5 tests verifican: helper escrito + parametros declarados + estructura del script (Get-Process / Copy-Item / Start-Process) + script identico cross-call + falla limpia con JAR ausente o muy pequeño
+- **`AutoUpdater.buildElevatedLaunchArgs(...)` (internal)** — construye la lista de args para `powershell.exe` que invoca `Start-Process -Verb RunAs` con el helper script y los parametros named (`-OldJar`, `-NewJar`, `-InstallDir`, `-AppExe`, `-LogPath`). 2 tests cubren shape correcta + independencia entre llamadas
+- **`AutoUpdater.applyUpdateWindowsBundle`** — ahora delega a `planAndLaunchElevatedUpdate` cuando `InstallLocation.requiresAdmin(installDir, isWindows = true)`. El JAR descargado se stagea en `%TEMP%\GamePerf-update\` antes de salir para que el proceso elevado lo pueda leer. Si `requiresAdmin` retorna `false` (instalacion en `%LOCALAPPDATA%`, drive secundario, etc.), el path directo de v4.3.7 sigue funcionando sin cambios
+- **`UpdateDelegate.downloadAndApplyUpdate`** — when-branch agregado para `result.pendingElevatedExit`: muestra status message, `delay(1500)`, `exitProcess(0)`. El `else` para `!result.success` se mantiene igual
+- **Helper PowerShell (`update-helper.ps1`)** — `param()` con 5 strings mandatorios, espera hasta 30 segundos a que cualquier proceso bajo el `InstallDir` cierre (`Get-Process | Where-Object { $_.Path.StartsWith($InstallDir, OrdinalIgnoreCase) }`), `Copy-Item -Force` para reemplazar el JAR, `Start-Process` para relanzar el `.exe` (asi se honra el `.cfg` del bundle con los `-Dskiko.library.path` etc.). Cada paso loggea a `~/GamePerf Reports/updates/last-update.log` (mismo path que ya usaba el `.bat` Unix-style)
+- **Tests totales**: 449 → **470** (+21 nuevos: 14 `InstallLocationTest` + 7 `AutoUpdaterElevationTest`). 0 failures
+- **Compatibilidad**: instalaciones en `%LOCALAPPDATA%`, drives secundarios (`D:\`, `E:\`), macOS `.app`, Linux `/opt`, fat JAR portable y DEV mode siguen exactamente igual que en v4.3.7. La nueva rama de elevacion solo aplica a Windows + path protegido por Windows
+- **Riesgos abiertos / verificacion manual** — la negativa del usuario al UAC ("No") no es detectable desde el JVM (el powershell exterior siempre exit 0 porque `Start-Process -Verb RunAs` desacopla el proceso elevado). En ese caso GamePerf cierra y NO reabre — el usuario tiene que abrir GamePerf a mano y la actualizacion no se aplico. El log en `~/GamePerf Reports/updates/last-update.log` queda vacio (el helper nunca corrio). Aceptable como degradacion: el banner reaparecera al proximo arranque y el usuario puede reintentar
+- **Version bump**: 4.3.7 → 4.3.8
+
 ## [4.3.7] — 2026-04-28
 
 ### Arreglos

@@ -350,12 +350,16 @@ object AutoUpdater {
      * [needsManualRestart] = true if the app couldn't auto-restart (e.g., running from Gradle).
      * [updatedJarPath] = path to the new JAR file (for showing to user).
      * [message] = human-readable status message.
+     * [pendingElevatedExit] = v4.3.8: true when an UAC-elevated helper has been spawned and the
+     *   caller MUST exit the app cleanly so the helper can replace the JAR. Defaults to false
+     *   for backward compatibility with the existing macOS / Linux / fat-jar paths.
      */
     data class UpdateResult(
         val success: Boolean,
         val needsManualRestart: Boolean = false,
         val updatedJarPath: String = "",
-        val message: String = ""
+        val message: String = "",
+        val pendingElevatedExit: Boolean = false,
     )
 
     /** Minimum size (bytes) for a JAR to be considered an "uber JAR" with all deps embedded.
@@ -503,6 +507,30 @@ object AutoUpdater {
 
         val jarDir = currentJar.parentFile
             ?: return UpdateResult(false, message = "No se pudo determinar el directorio del JAR del bundle")
+        val installDir = jarDir.parentFile
+            ?: return UpdateResult(false, message = "No se pudo determinar el directorio de instalación")
+
+        // v4.3.8: when the install dir lives under Program Files / ProgramData / Windows,
+        // the running JVM is unprivileged and can't overwrite its own JAR. Switch to the
+        // UAC-elevated helper path: spawn a separate elevated PowerShell process that waits
+        // for us to exit, replaces the JAR, and relaunches the .exe. The current process
+        // returns a `pendingElevatedExit` signal so the caller (UpdateDelegate) shuts the
+        // app down cleanly.
+        if (InstallLocation.requiresAdmin(installDir, isWindows = true)) {
+            val helperDir = File(System.getProperty("java.io.tmpdir"), "GamePerf-update").apply { mkdirs() }
+            // Stage the new JAR in the temp dir so the elevated helper can read it after we exit.
+            val stagedNewJar = File(helperDir, "android-game-perf-tool-desktop-${AppVersion.NAME}-staged.jar")
+            downloadedFile.copyTo(stagedNewJar, overwrite = true)
+            return planAndLaunchElevatedUpdate(
+                newJar = stagedNewJar,
+                oldJar = currentJar,
+                installDir = installDir,
+                appExe = launcher,
+                helperDir = helperDir,
+            )
+        }
+
+        // Direct-write path (user-writable install) — unchanged from v4.3.7.
         val newJar = File(jarDir, currentJar.name + ".new")
         val bakJar = File(jarDir, currentJar.name + ".bak")
 
@@ -514,6 +542,229 @@ object AutoUpdater {
 
         System.exit(0)
         return UpdateResult(true) // unreachable
+    }
+
+    // ═══════ v4.3.8 — UAC self-elevation for protected install paths ═══════
+
+    /**
+     * PowerShell helper script that runs *elevated* via UAC. It:
+     *  1. waits up to 30 seconds for the running app to exit (matched by install dir prefix),
+     *  2. copies the staged new JAR over the old one in the install dir's `app/` subdir,
+     *  3. relaunches the native launcher .exe so the bundle's `.cfg` (Skiko paths, etc.) is honored,
+     *  4. logs every step to the path passed via `-LogPath` for post-mortem debugging.
+     *
+     * The script is a CONSTANT template — per-update paths are passed as PowerShell
+     * parameters at launch time (`-OldJar`, `-NewJar`, etc.), NOT baked into the body.
+     * This keeps the script identical across every update and makes it trivial to verify.
+     *
+     * NOTE: kept as a `const` so detekt/binary-cache treats it as unchanging; reformatting
+     * touches the apply-progress test (which asserts on the exact body) so any whitespace
+     * change is intentional.
+     */
+    private const val UAC_HELPER_PS1 = """param(
+    [Parameter(Mandatory=${'$'}true)] [string]${'$'}OldJar,
+    [Parameter(Mandatory=${'$'}true)] [string]${'$'}NewJar,
+    [Parameter(Mandatory=${'$'}true)] [string]${'$'}InstallDir,
+    [Parameter(Mandatory=${'$'}true)] [string]${'$'}AppExe,
+    [Parameter(Mandatory=${'$'}true)] [string]${'$'}LogPath
+)
+
+${'$'}ErrorActionPreference = 'Continue'
+
+function Write-Log(${'$'}msg) {
+    try {
+        ${'$'}stamp = [DateTime]::Now.ToString('HH:mm:ss')
+        "${'$'}stamp ${'$'}msg" | Out-File -FilePath ${'$'}LogPath -Append -Encoding UTF8
+    } catch { }
+}
+
+Write-Log "===== UAC update helper started ====="
+Write-Log "OldJar: ${'$'}OldJar"
+Write-Log "NewJar: ${'$'}NewJar"
+Write-Log "InstallDir: ${'$'}InstallDir"
+Write-Log "AppExe: ${'$'}AppExe"
+
+# 1. Wait for the running app to exit (max 30 s). We match by install dir prefix so
+#    we catch the launcher .exe AND any java.exe child started from the bundle.
+${'$'}timeoutSec = 30
+${'$'}elapsed = 0.0
+${'$'}stillRunning = ${'$'}null
+while (${'$'}elapsed -lt ${'$'}timeoutSec) {
+    ${'$'}stillRunning = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        ${'$'}_.Path -and ${'$'}_.Path.StartsWith(${'$'}InstallDir, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not ${'$'}stillRunning) {
+        Write-Log "App exited."
+        break
+    }
+    Start-Sleep -Milliseconds 500
+    ${'$'}elapsed += 0.5
+}
+
+if (${'$'}stillRunning) {
+    Write-Log "ERROR: App did not exit within ${'$'}timeoutSec seconds. Aborting."
+    exit 1
+}
+
+# 2. Replace the JAR. Copy-Item -Force overwrites; the elevated token grants the
+#    write permission that the unprivileged JVM lacked.
+try {
+    Write-Log "Copying new JAR over old JAR..."
+    Copy-Item -Path ${'$'}NewJar -Destination ${'$'}OldJar -Force -ErrorAction Stop
+    Write-Log "JAR replaced successfully."
+} catch {
+    Write-Log "ERROR: Failed to replace JAR: ${'$'}_"
+    exit 2
+}
+
+# 3. Relaunch via the native launcher so the bundle .cfg (Skiko paths, etc.) is read.
+try {
+    Write-Log "Relaunching ${'$'}AppExe..."
+    Start-Process -FilePath ${'$'}AppExe -WorkingDirectory ${'$'}InstallDir
+    Write-Log "Relaunched."
+} catch {
+    Write-Log "ERROR: Failed to relaunch app: ${'$'}_"
+    exit 3
+}
+
+Write-Log "===== UAC update helper finished OK ====="
+exit 0
+"""
+
+    /**
+     * Pure planner: validates inputs, writes the helper script to disk, and returns
+     * an [UpdateResult] WITHOUT spawning any process. This is the test-friendly half
+     * of the elevation flow — production code calls [planAndLaunchElevatedUpdate]
+     * which composes this with [buildElevatedLaunchArgs] + actual `ProcessBuilder.start`.
+     *
+     * Tests live in `AutoUpdaterElevationTest`.
+     */
+    internal fun planElevatedUpdate(
+        newJar: File,
+        oldJar: File,
+        installDir: File,
+        appExe: File,
+        helperDir: File,
+    ): UpdateResult {
+        if (!newJar.exists() || !newJar.isFile) {
+            return UpdateResult(false, message = "El JAR descargado no existe: ${newJar.absolutePath}")
+        }
+        if (newJar.length() < MIN_UBER_JAR_BYTES) {
+            return UpdateResult(
+                false,
+                message = "El JAR descargado (${newJar.length()} bytes) es demasiado pequeño para ser un uber-JAR."
+            )
+        }
+        helperDir.mkdirs()
+        val helperScript = File(helperDir, "update-helper.ps1")
+        // Use UTF-8 so Spanish log messages survive — same lesson as v4.2.4 (mojibake bug).
+        helperScript.writeText(UAC_HELPER_PS1, Charsets.UTF_8)
+
+        // Reference all params so detekt's UnusedParameter rule stays quiet — they ARE
+        // used: by the launch step in planAndLaunchElevatedUpdate. We don't bake them
+        // into the script (that's deliberate — see UAC_HELPER_PS1 KDoc).
+        require(oldJar.absolutePath.isNotBlank())
+        require(installDir.absolutePath.isNotBlank())
+        require(appExe.absolutePath.isNotBlank())
+
+        return UpdateResult(
+            success = true,
+            pendingElevatedExit = true,
+            updatedJarPath = oldJar.absolutePath,
+            message = "Actualización lista. Cerrando GamePerf para aplicarla con permisos de administrador."
+        )
+    }
+
+    /**
+     * Build the `powershell.exe` argument list that triggers the UAC consent dialog
+     * and runs [helperScript] elevated with the right named parameters.
+     *
+     * The outer powershell.exe exits immediately because `Start-Process -Verb RunAs`
+     * spawns a SEPARATE elevated process — the JVM doesn't need to wait for it.
+     *
+     * Tests assert on these args without spawning a process.
+     */
+    internal fun buildElevatedLaunchArgs(
+        helperScript: File,
+        oldJar: File,
+        newJar: File,
+        installDir: File,
+        appExe: File,
+        logPath: File,
+    ): List<String> {
+        // PowerShell single-quote escaping: any ' inside a single-quoted string becomes ''.
+        // We never expect a single quote in a Windows install path, but we escape defensively.
+        fun psQuote(s: String): String = "'" + s.replace("'", "''") + "'"
+        val inner = """
+            Start-Process powershell.exe -Verb RunAs -ArgumentList @(
+              '-NoProfile',
+              '-ExecutionPolicy', 'Bypass',
+              '-File', ${psQuote(helperScript.absolutePath)},
+              '-OldJar', ${psQuote(oldJar.absolutePath)},
+              '-NewJar', ${psQuote(newJar.absolutePath)},
+              '-InstallDir', ${psQuote(installDir.absolutePath)},
+              '-AppExe', ${psQuote(appExe.absolutePath)},
+              '-LogPath', ${psQuote(logPath.absolutePath)}
+            )
+        """.trimIndent()
+        return listOf(
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-Command",
+            inner,
+        )
+    }
+
+    /**
+     * Production entry point: plan the elevated update, then spawn the `powershell.exe`
+     * process that triggers the UAC consent dialog. Returns a `pendingElevatedExit`
+     * result on success so the caller exits the app to let the helper take over.
+     *
+     * If UAC is denied (user clicks "No"), the outer powershell.exe still exits 0
+     * — there's no portable way to know the user denied without polling. We rely on
+     * the helper's log file at `~/GamePerf Reports/updates/last-update.log` for
+     * post-mortem debugging when the user reports "I clicked Update and nothing happened".
+     */
+    private fun planAndLaunchElevatedUpdate(
+        newJar: File,
+        oldJar: File,
+        installDir: File,
+        appExe: File,
+        helperDir: File,
+    ): UpdateResult {
+        val plan = planElevatedUpdate(newJar, oldJar, installDir, appExe, helperDir)
+        if (!plan.success) return plan
+
+        val helperScript = File(helperDir, "update-helper.ps1")
+        val logPath = File(System.getProperty("user.home"), "GamePerf Reports/updates/last-update.log")
+        runCatching { logPath.parentFile?.mkdirs() }
+
+        val args = buildElevatedLaunchArgs(
+            helperScript = helperScript,
+            oldJar = oldJar,
+            newJar = newJar,
+            installDir = installDir,
+            appExe = appExe,
+            logPath = logPath,
+        )
+
+        val launched = runCatching {
+            ProcessBuilder(args)
+                .redirectErrorStream(true)
+                .start()
+            true
+        }.getOrElse { false }
+
+        return if (launched) {
+            plan
+        } else {
+            UpdateResult(
+                false,
+                message = "No se pudo lanzar el actualizador con permisos de administrador. " +
+                    "Cancelaste la solicitud de UAC o PowerShell no está disponible."
+            )
+        }
     }
 
     private fun applyUpdateLinuxPackage(

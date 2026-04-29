@@ -2,6 +2,7 @@ package com.gameperf.desktop.viewmodel
 
 import com.gameperf.desktop.core.AutoUpdater
 import com.gameperf.desktop.core.CURRENT_VERSION
+import kotlin.system.exitProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -60,13 +61,30 @@ class UpdateDelegate(
                     _updateProgress.value = 1f
                     delay(500)
                     val result = AutoUpdater.applyUpdate(file)
-                    if (result.success && result.needsManualRestart) {
-                        _updateError.value = null
-                        _updateProgress.value = null
-                        onStatusMessage(result.message)
-                    } else if (!result.success) {
-                        _updateError.value = result.message.ifEmpty { "Error al aplicar la actualización" }
-                        _updateProgress.value = null
+                    when {
+                        // v4.3.8: protected-path Windows install — UAC helper has been
+                        // spawned. Show a status message, then exit so the helper can
+                        // replace the JAR and relaunch the app under the new version.
+                        result.success && result.pendingElevatedExit -> {
+                            _updateError.value = null
+                            _updateProgress.value = null
+                            onStatusMessage(
+                                "Cerrando GamePerf para aplicar la actualización con permisos de administrador. " +
+                                    "Volverá a abrir automáticamente."
+                            )
+                            // Give the user a beat to read the message before the window vanishes.
+                            delay(1500)
+                            exitProcess(0)
+                        }
+                        result.success && result.needsManualRestart -> {
+                            _updateError.value = null
+                            _updateProgress.value = null
+                            onStatusMessage(result.message)
+                        }
+                        !result.success -> {
+                            _updateError.value = result.message.ifEmpty { "Error al aplicar la actualización" }
+                            _updateProgress.value = null
+                        }
                     }
                 } else {
                     val reason = AutoUpdater.lastDownloadError
