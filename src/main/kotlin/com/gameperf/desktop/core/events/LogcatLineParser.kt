@@ -44,20 +44,23 @@ object LogcatLineParser {
      * @return Parsed [LogLine] on success, `null` if the line does not match
      *   the threadtime format.
      */
+    @Suppress("ReturnCount", "DestructuringDeclarationWithTooManyEntries")
     fun parse(rawLine: String): LogLine? {
         if (rawLine.isEmpty()) return null
         return try {
             val match = THREADTIME_REGEX.matchEntire(rawLine) ?: return null
-            val (tsRaw, pidStr, tidStr, levelStr, tagRaw, msg) = match.destructured
-            val tsMs = parseDeviceTimestamp(tsRaw) ?: return null
-            val pid = pidStr.toIntOrNull() ?: return null
-            val tid = tidStr.toIntOrNull() ?: return null
-            val level = levelStr.firstOrNull() ?: return null
-            val tag = tagRaw.trim()
+            val groups = match.groupValues
+            val tsMs = parseDeviceTimestamp(groups[1]) ?: return null
+            val pid = groups[2].toIntOrNull() ?: return null
+            val tid = groups[3].toIntOrNull() ?: return null
+            val level = groups[4].firstOrNull() ?: return null
+            val tag = groups[5].trim()
             if (tag.isEmpty()) return null
-            LogLine(tsMs = tsMs, pid = pid, tid = tid, level = level, tag = tag, msg = msg)
-        } catch (e: RuntimeException) {
-            // Defensive: any malformed regex group / parse failure is a "skip".
+            LogLine(tsMs = tsMs, pid = pid, tid = tid, level = level, tag = tag, msg = groups[6])
+        } catch (@Suppress("SwallowedException", "TooGenericExceptionCaught") e: RuntimeException) {
+            // Defensive: any malformed regex group / parse failure is a "skip"
+            // signaled by null. Logging would be noisy and the caller already
+            // treats null as "ignore this line" per parse() KDoc.
             null
         }
     }
@@ -68,7 +71,8 @@ object LogcatLineParser {
             val withYear = "$year-$tsRaw"
             val ldt = LocalDateTime.parse(withYear, DEVICE_TS_FORMATTER)
             ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        } catch (e: RuntimeException) {
+        } catch (@Suppress("SwallowedException", "TooGenericExceptionCaught") e: RuntimeException) {
+            // Same rationale as parse() — null signals "skip this line" to the caller.
             null
         }
     }

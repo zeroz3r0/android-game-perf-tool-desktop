@@ -1139,6 +1139,7 @@ $cards
      * silently hiding the section — users that scrolled to find conclusions
      * deserve confirmation that the analysis ran.
      */
+    @Suppress("FunctionOnlyReturningConstant")
     private fun sectionConclusionsEmpty(): String =
         """
 <section id="sec-conclusions" class="card">
