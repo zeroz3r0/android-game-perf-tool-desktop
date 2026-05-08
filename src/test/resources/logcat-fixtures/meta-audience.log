@@ -1,0 +1,30 @@
+05-08 18:14:00.000  5678  9012 I MyGame: Frame rendered fps=60
+05-08 18:14:00.500  5678  9012 I Unity: Behaviour update tick=4000
+05-08 18:14:01.000  5678  9012 I MyGame: Frame rendered fps=60
+05-08 18:14:01.500  5678  9012 I MyGame: Boss defeated, showing ad
+05-08 18:14:02.000  5678  9012 I MyGame: Awaiting ad surface
+05-08 18:14:02.150  5678  9012 D AudienceNetworkAds: Loading ad placement=BOSS_DEFEATED
+05-08 18:14:02.300  5678  9012 D FBAudienceNetworkLog: Cache TTL refresh queued
+05-08 18:14:02.400  5678  9012 D FBAudienceNetworkLog: Ad ready id=fb-ad-9988
+05-08 18:14:02.500  5678  9012 I FBAudienceNetworkLog: Interstitial impression logged id=fb-ad-9988
+05-08 18:14:02.501  5678  9012 I FBAudienceNetworkLog: onInterstitialDisplayed id=fb-ad-9988
+05-08 18:14:02.550  5678  9012 D FBAudienceNetworkLog: AudienceNetworkActivity attached
+05-08 18:14:02.700  5678  9012 D FBAudienceNetworkLog: WebView ready
+05-08 18:14:03.000  5678  9012 D FBAudienceNetworkLog: Frame painted
+05-08 18:14:03.500  5678  9012 D FBAudienceNetworkLog: Frame painted
+05-08 18:14:04.000  5678  9012 D FBAudienceNetworkLog: Heartbeat ping
+05-08 18:14:04.500  5678  9012 D FBAudienceNetworkLog: Frame painted
+05-08 18:14:05.000  5678  9012 D FBAudienceNetworkLog: Frame painted
+05-08 18:14:05.500  5678  9012 D FBAudienceNetworkLog: Frame painted
+05-08 18:14:06.000  5678  9012 D FBAudienceNetworkLog: Frame painted
+05-08 18:14:06.500  5678  9012 D FBAudienceNetworkLog: User idle on ad
+05-08 18:14:07.000  5678  9012 D FBAudienceNetworkLog: Frame painted
+05-08 18:14:07.500  5678  9012 D FBAudienceNetworkLog: User clicked close
+05-08 18:14:07.700  5678  9012 I FBAudienceNetworkLog: onInterstitialDismissed id=fb-ad-9988
+05-08 18:14:07.750  5678  9012 D FBAudienceNetworkLog: AudienceNetworkActivity detached
+05-08 18:14:07.900  5678  9012 I MyGame: Resuming gameplay
+05-08 18:14:08.000  5678  9012 I MyGame: Frame rendered fps=58
+05-08 18:14:08.500  5678  9012 I Unity: Behaviour update tick=4010
+05-08 18:14:09.000  5678  9012 I MyGame: Frame rendered fps=60
+05-08 18:14:09.500  5678  9012 I MyGame: Player position updated
+05-08 18:14:10.000  5678  9012 I MyGame: Frame rendered fps=60

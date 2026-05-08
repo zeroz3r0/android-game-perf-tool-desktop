@@ -1,0 +1,35 @@
+05-08 14:32:10.123  1234  5678 I MyGame: Frame rendered fps=60
+05-08 14:32:10.456  1234  5678 I MyGame: Player position updated
+05-08 14:32:10.789  1234  5678 I Unity: Behaviour update tick=1234
+05-08 14:32:11.000  1234  5678 I MyGame: Frame rendered fps=59
+05-08 14:32:11.456  1234  5678 I Unity: Behaviour update tick=1235
+05-08 14:32:12.000  1234  5678 I MyGame: Frame rendered fps=60
+05-08 14:32:13.123  1234  5678 I MyGame: Trigger: ad slot reached
+05-08 14:32:14.000  1234  5678 I MyGame: Player paused for ad
+05-08 14:32:14.222  1234  5678 D MobileAds: Requesting ad
+05-08 14:32:14.333  1234  5678 D Ads: Loading ad bidder=admob
+05-08 14:32:14.444  1234  5678 I Ads: Loaded ad with response_id=abc123
+05-08 14:32:14.500  1234  5678 I AdActivity: Showing ad
+05-08 14:32:14.501  1234  5678 I MobileAds: onAdShown
+05-08 14:32:14.600  1234  5678 D AdActivity: View hierarchy attached
+05-08 14:32:14.700  1234  5678 D AdActivity: WebView loaded creative
+05-08 14:32:15.000  1234  5678 I AdActivity: Impression recorded
+05-08 14:32:15.500  1234  5678 D Ads: Heartbeat ping
+05-08 14:32:16.000  1234  5678 D AdActivity: Frame painted
+05-08 14:32:16.500  1234  5678 D AdActivity: User idle on ad
+05-08 14:32:17.000  1234  5678 D AdActivity: Frame painted
+05-08 14:32:17.500  1234  5678 D AdActivity: Frame painted
+05-08 14:32:18.000  1234  5678 D Ads: Heartbeat ping
+05-08 14:32:18.500  1234  5678 D AdActivity: Frame painted
+05-08 14:32:19.000  1234  5678 D AdActivity: User tapped close
+05-08 14:32:19.100  1234  5678 I AdActivity: Ad dismissed by user
+05-08 14:32:19.101  1234  5678 I MobileAds: onAdClosed
+05-08 14:32:19.123  1234  5678 D AdActivity: Releasing webview
+05-08 14:32:19.234  1234  5678 I MyGame: Resuming player
+05-08 14:32:19.345  1234  5678 I MyGame: Frame rendered fps=58
+05-08 14:32:19.789  1234  5678 I Unity: Behaviour update tick=1240
+05-08 14:32:20.000  1234  5678 I MyGame: Frame rendered fps=60
+05-08 14:32:20.456  1234  5678 I MyGame: Player position updated
+05-08 14:32:21.000  1234  5678 I MyGame: Frame rendered fps=60
+05-08 14:32:21.456  1234  5678 I Unity: Behaviour update tick=1242
+05-08 14:32:22.000  1234  5678 I MyGame: Frame rendered fps=60

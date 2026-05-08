@@ -3,6 +3,7 @@ package com.gameperf.desktop.core.conclusions
 import com.gameperf.desktop.core.HardwareScoring
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.metrics.MetricsAggregates
+import com.gameperf.desktop.viewmodel.TimedSample
 import kotlinx.serialization.Serializable
 
 /**
@@ -46,7 +47,8 @@ data class Conclusion(
  * Input data for [Rule.matches] and [Rule.render].
  *
  * Aggregates all the context needed for heuristic evaluation: filtered and raw
- * metrics, device tier, detected events, and session metadata.
+ * metrics, device tier, detected events, session metadata, and optional timed
+ * series for trend analysis (memory growth, thermal correlation).
  *
  * @property filtered Metrics aggregates computed EXCLUDING event windows.
  * @property raw Metrics aggregates computed over the FULL session.
@@ -54,6 +56,13 @@ data class Conclusion(
  * @property deviceTier Device hardware tier (see [HardwareScoring.detectTier]).
  * @property events List of detected events during the session.
  * @property sessionDurationS Total session duration in seconds.
+ * @property memTimedFiltered Memory samples (MB) over time, with event windows excluded.
+ *           Used by trend rules (e.g., MemoryGrowthRule for linear regression slope).
+ *           Default empty for callers that don't need trend analysis.
+ * @property tempCpuTimedFiltered CPU temperature samples over time, event-filtered.
+ *           Used by ThermalThrottlingRule to correlate FPS drops with thermal events.
+ * @property fpsTimedFiltered FPS samples over time, event-filtered.
+ *           Used by trend rules to detect sustained dips vs transient spikes.
  *
  * @since v4.4.0
  */
@@ -64,6 +73,9 @@ data class ConclusionInput(
     val deviceTier: HardwareScoring.DeviceTier,
     val events: List<DetectedEvent>,
     val sessionDurationS: Int,
+    val memTimedFiltered: List<TimedSample> = emptyList(),
+    val tempCpuTimedFiltered: List<TimedSample> = emptyList(),
+    val fpsTimedFiltered: List<TimedSample> = emptyList(),
 )
 
 /**
