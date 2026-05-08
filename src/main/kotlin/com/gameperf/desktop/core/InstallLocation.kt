@@ -53,7 +53,12 @@ object InstallLocation {
      */
     fun requiresAdmin(installDir: File, isWindows: Boolean): Boolean {
         if (!isWindows) return false
-        val normalized = installDir.absolutePath.lowercase()
+        // v4.4.0: use `path` instead of `absolutePath` so the function works
+        // identically on Linux CI runners (where `File("C:\\Program Files")`
+        // is treated as a relative path and absolutePath would prepend the
+        // CWD, breaking the prefix match). When called by production code on
+        // Windows, the input File is already absolute so `path == absolutePath`.
+        val normalized = installDir.path.replace('/', '\\').lowercase()
         return PROTECTED_WINDOWS_PREFIXES.any { normalized.startsWith(it) }
     }
 
