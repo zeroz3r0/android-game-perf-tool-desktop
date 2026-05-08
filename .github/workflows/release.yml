@@ -57,9 +57,12 @@ jobs:
         shell: bash
         working-directory: sidecar
         run: |
-          pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r requirements-lock.txt
+          # v4.4.1: pip 26+ refuses self-upgrade via `pip install --upgrade pip`,
+          # mandating `python -m pip` instead. Switched all pip invocations to
+          # the python -m form for consistency across pip versions.
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install -r requirements-lock.txt
 
       - name: Build sidecar binary
         shell: bash
