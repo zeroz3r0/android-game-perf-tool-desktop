@@ -36,17 +36,17 @@ Each task ID maps to a single deliverable (≤3h work). Spec requirement coverag
 - [x] **T2.13** Create `core/events/ActivityFrame.kt` — `data class ActivityFrame(val cmp: String, val pid: Int, val taskId: Int)`.
 - [x] **T2.14** Create `core/events/DumpsysPoller.kt` — internal class with `suspend fun run(deviceId, scope)` that loops at 1Hz invoking `adb shell dumpsys activity activities`, parses top-of-stack `cmp=` via regex (reuse pattern from `core/AdbBridge.kt:225-241`), calls `onActivityStack(frames)`. After 5 consecutive failures, disables itself. Covers EVT-004.
 - [x] **T2.15** Create `DumpsysPollerTest.kt` — use `FakeAdbBridge` returning canned dumpsys output. Assert poll cadence ~1Hz, timeout < 250ms enforced, 5-consecutive-failure shutdown.
-- [ ] **T2.16** Create `core/events/EventDetector.kt` — interface per design.md lines 79-84 (`events: StateFlow`, `warnings: StateFlow`, `start`, `stop`).
-- [ ] **T2.17** Create `core/events/EventDetectorImpl.kt` — orchestrator coroutine. Owns `LogcatCapture` + `DumpsysPoller`. Implements lifecycle LOAD→SHOW→CLOSE state machine per EVT-005: open events tracked in a map keyed by sdkSource, closed via close-pattern OR activity leaving stack OR session end. Foreground proximity guard (≤2s of game on top, EVT-008). Event count cap 500 with histogram fallback flag (EVT-009). Emits `DetectedEvent`s into `MutableStateFlow<List<DetectedEvent>>`. On stop, force-close any open events with `endInferred=true`. Covers EVT-001, EVT-005, EVT-006, EVT-008, EVT-009.
-- [ ] **T2.18** Create `EventDetectorImplTest.kt` — pure-state-machine tests with fed `LogLine` + `ActivityFrame` sequences (no real Process). Cases: open+close pairing, foreground guard rejection (home button), session-end inferred close, 500-cap enforcement, gap-induced LOW confidence. Covers EVT-005 through EVT-009 scenarios.
-- [ ] **T2.19** Wire `EventDetector` into `viewmodel/AppViewModel.kt`:
+- [x] **T2.16** Create `core/events/EventDetector.kt` — interface per design.md lines 79-84 (`events: StateFlow`, `warnings: StateFlow`, `start`, `stop`).
+- [x] **T2.17** Create `core/events/EventDetectorImpl.kt` — orchestrator coroutine. Owns `LogcatCapture` + `DumpsysPoller`. Implements lifecycle LOAD→SHOW→CLOSE state machine per EVT-005: open events tracked in a map keyed by sdkSource, closed via close-pattern OR activity leaving stack OR session end. Foreground proximity guard (≤2s of game on top, EVT-008). Event count cap 500 with histogram fallback flag (EVT-009). Emits `DetectedEvent`s into `MutableStateFlow<List<DetectedEvent>>`. On stop, force-close any open events with `endInferred=true`. Covers EVT-001, EVT-005, EVT-006, EVT-008, EVT-009.
+- [x] **T2.18** Create `EventDetectorImplTest.kt` — pure-state-machine tests with fed `LogLine` + `ActivityFrame` sequences (no real Process). Cases: open+close pairing, foreground guard rejection (home button), session-end inferred close, 500-cap enforcement, gap-induced LOW confidence. Covers EVT-005 through EVT-009 scenarios.
+- [x] **T2.19** Wire `EventDetector` into `viewmodel/AppViewModel.kt`:
   - Add `private val _events = MutableStateFlow<List<DetectedEvent>>(emptyList())` + public `events: StateFlow<List<DetectedEvent>>`.
   - Add `private val _detectorWarnings = MutableStateFlow<List<String>>(emptyList())` + public flow.
   - Instantiate `EventDetectorImpl` in `startCapture` (around lines 816-878) AFTER `captureStartTime` is set, only if `Settings.autoEventDetectionEnabled` is true. Call `eventDetector.start(deviceId, gamePackage, captureScope)`.
   - In `stopCapture` path (just before post-loop aggregation), call `eventDetector.stop()`.
   - Bridge `eventDetector.events` → `_events`.
   - Covers EVT-001 lifecycle scenarios.
-- [ ] **T2.20** Add live-indicator UI in `ui/screens/CaptureScreen.kt` (near manual marker buttons, lines 178-182): collect `vm.events` and show "Auto: N eventos" with colored dot when non-empty. Manual marker buttons remain unchanged. Covers MAN-001 ("Manual markers preserved as fallback").
+- [x] **T2.20** Add live-indicator UI in `ui/screens/CaptureScreen.kt` (near manual marker buttons, lines 178-182): collect `vm.events` and show "Auto: N eventos" with colored dot when non-empty. Manual marker buttons remain unchanged. Covers MAN-001 ("Manual markers preserved as fallback").
 
 ## Phase 3: Filtering Pillar
 

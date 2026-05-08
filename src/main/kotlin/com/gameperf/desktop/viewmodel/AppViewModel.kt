@@ -16,6 +16,10 @@ import com.gameperf.desktop.core.PairFailureReason
 import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.core.RealAdbBridge
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.core.Settings
+import com.gameperf.desktop.core.events.DetectedEvent
+import com.gameperf.desktop.core.events.EventDetector
+import com.gameperf.desktop.core.events.EventDetectorImpl
 import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.core.model.DevicePlatform
@@ -290,6 +294,19 @@ class AppViewModel(
 
     private val _markers = MutableStateFlow<List<SessionMarker>>(emptyList())
     val markers: StateFlow<List<SessionMarker>> = _markers
+
+    // ===== v4.4.0 — Auto Event Detection =====
+
+    /** Live cumulative list of auto-detected events (ads, IAPs, loading). */
+    private val _events = MutableStateFlow<List<DetectedEvent>>(emptyList())
+    val events: StateFlow<List<DetectedEvent>> = _events
+
+    /** Detection-quality warnings surfaced from [EventDetector]. */
+    private val _detectorWarnings = MutableStateFlow<List<String>>(emptyList())
+    val detectorWarnings: StateFlow<List<String>> = _detectorWarnings
+
+    /** Active detector for the current capture session, or null when idle. */
+    private var eventDetector: EventDetector? = null
 
     // ===== Video Playback (delegated v4.1.0) =====
     private val videoDelegate = VideoDelegate()
@@ -903,6 +920,27 @@ class AppViewModel(
             val startTime = System.currentTimeMillis()
             captureStartTime = startTime
 
+            // ═══ v4.4.0 — Auto event detection (Android only, gated by Settings) ═══
+            //
+            // The detector owns its own LogcatCapture + DumpsysPoller. We launch
+            // them on the same `scope` as the rest of the capture so cancellation
+            // propagates if the session is torn down. The bridge flows mirror the
+            // detector's StateFlows into our public surface.
+            //
+            // Behaviour when the flag is OFF: nothing is instantiated, no extra
+            // adb processes spawn, and `events`/`detectorWarnings` stay empty —
+            // identical to pre-v4.4.0 capture behaviour.
+            _events.value = emptyList()
+            _detectorWarnings.value = emptyList()
+            val settings = Settings.load()
+            if (settings.autoEventDetectionEnabled && !isIosDevice) {
+                val detector = EventDetectorImpl(bridge = adb)
+                detector.start(deviceId = device.id, gamePackage = pkg, scope = scope)
+                eventDetector = detector
+                scope.launch { detector.events.collect { _events.value = it } }
+                scope.launch { detector.warnings.collect { _detectorWarnings.value = it } }
+            }
+
             // Chain recordings every ~175s (before the 180s screenrecord hard limit).
             //
             // v3.1.12 — moov atom corruption fix:
@@ -1306,6 +1344,12 @@ class AppViewModel(
             // Stop recording and pull videos
             timerJob.cancel()
             recordJob?.cancel()
+
+            // v4.4.0: stop auto event detection. Force-closes any still-open
+            // events with `endInferred=true` so the report can disclose the
+            // synthesized boundary.
+            eventDetector?.stop()
+            eventDetector = null
 
             // v4.2.5: surface processing status to the UI so the user knows the
             // post-capture pipeline is running (~30-90s for long sessions). The

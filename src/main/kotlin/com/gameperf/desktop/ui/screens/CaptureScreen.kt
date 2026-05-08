@@ -34,6 +34,8 @@ fun CaptureScreen(vm: AppViewModel) {
     val gamePackage by vm.gamePackage.collectAsState()
     val deviceInfo by vm.deviceInfo.collectAsState()
     val markers by vm.markers.collectAsState()
+    val events by vm.events.collectAsState()
+    val detectorWarnings by vm.detectorWarnings.collectAsState()
     val captureError by vm.captureError.collectAsState()
     val captureWarning by vm.captureWarning.collectAsState()
     // v4.2.5: live status of the post-capture pipeline (stop -> pull -> concat ->
@@ -163,6 +165,45 @@ fun CaptureScreen(vm: AppViewModel) {
         }
 
         Spacer(Modifier.height(12.dp))
+
+        // === v4.4.0 — Auto event detection live indicator ===
+        // Shows a small dot + count when [EventDetector] has detected events
+        // during this capture. Surfaces detection-quality warnings (logcat
+        // gaps, dumpsys disabled) inline so the user knows confidence is
+        // degraded BEFORE looking at the final report. The manual marker
+        // buttons below remain unchanged — they're the fallback per MAN-001.
+        if (events.isNotEmpty() || detectorWarnings.isNotEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(vertical = 4.dp)
+            ) {
+                if (events.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(Cyan)
+                    )
+                    Text(
+                        text = "Auto: ${events.size} eventos",
+                        color = TextDim,
+                        fontSize = 11.sp,
+                    )
+                }
+                if (detectorWarnings.isNotEmpty()) {
+                    if (events.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = "Aviso: ${detectorWarnings.size} alerta(s) de detección",
+                        color = Color(0xFFFFAA00),
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
 
         // === Marker buttons ===
         Row(
