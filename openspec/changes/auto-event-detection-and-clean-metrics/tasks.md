@@ -6,18 +6,18 @@ Each task ID maps to a single deliverable (≤3h work). Spec requirement coverag
 
 ## Phase 1: Foundation / Infrastructure
 
-- [ ] **T1.1** Create package skeleton `src/main/kotlin/com/gameperf/desktop/core/events/` with `package-info.kt` documenting purpose: "Auto event detection (logcat + dumpsys) for ad/IAP/loading windows. Single source of truth for SDK signatures."
-- [ ] **T1.2** Create package skeleton `core/metrics/` (`package-info.kt`: "Pure metrics aggregation. Filtered (excluded ranges) + raw dual-view.")
-- [ ] **T1.3** Create package skeleton `core/conclusions/` and `core/conclusions/rules/` (`package-info.kt`: "Deterministic heuristic rule engine. Pure Kotlin. No LLM, no external config.")
-- [ ] **T1.4** Create `core/events/DetectedEvent.kt` — data class per design.md §"Core Types" lines 65-76. Fields: `id: String (UUID)`, `type: EventType`, `sdkSource: String`, `startMs: Long`, `endMs: Long?`, `confidence: Confidence`, `signatureMatched: String`, `metadata: Map<String,String>`. Enums `EventType`, `Confidence`. Covers EVT-005, EVT-007.
-- [ ] **T1.5** Create `core/metrics/TimeRange.kt` — `data class TimeRange(val startMs: Long, val endMs: Long)`. Covers FLT-002.
-- [ ] **T1.6** Create `core/metrics/MetricsAggregates.kt` — full data class per design.md §"Core Types" lines 124-132 (avgFps, min/max, p1/p5/p50/p90/p99, frameTimes, peakMem, avgCpu/maxCpu, all temp peaks, jank, stutter, sampleCount). Covers FLT-002, FLT-004.
-- [ ] **T1.7** Create `core/metrics/FilterInput.kt` — data class per design.md §"Core Types" lines 139-146 (all timed twins, captureStartTime, sessionEndMs). Covers FLT-001.
-- [ ] **T1.8** Create `core/conclusions/Rule.kt` — interface `Rule` (id, severity, matches, render) + `Conclusion` data class + `Severity` enum + `ConclusionInput` data class per design.md lines 149-169. Covers CON-001, CON-005.
-- [ ] **T1.9** Add `autoEventDetectionEnabled: Boolean = true` to `Settings.kt` (under "Captura" section). Wire load/save. Covers design.md §Rollout.
-- [ ] **T1.10** Add timestamped twins to `viewmodel/AppViewModel.kt:43-44` area: `cpuTimed`, `memTimed`, `nativeTimed`, `javaTimed`, `tempCpuTimed`, `tempGpuTimed`, `tempSkinTimed`, `tempDieCpuTimed`, `frameTimeTimed`, `jankTimed`, `stutterTimed` — all `MutableList<TimedSample>`. Populate inside the polling loop (around lines 949-963 / 1011-1235) at each tick. Cap with `MAX_HISTORY_SIZE`. Covers FLT-001.
-- [ ] **T1.11** Extend `SessionResult` data class — add `events: List<DetectedEvent> = emptyList()`, `rawAggregates: MetricsAggregates? = null`, `filteredAggregates: MetricsAggregates? = null`, `conclusions: List<Conclusion> = emptyList()`, `detectionMode: DetectionMode = MANUAL_ONLY`. Add `enum class DetectionMode { ANDROID_FULL, IOS_PARTIAL, MANUAL_ONLY }`. Covers design.md §"Data Model Changes".
-- [ ] **T1.12** Bump session JSON `schemaVersion` from 4 to 5. Add v4→v5 loader path: events/conclusions default empty, aggregates default null. Covers design.md §"Data Model Changes".
+- [x] **T1.1** Create package skeleton `src/main/kotlin/com/gameperf/desktop/core/events/` with `package-info.kt` documenting purpose: "Auto event detection (logcat + dumpsys) for ad/IAP/loading windows. Single source of truth for SDK signatures."
+- [x] **T1.2** Create package skeleton `core/metrics/` (`package-info.kt`: "Pure metrics aggregation. Filtered (excluded ranges) + raw dual-view.")
+- [x] **T1.3** Create package skeleton `core/conclusions/` and `core/conclusions/rules/` (`package-info.kt`: "Deterministic heuristic rule engine. Pure Kotlin. No LLM, no external config.")
+- [x] **T1.4** Create `core/events/DetectedEvent.kt` — data class per design.md §"Core Types" lines 65-76. Fields: `id: String (UUID)`, `type: EventType`, `sdkSource: String`, `startMs: Long`, `endMs: Long?`, `confidence: Confidence`, `signatureMatched: String`, `metadata: Map<String,String>`. Enums `EventType`, `Confidence`. Covers EVT-005, EVT-007.
+- [x] **T1.5** Create `core/metrics/TimeRange.kt` — `data class TimeRange(val startMs: Long, val endMs: Long)`. Covers FLT-002.
+- [x] **T1.6** Create `core/metrics/MetricsAggregates.kt` — full data class per design.md §"Core Types" lines 124-132 (avgFps, min/max, p1/p5/p50/p90/p99, frameTimes, peakMem, avgCpu/maxCpu, all temp peaks, jank, stutter, sampleCount). Covers FLT-002, FLT-004.
+- [x] **T1.7** Create `core/metrics/FilterInput.kt` — data class per design.md §"Core Types" lines 139-146 (all timed twins, captureStartTime, sessionEndMs). Covers FLT-001.
+- [x] **T1.8** Create `core/conclusions/Rule.kt` — interface `Rule` (id, severity, matches, render) + `Conclusion` data class + `Severity` enum + `ConclusionInput` data class per design.md lines 149-169. Covers CON-001, CON-005.
+- [x] **T1.9** Add `autoEventDetectionEnabled: Boolean = true` to `Settings.kt` (under "Captura" section). Wire load/save. Covers design.md §Rollout.
+- [x] **T1.10** Add timestamped twins to `viewmodel/AppViewModel.kt:43-44` area: `cpuTimed`, `memTimed`, `nativeTimed`, `javaTimed`, `tempCpuTimed`, `tempGpuTimed`, `tempSkinTimed`, `tempDieCpuTimed`, `frameTimeTimed`, `jankTimed`, `stutterTimed` — all `MutableList<TimedSample>`. Populate inside the polling loop (around lines 949-963 / 1011-1235) at each tick. Cap with `MAX_HISTORY_SIZE`. Covers FLT-001.
+- [x] **T1.11** Extend `SessionResult` data class — add `events: List<DetectedEvent> = emptyList()`, `rawAggregates: MetricsAggregates? = null`, `filteredAggregates: MetricsAggregates? = null`, `conclusions: List<Conclusion> = emptyList()`, `detectionMode: DetectionMode = MANUAL_ONLY`. Add `enum class DetectionMode { ANDROID_FULL, IOS_PARTIAL, MANUAL_ONLY }`. Covers design.md §"Data Model Changes".
+- [x] **T1.12** Bump session JSON `schemaVersion` from 4 to 5. Add v4→v5 loader path: events/conclusions default empty, aggregates default null. Covers design.md §"Data Model Changes".
 
 ## Phase 2: Detection Pillar
 

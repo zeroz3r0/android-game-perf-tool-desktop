@@ -45,6 +45,28 @@ object SessionHistory {
     const val MAX_ENTRIES = 100
 
     /**
+     * Logical schema version for the session history JSON payload.
+     *
+     * History:
+     *  - v1..v3 — pre-kotlinx.serialization, hand-rolled JSON shapes (no explicit version field).
+     *  - v4 — kotlinx.serialization migration (v4.1.0). [SerializableEntry] became the canonical
+     *    on-disk schema. Forward-compat is provided by `Json { ignoreUnknownKeys = true }`.
+     *  - v5 — v4.4.0 / `auto-event-detection-and-clean-metrics` change. Adds (when persisted by
+     *    the in-memory [com.gameperf.desktop.viewmodel.SessionResult]) the optional fields
+     *    `events`, `rawAggregates`, `filteredAggregates`, `conclusions`, `detectionMode`.
+     *
+     * The disk file does NOT carry this constant explicitly (no breaking change to existing
+     * `history.json` payloads). It exists as a SOURCE-OF-TRUTH integer that callers (export
+     * pipelines, future migrations, tests) can reference. Loading is fully forward-compat:
+     * a v4 file deserializes into a v5-aware code path with the new fields defaulting to
+     * empty/null. There is no v4→v5 *transformation* required — only an additive widening
+     * of the in-memory model.
+     *
+     * @since v4.4.0
+     */
+    const val SCHEMA_VERSION = 5
+
+    /**
      * Threshold (as a fraction of [MAX_ENTRIES]) at which the UI counter turns red
      * to warn the user that the recents list is approaching capacity. Pulled out of
      * HomeScreen so the warning logic stays consistent with the cap.

@@ -105,6 +105,22 @@ data class LiveMetrics(
     val allFrameTimes: List<Double> = emptyList()
 )
 
+/**
+ * Detection mode for the session, indicating what level of automatic event
+ * detection was available.
+ *
+ * @property ANDROID_FULL Full logcat + dumpsys detection on Android.
+ * @property IOS_PARTIAL iOS best-effort (StoreKit + foreground-loss only).
+ * @property MANUAL_ONLY Auto-detection disabled or unavailable; manual markers only.
+ *
+ * @since v4.4.0
+ */
+enum class DetectionMode {
+    ANDROID_FULL,
+    IOS_PARTIAL,
+    MANUAL_ONLY,
+}
+
 data class SessionResult(
     val gamePackage: String = "",
     val deviceModel: String = "",
@@ -138,7 +154,13 @@ data class SessionResult(
     val deviceGrade: Char = ' ',
     val deviceScore: Int = 0,
     val deviceTier: String = "",
-    val markers: List<SessionMarker> = emptyList()
+    val markers: List<SessionMarker> = emptyList(),
+    // v4.4.0: auto event detection fields. Defaults maintain backward compat.
+    val events: List<com.gameperf.desktop.core.events.DetectedEvent> = emptyList(),
+    val rawAggregates: com.gameperf.desktop.core.metrics.MetricsAggregates? = null,
+    val filteredAggregates: com.gameperf.desktop.core.metrics.MetricsAggregates? = null,
+    val conclusions: List<com.gameperf.desktop.core.conclusions.Conclusion> = emptyList(),
+    val detectionMode: DetectionMode = DetectionMode.MANUAL_ONLY,
 )
 
 /**
@@ -961,6 +983,22 @@ class AppViewModel(
             val tempDieCpuHistory = mutableListOf<Double>()
             val frameTimeAvgHistory = mutableListOf<Double>()
             val allFrameTimes = mutableListOf<Double>()
+
+            // v4.4.0: timestamped twins for FilteredMetricsCalculator input.
+            // These parallel the positional histories above but include the
+            // capture-relative timestamp for each sample, enabling time-based
+            // filtering of metrics during detected events (ads, IAPs, loading).
+            val cpuTimed = mutableListOf<TimedSample>()
+            val memTimed = mutableListOf<TimedSample>()
+            val nativeTimed = mutableListOf<TimedSample>()
+            val javaTimed = mutableListOf<TimedSample>()
+            val tempCpuTimed = mutableListOf<TimedSample>()
+            val tempGpuTimed = mutableListOf<TimedSample>()
+            val tempSkinTimed = mutableListOf<TimedSample>()
+            val tempDieCpuTimed = mutableListOf<TimedSample>()
+            val frameTimeTimed = mutableListOf<TimedSample>()
+            val jankTimed = mutableListOf<TimedSample>()
+            val stutterTimed = mutableListOf<TimedSample>()
             var totalJank = 0
             var totalStutter = 0
             var consecutiveAdbFailures = 0
@@ -1133,13 +1171,22 @@ class AppViewModel(
                     memHistory.add(memNow.totalMb)
                     nativeHistory.add(memNow.nativeMb)
                     javaHistory.add(memNow.javaMb)
+                    // v4.4.0: timestamped memory twins for FilteredMetricsCalculator.
+                    memTimed.add(TimedSample(sampleSecond, memNow.totalMb.toDouble()))
+                    nativeTimed.add(TimedSample(sampleSecond, memNow.nativeMb.toDouble()))
+                    javaTimed.add(TimedSample(sampleSecond, memNow.javaMb.toDouble()))
                     if (memHistory.size > MAX_HISTORY_SIZE) memHistory.removeFirst()
                     if (nativeHistory.size > MAX_HISTORY_SIZE) nativeHistory.removeFirst()
                     if (javaHistory.size > MAX_HISTORY_SIZE) javaHistory.removeFirst()
+                    if (memTimed.size > MAX_HISTORY_SIZE) memTimed.removeFirst()
+                    if (nativeTimed.size > MAX_HISTORY_SIZE) nativeTimed.removeFirst()
+                    if (javaTimed.size > MAX_HISTORY_SIZE) javaTimed.removeFirst()
                 }
                 if (cpu > 0) {
                     cpuHistory.add(cpu)
+                    cpuTimed.add(TimedSample(sampleSecond, cpu.toDouble()))
                     if (cpuHistory.size > MAX_HISTORY_SIZE) cpuHistory.removeFirst()
+                    if (cpuTimed.size > MAX_HISTORY_SIZE) cpuTimed.removeFirst()
                 }
                 val shouldRecordThermal = isIosDevice || (iterCount % 4 == 1) // align with runThermal above
                 // v4.1.0: thermal fields use NaN as sentinel. NaN > 0 is false in IEEE 754,
@@ -1157,29 +1204,44 @@ class AppViewModel(
                     }
                     if (!userFacingTemp.isNaN()) {
                         tempCpuHistory.add(userFacingTemp)
+                        tempCpuTimed.add(TimedSample(sampleSecond, userFacingTemp))
                         if (tempCpuHistory.size > MAX_HISTORY_SIZE) tempCpuHistory.removeFirst()
+                        if (tempCpuTimed.size > MAX_HISTORY_SIZE) tempCpuTimed.removeFirst()
                     }
                     if (!lastThermal.gpu.isNaN() && lastThermal.gpu > 0) {
                         tempGpuHistory.add(lastThermal.gpu)
+                        tempGpuTimed.add(TimedSample(sampleSecond, lastThermal.gpu))
                         if (tempGpuHistory.size > MAX_HISTORY_SIZE) tempGpuHistory.removeFirst()
+                        if (tempGpuTimed.size > MAX_HISTORY_SIZE) tempGpuTimed.removeFirst()
                     }
                     if (!lastThermal.skin.isNaN() && lastThermal.skin > 0) {
                         tempSkinHistory.add(lastThermal.skin)
+                        tempSkinTimed.add(TimedSample(sampleSecond, lastThermal.skin))
                         if (tempSkinHistory.size > MAX_HISTORY_SIZE) tempSkinHistory.removeFirst()
+                        if (tempSkinTimed.size > MAX_HISTORY_SIZE) tempSkinTimed.removeFirst()
                     }
                     if (!lastThermal.dieCpu.isNaN() && lastThermal.dieCpu > 0) {
                         tempDieCpuHistory.add(lastThermal.dieCpu)
+                        tempDieCpuTimed.add(TimedSample(sampleSecond, lastThermal.dieCpu))
                         if (tempDieCpuHistory.size > MAX_HISTORY_SIZE) tempDieCpuHistory.removeFirst()
+                        if (tempDieCpuTimed.size > MAX_HISTORY_SIZE) tempDieCpuTimed.removeFirst()
                     }
                 }
                 if (frame != null && frame.avgFrameTime > 0) {
                     frameTimeAvgHistory.add(frame.avgFrameTime)
                     allFrameTimes.add(frame.avgFrameTime)
+                    frameTimeTimed.add(TimedSample(sampleSecond, frame.avgFrameTime))
                     if (frameTimeAvgHistory.size > MAX_HISTORY_SIZE) frameTimeAvgHistory.removeFirst()
                     if (allFrameTimes.size > MAX_FRAME_TIMES_SIZE) allFrameTimes.removeFirst()
+                    if (frameTimeTimed.size > MAX_HISTORY_SIZE) frameTimeTimed.removeFirst()
                 }
                 totalJank += frame?.jankCount ?: 0
                 totalStutter += frame?.stutterCount ?: 0
+                // v4.4.0: timestamped jank/stutter twins (cumulative) for FilteredMetricsCalculator.
+                jankTimed.add(TimedSample(sampleSecond, totalJank.toDouble()))
+                stutterTimed.add(TimedSample(sampleSecond, totalStutter.toDouble()))
+                if (jankTimed.size > MAX_HISTORY_SIZE) jankTimed.removeFirst()
+                if (stutterTimed.size > MAX_HISTORY_SIZE) stutterTimed.removeFirst()
 
                 val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
                 // v4.1.0-perf: snapshot history lists only every 2 seconds (4 iterations)
