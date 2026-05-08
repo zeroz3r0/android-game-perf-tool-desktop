@@ -14,6 +14,29 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.4.0] — 2026-05-XX (proxima release)
+
+### Que hay de nuevo
+
+- **Deteccion automatica de anuncios, IAP y cargas**: el programa identifica solo cuando se reproduce un anuncio intersticial o vido recompensado, una compra dentro de la app, o una pantalla de carga. Funciona via `adb logcat` + `dumpsys activity` con un catalogo de los principales SDKs (AdMob, Unity Ads, IronSource, AppLovin / MAX, Meta Audience Network, Google Play Billing). Los marcadores manuales siguen disponibles como respaldo
+- **Metricas del juego sin contaminacion de anuncios**: cuando un anuncio reproduce un video a 100 fps mientras el juego esta en pausa de fondo, esos 100 fps NO contan para la media del juego. Las tarjetas de metricas muestran ahora dos cifras: la principal grande (filtrada, solo del juego) y la bruta mas pequena (toda la sesion, para auditar)
+- **Conclusiones automaticas en el reporte**: nueva seccion «Conclusiones» que analiza la sesion y emite recomendaciones cualitativas accionables al desarrollador del juego. Por ejemplo: «El juego se mantiene a 25 fps estables, por debajo del objetivo de 60 fps. El dispositivo tiene margen (CPU al 30%, temperatura 38 grados). El cuello de botella probable esta en el codigo del juego — sugiere profilear el bucle principal.» Reglas deterministas, no IA generativa, asi que las recomendaciones son consistentes y explicables
+- **Indicador en vivo durante la captura**: muestra «Auto: N eventos» con un punto cian cuando la deteccion automatica captura algo, ademas de los avisos cuando hay brechas en logcat o se alcanza el tope de 500 eventos
+- **Banner de modo de deteccion en el reporte**: el reporte HTML muestra al inicio si la sesion uso deteccion completa Android (verde), parcial iOS (ambar) o solo marcadores manuales (gris), con avisos de calidad de deteccion plegables
+
+### Detalles tecnicos
+
+- **`core/events/`**: nuevo paquete para deteccion. `EventDetector` orquesta `LogcatCapture` (proceso `adb logcat` de larga duracion) + `DumpsysPoller` (consulta a 1 Hz de `dumpsys activity activities`). `SdkSignatureCatalog` es la unica fuente de verdad de las firmas de SDKs — anadir un SDK nuevo es agregar UNA entrada a `ALL`
+- **`core/metrics/`**: nuevo paquete para agregacion pura. `FilteredMetricsCalculator.computeWithFallback()` produce las dos vistas (filtrada y bruta) en una sola llamada. Aplica padding simetrico de mas/menos 500 ms alrededor de cada rango excluido para absorber la latencia entre el render del anuncio y el log que lo confirma. Si la filtracion descartaria mas del 70% de la sesion, devuelve la bruta + un aviso para el reporte
+- **`core/conclusions/`**: nuevo paquete con `ConclusionEngine` y 8 reglas iniciales: `stable-low-fps-low-cpu`, `thermal-throttling`, `memory-leak-suspect`, `jank-with-good-avg`, `fps-cap-suspect`, `cpu-saturated`, `ad-vs-game-fps-gap`, `loading-thermal-recovery`. Cada regla es un `object Kotlin` con `matches()` y `render()` puros — testables en aislamiento, deterministas, sin coste de red
+- **`report/ReportGenerator.kt`** (Fase 6): firma extendida con `events`, `conclusions`, `filteredAggregates`, `rawAggregates`, `detectionMode`, `detectorWarnings`, `captureStartMs`. Defaults retro-compatibles para que las llamadas legacy y `ReportRenderingTest` sigan funcionando sin tocar. Helpers nuevos: `sectionConclusions`, `sectionEvents` (reemplaza `markersHtml`), `detectionModeBanner`, `excessiveFilterCallout`, `rawSubline`. La tabla de eventos une marcadores manuales y eventos automaticos cronologicamente con la columna «Origen» distinguiendolos
+- **Marcadores manuales preservados** (regla MAN-001..MAN-004 del spec): los botones siguen en `CaptureScreen` y los marcadores se renderizan en la misma tabla cronologica que los eventos automaticos, distinguidos visualmente por la columna «Origen»
+- **Toggle de feature**: la deteccion automatica se puede desactivar en `~/GamePerf Reports/settings.json` con `"autoEventDetectionEnabled": false`. La app vuelve al comportamiento de v4.3.x con marcadores manuales unicamente
+- **iOS** queda como **best-effort** y se completara en v4.4.x cuando el sidecar Python implemente la deteccion de StoreKit y foreground-loss
+- **Tests**: 123 tests nuevos a lo largo de las 4 fases backend. Total 645+ pasando. Cobertura ≥80% en modulos puros (`SdkSignatureCatalog`, `LogcatLineParser`, `FilteredMetricsCalculator`, las 8 reglas, `ConclusionEngine`)
+- **Schema bump**: `SCHEMA_VERSION = 5` en `SessionHistory`. Sesiones antiguas siguen cargandose con `ignoreUnknownKeys = true` — los campos nuevos (`events`, `rawAggregates`, `filteredAggregates`, `conclusions`, `detectionMode`) tienen defaults seguros
+- **Diferida a v4.4.x**: bandas verticales sombreadas en el grafico de FPS durante ventanas de eventos (T6.6), modo histograma cuando hay >500 eventos (T6.10), tests de golden HTML para `ReportGenerator` (T6.11). El nucleo funcional del feature esta completo
+
 ## [4.3.8] — 2026-04-29
 
 ### Arreglos

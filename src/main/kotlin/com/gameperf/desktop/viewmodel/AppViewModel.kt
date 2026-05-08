@@ -1639,6 +1639,17 @@ class AppViewModel(
                     markers = sessionMarkers,
                     targetFps = targetFps,
                     maxTempSkin = maxTempSkin,
+                    // v4.4.0 — auto event detection / dual-view / conclusions payload.
+                    // Phase 6 (T6.1-T6.6) renders these in the HTML report. The detection
+                    // mode default is MANUAL_ONLY; Phase 5 (T5.9) will set it to
+                    // ANDROID_FULL or IOS_PARTIAL once the iOS branch wires in.
+                    events = _events.value,
+                    conclusions = conclusions,
+                    filteredAggregates = filterResult.filtered,
+                    rawAggregates = filterResult.raw,
+                    detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
+                    detectorWarnings = _detectorWarnings.value,
+                    captureStartMs = captureStartTime,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")

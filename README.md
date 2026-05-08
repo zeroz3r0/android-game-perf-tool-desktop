@@ -49,6 +49,8 @@ No hace falta saber ADB ni usar la terminal. Si alguna vez has conectado un tel�
 ### Análisis posterior a la sesión
 
 - **Informe HTML** con gráficos interactivos, tabla de FPS por segundo, percentiles y una sección de «problemas detectados» con explicaciones en castellano (por ejemplo: «La temperatura llegó a 48 °C en el minuto 3 — probable thermal throttling»)
+- **Detección automática de eventos (v4.4.0)**: el programa identifica solo cuándo se reproduce un anuncio (intersticial, vídeo recompensado), una compra dentro de la app o una pantalla de carga, y excluye esos rangos de las métricas del juego. Resultado: las medias de FPS son las del juego real, no las contaminadas por los SDKs publicitarios. Soporta AdMob, Unity Ads, IronSource, AppLovin / MAX, Meta Audience Network y Google Play Billing. Los marcadores manuales siguen funcionando como respaldo
+- **Conclusiones cualitativas (v4.4.0)**: el informe añade una sección «Conclusiones» con recomendaciones accionables generadas por reglas deterministas (sin IA generativa) — por ejemplo, distingue cuello de botella en código vs. throttling térmico vs. fuga de memoria
 - **Reproductor de vídeo integrado** con línea de tiempo sincronizada. Puedes arrastrar el cursor del gráfico de FPS y el vídeo salta al mismo instante, de modo que ves exactamente qué estaba ocurriendo cuando cayó el rendimiento
 - **Nota automática (S / A / B / C / D / F)** con un sistema de puntuación justo por género de juego (los umbrales de un shooter no son los mismos que los de un puzle casual)
 - **Comparación entre sesiones**: elige 2 sesiones del historial y míralas en paralelo para comparar «build antes / después», «tu juego / competencia» o «dispositivo A / dispositivo B»

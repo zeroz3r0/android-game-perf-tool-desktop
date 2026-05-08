@@ -3,7 +3,14 @@ package com.gameperf.desktop.report
 
 import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
+import com.gameperf.desktop.core.conclusions.Conclusion
+import com.gameperf.desktop.core.conclusions.Severity
+import com.gameperf.desktop.core.events.Confidence
+import com.gameperf.desktop.core.events.DetectedEvent
+import com.gameperf.desktop.core.events.EventType
+import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
 import com.gameperf.desktop.ui.util.fmtUS
@@ -52,6 +59,18 @@ object ReportGenerator {
         // shows "Skin" + sub-line "Die máx: X°C". When ≤ 0 the card falls back
         // to die-CPU semantics (legacy behavior).
         maxTempSkin: Double = 0.0,
+        // v4.4.0: auto event detection / dual-view metrics / conclusions payload.
+        // All defaults preserve pre-v4.4.0 rendering when the caller has nothing
+        // to pass (legacy fixtures, ReportRenderingTest, sessions captured before
+        // the upgrade): no banner, no #sec-events, no #sec-conclusions, no raw
+        // sub-lines on metric cards.
+        events: List<DetectedEvent> = emptyList(),
+        conclusions: List<Conclusion> = emptyList(),
+        filteredAggregates: MetricsAggregates? = null,
+        rawAggregates: MetricsAggregates? = null,
+        detectionMode: DetectionMode = DetectionMode.MANUAL_ONLY,
+        detectorWarnings: List<String> = emptyList(),
+        captureStartMs: Long = 0L,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -129,32 +148,33 @@ object ReportGenerator {
             }.joinToString(",")
         } else ""
 
-        // Session markers section
-        val markersHtml = if (markers.isNotEmpty()) {
-            """
-<section id="sec-markers" class="card">
-    <div class="card-header"><h2>&#128205; Marcadores de Sesion</h2></div>
-    <p class="card-desc">Eventos marcados manualmente durante la captura. Cada marcador se muestra como linea vertical en el grafico de FPS.</p>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-        ${markers.map { it.type }.distinct().joinToString("") { type ->
-                val color = markerColorHex(type)
-                """<span class="marker-badge" style="background:${color}20;color:$color;border:1px solid ${color}40">${type.label} (${markers.count { it.type == type }})</span>"""
-            }}
-    </div>
-    <div class="table-wrap">
-    <table class="data-table">
-        <thead><tr><th>Segundo</th><th>Tipo</th><th>Título</th><th>Nota</th></tr></thead>
-        <tbody>
-        ${markers.sortedBy { it.timestampSeconds }.joinToString("\n        ") { m ->
-                val color = m.colorHex.ifEmpty { markerColorHex(m.type) }
-                val titleText = m.title.ifEmpty { m.type.label }
-                """<tr><td class="mono">${m.timestampSeconds}s</td><td><span class="marker-badge" style="background:${color}20;color:$color;border:1px solid ${color}40">${esc(titleText)}</span></td><td>${esc(titleText)}</td><td>${esc(m.note.ifEmpty { "\u2014" })}</td></tr>"""
-            }}
-        </tbody>
-    </table>
-    </div>
-</section>"""
-        } else ""
+        // v4.4.0: unified events + manual markers section. Replaces the legacy
+        // markers-only section with a chronological table that distinguishes
+        // manual entries (orange) from auto-detected ones (cyan) via the source
+        // column. Hidden when both lists are empty.
+        val eventsHtml = sectionEvents(markers, events, captureStartMs)
+
+        // v4.4.0: detection-mode banner + auto-event live count.
+        val detectionBannerHtml = detectionModeBanner(detectionMode, events.size, detectorWarnings)
+
+        // v4.4.0: excessive-filter callout (>70% of session excluded by events).
+        val excessiveCalloutHtml = excessiveFilterCallout(
+            isExcessiveFilterTriggered(detectorWarnings, filteredAggregates, rawAggregates)
+        )
+
+        // v4.4.0: conclusions section. Three states:
+        //   - non-empty list → render cards
+        //   - empty list with sufficient data → "no issues" empty state
+        //   - empty list with no aggregates → omit (legacy / pre-v4.4.0 callers)
+        val conclusionsHtml = when {
+            conclusions.isNotEmpty() -> sectionConclusions(conclusions)
+            // Only show the "no issues" empty state when we have evidence the engine
+            // actually ran (filteredAggregates non-null is the proxy). Pre-v4.4.0
+            // callers (legacy fixtures, old session re-renders) get the original
+            // section-less rendering.
+            filteredAggregates != null -> sectionConclusionsEmpty()
+            else -> ""
+        }
 
         // Problems HTML
         val problemsHtml = if (problems.isEmpty()) {
@@ -232,6 +252,7 @@ $CSS
 <nav class="topnav" id="topnav">
     <div class="nav-inner">
         <a href="#sec-summary" class="nav-link">Resumen</a>
+        ${if (conclusionsHtml.isNotEmpty()) """<a href="#sec-conclusions" class="nav-link">Conclusiones</a>""" else ""}
         <a href="#sec-dashboard" class="nav-link">Metricas</a>
         <a href="#sec-fps" class="nav-link">FPS</a>
         <a href="#sec-frametime" class="nav-link">Frame Time</a>
@@ -239,7 +260,7 @@ $CSS
         <a href="#sec-cpu" class="nav-link">CPU</a>
         <a href="#sec-temp" class="nav-link">Temp</a>
         <a href="#sec-problems" class="nav-link">Problemas</a>
-        ${if (markers.isNotEmpty()) """<a href="#sec-markers" class="nav-link">Marcadores</a>""" else ""}
+        ${if (eventsHtml.isNotEmpty()) """<a href="#sec-events" class="nav-link">Eventos</a>""" else ""}
         <a href="#sec-device" class="nav-link">Hardware</a>
     </div>
 </nav>
@@ -261,6 +282,8 @@ $CSS
         <div class="header-session">Session ID: $sessionId</div>
     </div>
 </header>
+
+$detectionBannerHtml
 
 <section id="sec-summary" class="card card-summary">
     <div class="summary-grid">
@@ -293,13 +316,33 @@ $CSS
     </div>
 </section>
 
+$conclusionsHtml
+
+$excessiveCalloutHtml
+
 <section id="sec-dashboard" class="metrics-dashboard">
     <h2 class="section-title">&#128202; Panel de Metricas</h2>
     <div class="metrics-grid">
-        ${metricCard("FPS", "$avgFps", "fps", fpsGrade, gradeColor(fpsGrade), "Min $minFps / Max $maxFps / P1 $p1")}
-        ${metricCard("Frame Time", "${fmtUS("%.1f", avgFrameTime)}ms", "frametime", ftGrade, gradeColor(ftGrade), "P99 ${fmtUS("%.1f", p99FrameTime)}ms / Jank $jank")}
-        ${metricCard("Memoria", "${peakMem}MB", "memory", memGrade, gradeColor(memGrade), "Inicio ${memHistory.firstOrNull() ?: "?"}MB / Final ${memHistory.lastOrNull() ?: "?"}MB")}
-        ${metricCard("CPU", "${avgCpu}%", "cpu", cpuGrade, gradeColor(cpuGrade), "Max ${maxCpu}%")}
+        ${metricCard(
+            "FPS", "$avgFps", "fps", fpsGrade, gradeColor(fpsGrade),
+            "Min $minFps / Max $maxFps / P1 $p1" +
+                rawSubline(avgFps.toDouble(), rawAggregates?.avgFps?.toDouble(), "")
+        )}
+        ${metricCard(
+            "Frame Time", "${fmtUS("%.1f", avgFrameTime)}ms", "frametime", ftGrade, gradeColor(ftGrade),
+            "P99 ${fmtUS("%.1f", p99FrameTime)}ms / Jank $jank" +
+                rawSubline(avgFrameTime, rawAggregates?.avgFrameTime, "ms")
+        )}
+        ${metricCard(
+            "Memoria", "${peakMem}MB", "memory", memGrade, gradeColor(memGrade),
+            "Inicio ${memHistory.firstOrNull() ?: "?"}MB / Final ${memHistory.lastOrNull() ?: "?"}MB" +
+                rawSubline(peakMem.toDouble(), rawAggregates?.peakMem?.toDouble(), "MB")
+        )}
+        ${metricCard(
+            "CPU", "${avgCpu}%", "cpu", cpuGrade, gradeColor(cpuGrade),
+            "Max ${maxCpu}%" +
+                rawSubline(avgCpu.toDouble(), rawAggregates?.avgCpu?.toDouble(), "%")
+        )}
         ${
             // v4.3.6: card title + value + sub-line all depend on whether the
             // device exposed a skin sensor. Skin = case temp the user feels.
@@ -437,7 +480,7 @@ $CSS
     $problemsHtml
 </section>
 
-$markersHtml
+$eventsHtml
 
 <section id="sec-stats" class="card">
     <div class="card-header"><h2>&#128200; Estadisticas Detalladas</h2></div>
@@ -1027,6 +1070,275 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
         </div>"""
     }
 
+    // ══════════ v4.4.0 — Auto detection / dual-view / conclusions helpers ══════════
+
+    /**
+     * Renders an optional "raw" subline on a metric card when the filtered (game-only)
+     * value differs from the raw (full-session) value by more than 5%. The subline is
+     * intentionally smaller and dimmer so the filtered figure remains the headline.
+     *
+     * Returns an empty string when no contrast is meaningful (raw absent, equal values,
+     * or delta below the 5% threshold) — the card then renders identically to legacy.
+     */
+    private fun rawSubline(filtered: Double, raw: Double?, unit: String, prefix: String = "Bruto"): String {
+        if (raw == null) return ""
+        if (filtered == 0.0) return ""
+        val delta = kotlin.math.abs(raw - filtered) / filtered
+        if (delta <= 0.05) return ""
+        val rawStr = if (unit == "ms" || unit == "\u00B0C") fmtUS("%.1f", raw) else "${raw.toInt()}"
+        return """<div class="metric-raw">$prefix: $rawStr$unit</div>"""
+    }
+
+    private fun sectionConclusions(conclusions: List<Conclusion>): String {
+        if (conclusions.isEmpty()) return ""
+        val isInsufficientData = conclusions.size == 1 && conclusions[0].ruleId == "insufficient-data"
+        val cards = conclusions.joinToString("\n") { c ->
+            val severityClass = c.severity.name.lowercase()
+            val (icon, label) = when (c.severity) {
+                Severity.CRITICAL -> "&#9888;" to "Crítico"
+                Severity.WARNING -> "&#9888;" to "Atención"
+                Severity.INFO -> "&#8505;" to "Información"
+            }
+            val recHtml = c.recommendation
+                ?.takeIf { it.isNotBlank() }
+                ?.let { """<p class="conclusion-rec">${esc(it)}</p>""" } ?: ""
+            val idChip = if (c.ruleId == "insufficient-data") "" else
+                """<span class="conclusion-id">${esc(c.ruleId)}</span>"""
+            """
+            <div class="conclusion-card conclusion-$severityClass">
+                <div class="conclusion-header">
+                    <span class="conclusion-icon">$icon</span>
+                    <span class="conclusion-severity">$label</span>
+                    $idChip
+                </div>
+                <p class="conclusion-headline">${esc(c.headline)}</p>
+                $recHtml
+            </div>
+            """.trimIndent()
+        }
+        val intro = if (isInsufficientData) {
+            "Esta sesión es demasiado corta para extraer conclusiones fiables. Captura una sesión más larga para obtener un análisis completo."
+        } else {
+            "Análisis automático del rendimiento. Interpreta estas recomendaciones como hipótesis para investigar, no como diagnóstico definitivo."
+        }
+        return """
+<section id="sec-conclusions" class="card">
+    <div class="card-header"><h2>&#128270; Conclusiones</h2></div>
+    <p class="card-desc">$intro</p>
+    <div class="conclusions-list">
+$cards
+    </div>
+</section>"""
+    }
+
+    /**
+     * Empty-state for `#sec-conclusions` (REP-001 + CON-007). Rendered only when
+     * the catalog produced ZERO conclusions AND we have enough samples (i.e. the
+     * insufficient-data short-circuit didn't fire). The orchestrator hands us an
+     * empty list in this case so we surface a neutral "no issues" card instead of
+     * silently hiding the section — users that scrolled to find conclusions
+     * deserve confirmation that the analysis ran.
+     */
+    private fun sectionConclusionsEmpty(): String =
+        """
+<section id="sec-conclusions" class="card">
+    <div class="card-header"><h2>&#128270; Conclusiones</h2></div>
+    <p class="card-desc">Análisis automático del rendimiento.</p>
+    <div class="status-box status-ok"><span class="status-icon">&#10003;</span> No se detectaron problemas heurísticos significativos en esta sesión.</div>
+</section>"""
+
+    /**
+     * Unified events + manual markers table (REP-005 + MAN-002 + MAN-003).
+     * Renders both kinds of timeline events in one chronological table, with
+     * the source column distinguishing manual entries from auto-detected ones.
+     * When BOTH lists are empty the section is omitted entirely.
+     *
+     * captureStartMs is the wall-clock start of the session — auto events carry
+     * absolute timestamps (System.currentTimeMillis at detection), so we subtract
+     * captureStartMs to align them with the manual markers' relative seconds.
+     */
+    private fun sectionEvents(
+        markers: List<SessionMarker>,
+        events: List<DetectedEvent>,
+        captureStartMs: Long,
+    ): String {
+        if (markers.isEmpty() && events.isEmpty()) return ""
+
+        data class Row(
+            val tsMs: Long,
+            val durationMs: Long?,
+            val type: String,
+            val typeColor: String,
+            val source: String,
+            val sourceClass: String,
+            val detail: String,
+        )
+
+        val rows = mutableListOf<Row>()
+        for (m in markers) {
+            rows.add(
+                Row(
+                    tsMs = m.timestampMs,
+                    durationMs = null,
+                    type = m.type.label,
+                    typeColor = m.colorHex.ifEmpty { markerColorHex(m.type) },
+                    source = "Manual",
+                    sourceClass = "source-manual",
+                    detail = m.note.ifBlank { m.title.ifBlank { "\u2014" } },
+                )
+            )
+        }
+        for (e in events) {
+            val durationMs = e.endMs?.let { it - e.startMs }
+            val typeLabel = when (e.type) {
+                EventType.INTERSTITIAL -> "Intersticial"
+                EventType.REWARDED_VIDEO -> "Vídeo recompensado"
+                EventType.IAP -> "Compra (IAP)"
+                EventType.LOADING -> "Carga"
+                EventType.FOREGROUND_LOSS -> "Pérdida de foreground"
+                EventType.UNKNOWN -> "Desconocido"
+            }
+            val typeColor = when (e.type) {
+                EventType.INTERSTITIAL, EventType.REWARDED_VIDEO -> "#f97316"
+                EventType.IAP -> "#38bdf8"
+                EventType.LOADING -> "#f59e0b"
+                EventType.FOREGROUND_LOSS -> "#a855f7"
+                EventType.UNKNOWN -> "#94a3b8"
+            }
+            val confidenceTag = when (e.confidence) {
+                Confidence.HIGH -> "alta"
+                Confidence.MEDIUM -> "media"
+                Confidence.LOW -> "baja"
+            }
+            val inferredTag = if (e.endInferred) " (cierre inferido)" else ""
+            // Auto events use absolute wall-clock ms; convert to capture-relative.
+            val relativeMs = (e.startMs - captureStartMs).coerceAtLeast(0L)
+            rows.add(
+                Row(
+                    tsMs = relativeMs,
+                    durationMs = durationMs,
+                    type = typeLabel,
+                    typeColor = typeColor,
+                    source = "Auto: ${e.sdkSource}",
+                    sourceClass = "source-auto",
+                    detail = "Confianza $confidenceTag$inferredTag",
+                )
+            )
+        }
+        rows.sortBy { it.tsMs }
+
+        val tbody = rows.joinToString("\n            ") { row ->
+            val ts = formatTimestamp(row.tsMs)
+            val dur = row.durationMs?.let { formatDuration(it) } ?: "\u2014"
+            val typeBadge = """<span class="marker-badge" style="background:${row.typeColor}20;color:${row.typeColor};border:1px solid ${row.typeColor}40">${esc(row.type)}</span>"""
+            """<tr><td class="mono">$ts</td><td class="mono">${esc(dur)}</td><td>$typeBadge</td><td class="${row.sourceClass}">${esc(row.source)}</td><td>${esc(row.detail)}</td></tr>"""
+        }
+
+        // Type legend: distinct types present in the table
+        val typesPresent = rows.map { it.type to it.typeColor }.distinct()
+        val legend = typesPresent.joinToString("") { (label, color) ->
+            """<span class="marker-badge" style="background:${color}20;color:$color;border:1px solid ${color}40">${esc(label)}</span>"""
+        }
+
+        return """
+<section id="sec-events" class="card">
+    <div class="card-header"><h2>&#128205; Eventos detectados</h2></div>
+    <p class="card-desc">Marcadores manuales y eventos detectados automáticamente combinados cronológicamente. Las métricas filtradas excluyen estos rangos para reflejar el rendimiento real del juego.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+        $legend
+    </div>
+    <div class="table-wrap">
+    <table class="data-table events-table">
+        <thead><tr><th>Tiempo</th><th>Duración</th><th>Tipo</th><th>Origen</th><th>Detalle</th></tr></thead>
+        <tbody>
+            $tbody
+        </tbody>
+    </table>
+    </div>
+</section>"""
+    }
+
+    private fun formatTimestamp(ms: Long): String {
+        val totalSec = ms / 1000
+        val mm = totalSec / 60
+        val ss = totalSec % 60
+        return "%d:%02d".format(mm, ss)
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val totalSec = ms / 1000.0
+        return when {
+            totalSec < 1.0 -> "${ms} ms"
+            totalSec < 60 -> fmtUS("%.1f s", totalSec)
+            else -> fmtUS("%.1f min", totalSec / 60.0)
+        }
+    }
+
+    /**
+     * Detection-mode banner (REP-005 + IOS-001). Renders a compact strip near the
+     * top of the report disclosing what level of automatic detection produced the
+     * events list. Also folds detector-quality warnings into a `<details>` so the
+     * user can expand them without cluttering the header.
+     */
+    private fun detectionModeBanner(
+        mode: DetectionMode,
+        eventCount: Int,
+        warnings: List<String>,
+    ): String {
+        val (icon, label, color) = when (mode) {
+            DetectionMode.ANDROID_FULL -> Triple("&#128994;", "Detección automática Android (completa)", "#10b981")
+            DetectionMode.IOS_PARTIAL -> Triple("&#128993;", "Detección automática iOS (parcial — sin Modo de Desarrollador)", "#f59e0b")
+            DetectionMode.MANUAL_ONLY -> Triple("&#9898;", "Marcadores manuales únicamente (auto-detección desactivada o no disponible)", "#94a3b8")
+        }
+        val warningsHtml = if (warnings.isEmpty()) "" else {
+            val items = warnings.joinToString("") { "<li>${esc(it)}</li>" }
+            """<details class="detection-warnings"><summary>${warnings.size} aviso(s) de detección</summary><ul>$items</ul></details>"""
+        }
+        return """
+<div class="detection-banner" style="border-left:4px solid $color">
+    <span class="detection-banner-icon">$icon</span>
+    <span class="detection-banner-label">$label</span>
+    <span class="detection-banner-count">$eventCount evento(s)</span>
+    $warningsHtml
+</div>"""
+    }
+
+    /**
+     * Excessive-filter callout. Surfaces the FLT-005 fallback when more than 70%
+     * of the session was excluded by event windows. The orchestrator detects this
+     * either via a detectorWarnings string match OR by recomputing the kept-ratio
+     * from the dual aggregates, depending on which signal is available.
+     */
+    private fun excessiveFilterCallout(triggered: Boolean): String {
+        if (!triggered) return ""
+        return """
+<div class="callout callout-warning">
+    <strong>&#9888; Aviso:</strong> Más del 70% de esta sesión fue excluido por eventos detectados (anuncios, IAP o cargas).
+    Las métricas filtradas pueden no ser representativas, así que las cifras mostradas son las brutas (toda la sesión) como salvaguarda.
+    Considera capturar una sesión más larga sin tantas interrupciones para un análisis más fiable.
+</div>"""
+    }
+
+    /**
+     * Detect whether the FLT-005 excessive-filter fallback was triggered. Tries the
+     * authoritative signal first (a warning string seeded by [com.gameperf.desktop.core.metrics.FilteredMetricsCalculator]),
+     * then falls back to recomputing the kept-ratio from the dual aggregates so
+     * pre-v4.4.0 sessions or callers that didn't pass detectorWarnings still surface
+     * the callout when appropriate.
+     */
+    private fun isExcessiveFilterTriggered(
+        warnings: List<String>,
+        filtered: MetricsAggregates?,
+        raw: MetricsAggregates?,
+    ): Boolean {
+        if (warnings.any { it.contains("70%") || it.contains("70 %", ignoreCase = false) }) return true
+        if (filtered != null && raw != null && raw.sampleCount > 0) {
+            val kept = filtered.sampleCount.toDouble() / raw.sampleCount.toDouble()
+            return kept < 0.30
+        }
+        return false
+    }
+
     private fun buildJsonData(
         pkg: String, info: DeviceInfo?, grade: Char, score: Int, duration: Int,
         avgFps: Int, minFps: Int, maxFps: Int,
@@ -1184,7 +1496,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .footer-logo{font-size:13px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:linear-gradient(135deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:8px}
 .report-footer p{color:#475569;font-size:11px;margin:4px 0}
 .footer-session{font-family:monospace;font-size:10px!important;color:#334155!important;letter-spacing:0.5px}
-@media(max-width:768px){.container{padding:0 12px 32px}.report-header{padding:32px 20px 28px}.header-title{font-size:1.6rem}.header-meta{flex-direction:column;gap:4px}.meta-sep{display:none}.summary-grid{grid-template-columns:1fr}.summary-grade{padding:24px;border-right:none;border-bottom:1px solid rgba(148,163,184,0.06)}.summary-stats{grid-template-columns:repeat(2,1fr)}.metrics-grid{grid-template-columns:repeat(2,1fr)}.hw-grid{grid-template-columns:1fr}.hw-item{border-radius:0!important}.hw-item:first-child{border-radius:10px 10px 0 0!important}.hw-item:last-child{border-radius:0 0 10px 10px!important}.stats-row{gap:6px}.stat-pill{padding:6px 10px;font-size:12px}.grade-ring{width:110px;height:110px}.grade-letter{font-size:2.8rem}.fab-group{top:auto;bottom:16px;right:16px}}
+/* v4.4.0 — auto detection / dual-view / conclusions */
+.detection-banner{max-width:960px;margin:0 auto 16px;padding:10px 16px;background:linear-gradient(135deg,rgba(30,41,59,0.6),rgba(15,23,42,0.6));border:1px solid rgba(148,163,184,0.1);border-radius:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px}
+.detection-banner-icon{font-size:14px}
+.detection-banner-label{flex:1;color:#cbd5e1;font-weight:600}
+.detection-banner-count{color:#64748b;font-size:12px;font-weight:600}
+.detection-warnings{flex-basis:100%;margin-top:6px;color:#94a3b8;font-size:12px}
+.detection-warnings summary{cursor:pointer;color:#f59e0b;font-weight:600}
+.detection-warnings ul{margin:6px 0 2px 20px;color:#94a3b8;line-height:1.6}
+.callout{max-width:960px;margin:0 auto 20px;padding:14px 18px;border-radius:12px;font-size:13px;line-height:1.6}
+.callout-warning{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);color:#fcd34d}
+.callout-warning strong{color:#fbbf24}
+.metric-raw{color:#64748b;font-size:0.85em;margin-top:4px;opacity:0.75;font-weight:500}
+.conclusions-list{display:flex;flex-direction:column;gap:12px}
+.conclusion-card{background:rgba(15,23,42,0.5);border:1px solid rgba(148,163,184,0.1);border-left:4px solid #64748b;border-radius:10px;padding:14px 16px}
+.conclusion-critical{border-left-color:#ef4444;background:rgba(239,68,68,0.05)}
+.conclusion-warning{border-left-color:#f59e0b;background:rgba(245,158,11,0.05)}
+.conclusion-info{border-left-color:#38bdf8;background:rgba(56,189,248,0.05)}
+.conclusion-header{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px}
+.conclusion-icon{font-size:14px}
+.conclusion-severity{font-weight:800;letter-spacing:0.3px;text-transform:uppercase;font-size:11px}
+.conclusion-critical .conclusion-severity{color:#ef4444}
+.conclusion-warning .conclusion-severity{color:#f59e0b}
+.conclusion-info .conclusion-severity{color:#38bdf8}
+.conclusion-id{color:#475569;font-family:monospace;font-size:10px;margin-left:auto;letter-spacing:0.3px}
+.conclusion-headline{color:#e2e8f0;font-size:13px;line-height:1.6;margin-bottom:6px;font-weight:600}
+.conclusion-rec{color:#94a3b8;font-size:12px;line-height:1.6;margin:0}
+.events-table .source-auto{color:#38bdf8;font-weight:700}
+.events-table .source-manual{color:#f97316;font-weight:700}
+@media(max-width:768px){.container{padding:0 12px 32px}.report-header{padding:32px 20px 28px}.header-title{font-size:1.6rem}.header-meta{flex-direction:column;gap:4px}.meta-sep{display:none}.summary-grid{grid-template-columns:1fr}.summary-grade{padding:24px;border-right:none;border-bottom:1px solid rgba(148,163,184,0.06)}.summary-stats{grid-template-columns:repeat(2,1fr)}.metrics-grid{grid-template-columns:repeat(2,1fr)}.hw-grid{grid-template-columns:1fr}.hw-item{border-radius:0!important}.hw-item:first-child{border-radius:10px 10px 0 0!important}.hw-item:last-child{border-radius:0 0 10px 10px!important}.stats-row{gap:6px}.stat-pill{padding:6px 10px;font-size:12px}.grade-ring{width:110px;height:110px}.grade-letter{font-size:2.8rem}.fab-group{top:auto;bottom:16px;right:16px}.detection-banner{margin:0 12px 16px;font-size:12px}.callout{margin:0 12px 16px}}
 @media(max-width:480px){.metrics-grid{grid-template-columns:1fr}.summary-stats{grid-template-columns:1fr 1fr}.nav-link{font-size:11px;padding:5px 8px}}
 @media print {
   @page { size: A4; margin: 10mm 10mm 12mm 10mm }

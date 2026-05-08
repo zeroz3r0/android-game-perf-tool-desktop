@@ -161,3 +161,21 @@ La tabla `DeviceNameResolver.codenameToMarketing` usa la forma con guión. El pr
 - v4.2.8: eliminación de integración Google Drive → export/import manual `.gameperf`
 - v4.2.9: hotfix snackbar del export/import
 - v4.2.10+: **fix "No hay JAR disponible"** — filtro de releases sin binarios publicados
+- v4.4.0: **detección automática de eventos + métricas filtradas + conclusiones** — el reporte HTML ahora identifica anuncios/IAP/cargas y excluye sus rangos de las medias del juego, y emite recomendaciones cualitativas accionables
+
+---
+
+## Patrón operativo: cómo añadir un SDK nuevo a la detección automática (v4.4.0+)
+
+**Cuándo**: AppMagic / Sensor Tower revela que un juego que vamos a testear usa un SDK que no está en `core/events/SdkSignatureCatalog.kt::ALL`.
+
+**Procedimiento**:
+1. Buscar la documentación pública del SDK (logs, activity classes, package prefijos).
+2. Añadir UNA entrada a `SdkSignatureCatalog.ALL`. NO crear archivos nuevos, NO definir signatures en otro sitio — la `SdkSignatureCatalog` es la única fuente de verdad (anti-duplicación, mismo principio que `ToolResolver` en v4.2.13).
+3. Añadir un fixture `.log` realista a `src/test/resources/logcat-fixtures/<sdk-name>.log` con secuencia abrir → durante → cerrar (50-200 líneas, como las de AdMob / Unity Ads / IronSource ya existentes).
+4. Añadir tests positivo/negativo a `SdkSignatureCatalogTest`: una línea que debe matchear `matchOpen`, una que debe matchear `matchClose`, una que NO debe matchear (negativo), y un caso borde.
+5. Si el SDK tiene un patrón de cierre ambiguo (e.g., banners de larga duración sin log explícito de cierre), considerar marcarlo en `metadata` con `confidence = Confidence.LOW` y documentar.
+
+**Por qué importa**: la detección automática vive o muere por la calidad del catálogo. Una entrada mal hecha genera falsos positivos que sesgan las métricas filtradas en la dirección contraria del bug que estamos arreglando — peor que no detectar nada, porque "métricas filtradas" sugiere que el sistema está corrigiendo algo cuando en realidad lo está rompiendo.
+
+**Regla operativa**: la detección de eventos vive ÚNICAMENTE en `core/events/`. Las conclusiones cualitativas viven ÚNICAMENTE en `core/conclusions/`. Nunca hand-rollear detección o reglas fuera de estos paquetes. Esto es la lección de v4.2.13 (`ToolResolver` duplicado en `AdbBridge` e `IosBridge`) aplicada a este subsistema desde el día uno.
