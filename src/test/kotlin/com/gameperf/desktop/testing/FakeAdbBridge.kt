@@ -14,6 +14,8 @@ import com.gameperf.desktop.core.model.DevicePlatform
 import com.gameperf.desktop.core.model.FrameSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -117,6 +119,56 @@ open class FakeAdbBridge(
         try { process?.destroyForcibly() } catch (_: Exception) { /* no-op */ }
     }
 
+    // ===== v4.4.0 — logcat / shell stubs for auto event detection =====
+
+    /**
+     * Classpath resource path of the logcat fixture used by [startLogcat].
+     * Configure via [setLogcatFixture]. When `null`, [startLogcat] returns null.
+     */
+    @Volatile
+    private var currentLogcatFixture: String? = null
+
+    /** Recorded calls to [startLogcat] for assertion. */
+    val startLogcatCalls: MutableList<Pair<String, List<String>>> = mutableListOf()
+
+    /**
+     * Configure the classpath resource that [startLogcat] should replay as the
+     * spawned process's stdout. Path is relative to test resources (e.g.
+     * "logcat-fixtures/admob-interstitial.log").
+     */
+    fun setLogcatFixture(resourcePath: String?): FakeAdbBridge {
+        currentLogcatFixture = resourcePath
+        return this
+    }
+
+    override fun startLogcat(deviceId: String, tagArgs: List<String>): Process? {
+        startLogcatCalls += deviceId to tagArgs
+        val fixture = currentLogcatFixture ?: return null
+        val bytes = javaClass.classLoader
+            .getResourceAsStream(fixture)
+            ?.use { it.readAllBytes() }
+            ?: return null
+        return FakeLogcatProcess(bytes)
+    }
+
+    /** Recorded calls to [shell]: deviceId → command. */
+    val shellCalls: MutableList<Pair<String, String>> = mutableListOf()
+
+    /**
+     * Canned responses for `shell(deviceId, cmd)`. Tests configure by adding
+     * `cmd` (or a substring) → output mapping. First substring match wins.
+     * If empty, returns "" (mirrors real bridge's swallow-on-error behavior).
+     */
+    val shellResponses: MutableMap<String, String> = mutableMapOf()
+
+    override fun shell(deviceId: String, cmd: String, timeoutMs: Long): String {
+        shellCalls += deviceId to cmd
+        // Substring match so tests can set "dumpsys activity" as a key
+        // without having to repeat the full command string.
+        return shellResponses.entries.firstOrNull { (key, _) -> cmd.contains(key) }?.value
+            ?: ""
+    }
+
     override fun pullRecordings(
         deviceId: String, sessionId: String, localDir: File, maxSegments: Int,
     ): List<File> = emptyList()
@@ -166,4 +218,26 @@ open class FakeAdbBridge(
     }
 
     override fun getAdbVersion(): AdbVersion? = scriptedAdbVersion
+}
+
+/**
+ * In-memory [Process] that replays a fixed byte buffer on its `inputStream`.
+ *
+ * Used by [FakeAdbBridge.startLogcat] so logcat-driven tests can drive the
+ * event pipeline without spawning a real `adb` process. The fixture bytes are
+ * delivered as a single read; once exhausted, [waitFor] returns 0 and the
+ * process is no longer alive.
+ */
+private class FakeLogcatProcess(bytes: ByteArray) : Process() {
+    private val input = ByteArrayInputStream(bytes)
+    private val output = ByteArrayOutputStream()
+    @Volatile private var alive = true
+    override fun getOutputStream() = output
+    override fun getInputStream() = input
+    override fun getErrorStream() = ByteArrayInputStream(ByteArray(0))
+    override fun waitFor(): Int { alive = false; return 0 }
+    override fun exitValue(): Int =
+        if (alive) throw IllegalThreadStateException() else 0
+    override fun destroy() { alive = false }
+    override fun isAlive(): Boolean = alive
 }

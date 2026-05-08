@@ -59,6 +59,37 @@ interface AdbBridgeApi {
         profile: AdbBridge.ScreenRecordProfile = AdbBridge.ScreenRecordProfile.STANDARD,
     ): Process?
     fun stopScreenRecord(process: Process?)
+
+    /**
+     * Spawns a long-lived `adb logcat` process for the given device.
+     *
+     * The caller owns the returned [Process] and is responsible for destroying
+     * it (via `process.destroyForcibly()`). The process emits threadtime-format
+     * logcat lines on its `inputStream` (UTF-8 encoded).
+     *
+     * @param deviceId Target adb device serial.
+     * @param tagArgs Tag filter args (e.g., `["Ads:D", "AdActivity:D", "*:S"]`).
+     * @return The spawned [Process], or null if adb resolution failed.
+     *
+     * @since v4.4.0
+     */
+    fun startLogcat(deviceId: String, tagArgs: List<String>): Process?
+
+    /**
+     * Run an arbitrary `adb shell` command on a device and return stdout.
+     *
+     * Used by [com.gameperf.desktop.core.events.DumpsysPoller] for
+     * `dumpsys activity activities` polling. Output is bounded by [timeoutMs];
+     * on timeout or any failure, returns the empty string.
+     *
+     * @param deviceId Target adb device serial.
+     * @param cmd Command to execute remotely (e.g., "dumpsys activity activities").
+     * @param timeoutMs Maximum wait for the command to complete, in milliseconds.
+     * @return Stdout from the device shell, or "" on timeout/failure.
+     *
+     * @since v4.4.0
+     */
+    fun shell(deviceId: String, cmd: String, timeoutMs: Long = 5_000L): String
     fun pullRecordings(
         deviceId: String,
         sessionId: String,
@@ -126,6 +157,12 @@ class RealAdbBridge : AdbBridgeApi {
     ): Process? = AdbBridge.startScreenRecord(deviceId, sessionId, segment, profile)
 
     override fun stopScreenRecord(process: Process?) = AdbBridge.stopScreenRecord(process)
+
+    override fun startLogcat(deviceId: String, tagArgs: List<String>): Process? =
+        AdbBridge.startLogcat(deviceId, tagArgs)
+
+    override fun shell(deviceId: String, cmd: String, timeoutMs: Long): String =
+        AdbBridge.shell(deviceId, cmd, timeoutMs)
 
     override fun pullRecordings(
         deviceId: String, sessionId: String, localDir: File, maxSegments: Int,

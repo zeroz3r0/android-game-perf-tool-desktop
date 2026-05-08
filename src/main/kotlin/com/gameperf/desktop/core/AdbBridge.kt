@@ -783,6 +783,44 @@ object AdbBridge {
     }
 
     /**
+     * Spawns a long-lived `adb logcat` process for [deviceId].
+     *
+     * Mirrors [startScreenRecord]: returns the [Process] for the caller to
+     * manage destruction. Output is consumed off the [Process.getInputStream]
+     * by [com.gameperf.desktop.core.events.LogcatCapture].
+     *
+     * Uses [adbPath] (resolved via [ToolResolver]) — never hand-roll adb path
+     * lookup (CLAUDE.md "ToolResolver mandate" rule).
+     *
+     * @param deviceId Target adb device serial.
+     * @param tagArgs Tag filters appended to the logcat command — typically
+     *   `["Ads:D", "MobileAds:D", ..., "*:S"]` to keep only the SDK signals.
+     * @return Spawned [Process], or `null` if device id is invalid or
+     *   `ProcessBuilder.start()` failed (adb missing, permission denied, etc.).
+     *
+     * @since v4.4.0
+     */
+    fun startLogcat(deviceId: String, tagArgs: List<String>): Process? {
+        if (!isValidDeviceId(deviceId)) return null
+        return try {
+            val cmd = buildList {
+                add(adbPath)
+                add("-s"); add(deviceId)
+                add("logcat")
+                add("-b"); add("main,system,events")
+                add("-v"); add("threadtime")
+                addAll(tagArgs)
+            }
+            ProcessBuilder(cmd)
+                .redirectErrorStream(false)
+                .start()
+        } catch (e: Exception) {
+            System.err.println("[AdbBridge] startLogcat failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Pull all recorded segments for a session from device to local dir, then delete from device.
      */
     fun pullRecordings(deviceId: String, sessionId: String, localDir: java.io.File, maxSegments: Int = 20): List<java.io.File> {
