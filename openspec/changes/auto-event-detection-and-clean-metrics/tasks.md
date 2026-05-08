@@ -68,25 +68,25 @@ Each task ID maps to a single deliverable (≤3h work). Spec requirement coverag
 
 ## Phase 4: Conclusions Pillar
 
-- [ ] **T4.1** Create `core/conclusions/ConclusionEngine.kt` — pure object with `RULES: List<Rule>` (lazily loaded from registry) and `fun run(input: ConclusionInput): List<Conclusion>` that filters by `matches(input)`, renders, and sorts by severity (`CRITICAL > WARNING > INFO`) then by stable `ruleId` ascending. Covers CON-001, CON-004.
-- [ ] **T4.2** Create `core/conclusions/RuleRegistry.kt` — central list `val all: List<Rule>` enumerating all 8 rules. Single source of truth so adding a rule = adding to this list. Covers CON-002.
-- [ ] **T4.3** Create `core/conclusions/rules/StableLowFpsRule.kt` — id `"stable-low-fps-low-cpu"`, WARNING. Predicate: `filtered.p50 ≤ 0.7 * targetFps && filtered.avgCpu < 50 && filtered.maxTempCpu < 42`. Render template per design.md table line 242. Spanish formal tuteo. Covers CON-002, CON-005.
-- [ ] **T4.4** Create `StableLowFpsRuleTest.kt` — fixtures: fires (low fps + low cpu + cool), does-not-fire (low fps + high cpu = different bottleneck), boundary (p50 exactly at 0.7×target). Covers CON-002 + CON-005 scenarios.
-- [ ] **T4.5** Create `core/conclusions/rules/ThermalThrottlingRule.kt` — id `"thermal-throttling"`, CRITICAL. Predicate per design.md line 243. + test file with 3 fixtures.
-- [ ] **T4.6** Create `core/conclusions/rules/MemoryGrowthRule.kt` — id `"memory-leak-suspect"`, WARNING. Predicate uses linear regression slope on `memTimed`. + test file (fires on monotonic growth, does-not-fire on flat or with GC drops, boundary at 0.5MB/s slope).
-- [ ] **T4.7** Create `core/conclusions/rules/JankWithGoodAvgRule.kt` — id `"jank-with-good-avg"`, WARNING. Predicate per design.md line 245. + test.
-- [ ] **T4.8** Create `core/conclusions/rules/Capped30FpsRule.kt` — id `"fps-cap-suspect"`, INFO. Predicate uses `deviceTier`. + test file with explicit tier-1 (does-not-fire per CON-003 scenario "30fps cap rule does not fire on tier-1") and tier-3 (fires per CON-003 scenario "fires on tier-3+"). Covers CON-003.
-- [ ] **T4.9** Create `core/conclusions/rules/CpuSaturationRule.kt` — id `"cpu-saturated"`, CRITICAL. Predicate `filtered.avgCpu > 85`. + test (fires at 90%, does-not-fire at 70%, boundary at 85%).
-- [ ] **T4.10** Create `core/conclusions/rules/AdVsGameFpsGapRule.kt` — id `"ad-vs-game-fps-gap"`, INFO. Predicate per design.md line 248 (events present + filtered/raw delta >15%). + test.
-- [ ] **T4.11** Create `core/conclusions/rules/LoadingThermalRecoveryRule.kt` — id `"loading-thermal-recovery"`, INFO. Predicate per design.md line 249. + test.
-- [ ] **T4.12** Create `ConclusionEngineTest.kt` — assertions:
+- [x] **T4.1** Create `core/conclusions/ConclusionEngine.kt` — pure object with `RULES: List<Rule>` (lazily loaded from registry) and `fun run(input: ConclusionInput): List<Conclusion>` that filters by `matches(input)`, renders, and sorts by severity (`CRITICAL > WARNING > INFO`) then by stable `ruleId` ascending. Covers CON-001, CON-004.
+- [x] **T4.2** Create `core/conclusions/RuleRegistry.kt` — central list `val all: List<Rule>` enumerating all 8 rules. Single source of truth so adding a rule = adding to this list. Covers CON-002.
+- [x] **T4.3** Create `core/conclusions/rules/StableLowFpsRule.kt` — id `"stable-low-fps-low-cpu"`, WARNING. Predicate: `filtered.p50 ≤ 0.7 * targetFps && filtered.avgCpu < 50 && filtered.maxTempCpu < 42`. Render template per design.md table line 242. Spanish formal tuteo. Covers CON-002, CON-005.
+- [x] **T4.4** Create `StableLowFpsRuleTest.kt` — fixtures: fires (low fps + low cpu + cool), does-not-fire (low fps + high cpu = different bottleneck), boundary (p50 exactly at 0.7×target). Covers CON-002 + CON-005 scenarios.
+- [x] **T4.5** Create `core/conclusions/rules/ThermalThrottlingRule.kt` — id `"thermal-throttling"`, CRITICAL. Predicate per design.md line 243. + test file with 3 fixtures.
+- [x] **T4.6** Create `core/conclusions/rules/MemoryGrowthRule.kt` — id `"memory-leak-suspect"`, WARNING. Predicate uses linear regression slope on `memTimed`. + test file (fires on monotonic growth, does-not-fire on flat or with GC drops, boundary at 0.5MB/s slope).
+- [x] **T4.7** Create `core/conclusions/rules/JankWithGoodAvgRule.kt` — id `"jank-with-good-avg"`, WARNING. Predicate per design.md line 245. + test.
+- [x] **T4.8** Create `core/conclusions/rules/Capped30FpsRule.kt` — id `"fps-cap-suspect"`, INFO. Predicate uses `deviceTier`. + test file with explicit tier-1 (does-not-fire per CON-003 scenario "30fps cap rule does not fire on tier-1") and tier-3 (fires per CON-003 scenario "fires on tier-3+"). Covers CON-003.
+- [x] **T4.9** Create `core/conclusions/rules/CpuSaturationRule.kt` — id `"cpu-saturated"`, CRITICAL. Predicate `filtered.avgCpu > 85`. + test (fires at 90%, does-not-fire at 70%, boundary at 85%).
+- [x] **T4.10** Create `core/conclusions/rules/AdVsGameFpsGapRule.kt` — id `"ad-vs-game-fps-gap"`, INFO. Predicate per design.md line 248 (events present + filtered/raw delta >15%). + test.
+- [x] **T4.11** Create `core/conclusions/rules/LoadingThermalRecoveryRule.kt` — id `"loading-thermal-recovery"`, INFO. Predicate per design.md line 249. + test.
+- [x] **T4.12** Create `ConclusionEngineTest.kt` — assertions:
   - Same input twice → identical output (CON-001).
   - All 8 rule IDs present in `RuleRegistry.all` (CON-002).
   - 3 rules firing INFO/CRITICAL/WARNING → output ordered `[CRITICAL, WARNING, INFO]` (CON-004).
   - Tiebreak by ascending ruleId within same severity (CON-004).
   - Zero rules fire → empty list (downstream handled by REP / CON-007).
-- [ ] **T4.13** Wire `ConclusionEngine` into `viewmodel/AppViewModel.kt` post-aggregation: build `ConclusionInput(filtered, raw, targetFps, deviceTier=HardwareScoring.detectTier(gpu), events=_events.value, sessionDurationS)` and call `ConclusionEngine.run(input)`. Store on `SessionResult.conclusions`. Covers CON-001, CON-003.
-- [ ] **T4.14** Insufficient-data short-circuit: if `sessionDurationS < 30 || rawAggregates.sampleCount < 60`, return single `Conclusion(ruleId="insufficient-data", ...)` and skip the regular catalog. Covers design.md §"Error Handling" "Session too short" row.
+- [x] **T4.13** Wire `ConclusionEngine` into `viewmodel/AppViewModel.kt` post-aggregation: build `ConclusionInput(filtered, raw, targetFps, deviceTier=HardwareScoring.detectTier(gpu), events=_events.value, sessionDurationS)` and call `ConclusionEngine.run(input)`. Store on `SessionResult.conclusions`. Covers CON-001, CON-003.
+- [x] **T4.14** Insufficient-data short-circuit: if `sessionDurationS < 30 || rawAggregates.sampleCount < 60`, return single `Conclusion(ruleId="insufficient-data", ...)` and skip the regular catalog. Covers design.md §"Error Handling" "Session too short" row.
 
 ## Phase 5: iOS Best-Effort
 

@@ -17,6 +17,10 @@ import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.core.RealAdbBridge
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.core.Settings
+import com.gameperf.desktop.core.conclusions.Conclusion
+import com.gameperf.desktop.core.conclusions.ConclusionEngine
+import com.gameperf.desktop.core.conclusions.ConclusionInput
+import com.gameperf.desktop.core.conclusions.Severity
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventDetector
 import com.gameperf.desktop.core.events.EventDetectorImpl
@@ -1549,6 +1553,64 @@ class AppViewModel(
             // Snapshot markers before generating report
             val sessionMarkers = _markers.value
 
+            // ═══ v4.4.0 — Conclusions pillar (T4.13 + T4.14) ═══
+            //
+            // Run the deterministic heuristic rule catalog over filtered + raw
+            // aggregates. The engine is pure: same input → same output, no I/O.
+            //
+            // Pre-flight short-circuit (T4.14): sessions shorter than 30s OR
+            // with fewer than 60 raw samples can't produce statistically
+            // meaningful trends. We emit a single INFO conclusion explaining
+            // that and skip the rule catalog entirely.
+            //
+            // For the regular path, we filter the timed twins (mem/temp/fps)
+            // using the same union of padded event ranges Phase 3 applied.
+            // This lets trend rules (MemoryGrowthRule, etc.) operate on the
+            // same "kept" sample set the dashboard shows.
+            val conclusions: List<Conclusion> = if (
+                finalElapsed < 30 || filterResult.raw.sampleCount < 60
+            ) {
+                listOf(
+                    Conclusion(
+                        ruleId = "insufficient-data",
+                        severity = Severity.INFO,
+                        headline = "La sesión es demasiado corta para extraer conclusiones fiables " +
+                            "(${finalElapsed}s).",
+                        recommendation = "Para análisis representativos, captura sesiones de al menos " +
+                            "1 minuto en condiciones normales de juego.",
+                    )
+                )
+            } else {
+                // Convert unioned absolute ranges → capture-relative ms so we
+                // can match against TimedSample.second (which is capture-rel).
+                val unionAbs = FilteredMetricsCalculator.unionRanges(_events.value)
+                val relativeRanges = unionAbs.mapNotNull { range ->
+                    val relStart = (range.startMs - captureStartTime).coerceAtLeast(0L)
+                    val relEnd = (range.endMs - captureStartTime).coerceAtLeast(0L)
+                    if (relEnd <= 0L) null else (relStart..relEnd)
+                }
+
+                fun List<TimedSample>.outsideEventWindows(): List<TimedSample> =
+                    if (relativeRanges.isEmpty()) this
+                    else filter { sample ->
+                        val ms = sample.second * 1000L
+                        relativeRanges.none { ms in it }
+                    }
+
+                val conclusionInput = ConclusionInput(
+                    filtered = filterResult.filtered,
+                    raw = filterResult.raw,
+                    targetFps = targetFps,
+                    deviceTier = tier,
+                    events = _events.value,
+                    sessionDurationS = finalElapsed,
+                    memTimedFiltered = memTimed.toList().outsideEventWindows(),
+                    tempCpuTimedFiltered = tempCpuTimed.toList().outsideEventWindows(),
+                    fpsTimedFiltered = fpsTimed.toList().outsideEventWindows(),
+                )
+                ConclusionEngine.run(conclusionInput)
+            }
+
             // Generate HTML report (wrapped in try-catch to avoid crash on report failure)
             _processingStatus.value = "Generando reporte HTML..."
             val reportPath = try {
@@ -1599,13 +1661,15 @@ class AppViewModel(
                 videoPath = videoPath,
                 deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
                 markers = sessionMarkers,
-                // v4.4.0 — auto event detection payload. Phase 4 (T4.13) will
-                // populate `conclusions`; Phase 5 (T5.9) sets `detectionMode`
-                // based on the platform / Developer Mode probe. Until then the
-                // field defaults stay in place (empty / MANUAL_ONLY).
+                // v4.4.0 — auto event detection payload. Phase 4 (T4.13)
+                // populates `conclusions`; Phase 5 (T5.9) will set
+                // `detectionMode` based on the platform / Developer Mode probe.
+                // Until then the `detectionMode` field default stays in place
+                // (MANUAL_ONLY).
                 events = _events.value,
                 rawAggregates = filterResult.raw,
                 filteredAggregates = filterResult.filtered,
+                conclusions = conclusions,
             )
 
             // P95 frame time
