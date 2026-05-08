@@ -6,6 +6,15 @@ package com.gameperf.desktop.core.grading
  * (FPS, memory, CPU, thermal) so this calculator stays platform-agnostic and
  * trivially testable.
  *
+ * **IMPORTANT (v4.4.0+):** Values must be filtered upstream by
+ * [com.gameperf.desktop.core.metrics.FilteredMetricsCalculator] when auto event
+ * detection is enabled. Raw whole-session aggregates should NOT be passed here
+ * because ad-induced FPS spikes contaminate the score. The orchestrator in
+ * [com.gameperf.desktop.viewmodel.AppViewModel] already does this routing via
+ * `FilteredMetricsCalculator.computeWithFallback(...)`.
+ *
+ * @see com.gameperf.desktop.core.metrics.FilteredMetricsCalculator.computeWithFallback
+ *
  * @property targetFps inferred game target (see `inferGameTargetFps`). Zero is
  *   tolerated — both FPS ratios fall back to 1.0 to avoid division by zero.
  * @property p50 median FPS across the session (sorted history index n*0.5).

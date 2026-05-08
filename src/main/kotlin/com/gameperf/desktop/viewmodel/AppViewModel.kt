@@ -26,6 +26,8 @@ import com.gameperf.desktop.core.model.DevicePlatform
 import com.gameperf.desktop.core.bridge.AndroidBridge
 import com.gameperf.desktop.core.grading.FinalScoreCalculator
 import com.gameperf.desktop.core.grading.GradingInput
+import com.gameperf.desktop.core.metrics.FilterInput
+import com.gameperf.desktop.core.metrics.FilteredMetricsCalculator
 import com.gameperf.desktop.core.ios.IosBridge
 import com.gameperf.desktop.core.ios.SidecarClient
 import com.gameperf.desktop.core.ios.SidecarLifecycle
@@ -1450,6 +1452,47 @@ class AppViewModel(
             val maxTempDieCpu = tempDieCpuHistory.maxOrNull() ?: 0.0
             val totalDrops = missedEnd - missedStart
 
+            // ═══ v4.4.0 — Filtered + Raw aggregates (auto event detection) ═══
+            //
+            // Build a FilterInput from the timed twin series populated during the
+            // polling loop, then compute BOTH views in one call:
+            //   - raw      → whole-session aggregates (legacy semantics).
+            //   - filtered → samples inside detected event windows excluded.
+            //
+            // Excessive-filter guardrail (FLT-005): if more than 70% of samples
+            // would be excluded, computeWithFallback swaps `filtered` for `raw`
+            // and flips `excessiveFiltering = true`. We surface that as a warning
+            // so the report shows raw values with a banner instead of a sample
+            // so small the percentiles become meaningless.
+            //
+            // When auto-detection is OFF (or no events were detected on Android,
+            // or iOS path), `_events.value` is empty ⇒ filtered ≡ raw and
+            // grading behaviour is byte-equivalent to pre-v4.4.0.
+            val filterInput = FilterInput(
+                fpsTimed = fpsTimed.toList(),
+                cpuTimed = cpuTimed.toList(),
+                memTimed = memTimed.toList(),
+                nativeTimed = nativeTimed.toList(),
+                javaTimed = javaTimed.toList(),
+                tempCpuTimed = tempCpuTimed.toList(),
+                tempGpuTimed = tempGpuTimed.toList(),
+                tempSkinTimed = tempSkinTimed.toList(),
+                tempDieCpuTimed = tempDieCpuTimed.toList(),
+                frameTimeTimed = frameTimeTimed.toList(),
+                jankTimed = jankTimed.toList(),
+                stutterTimed = stutterTimed.toList(),
+                captureStartTime = captureStartTime,
+                sessionEndMs = (finalElapsed * 1000.0).toLong(),
+            )
+            val filterResult = FilteredMetricsCalculator.computeWithFallback(
+                filterInput,
+                _events.value,
+            )
+            if (filterResult.excessiveFiltering) {
+                _detectorWarnings.value = _detectorWarnings.value +
+                    "Más del 70% de la sesión fue excluida por eventos detectados; mostrando métricas brutas en su lugar."
+            }
+
             // ═══ Grading (v4.3.4: extracted to FinalScoreCalculator) ═══
             //
             // The grading logic — proportional FPS thresholds (v4.2.6), per-game
@@ -1459,23 +1502,28 @@ class AppViewModel(
             // any function with complex logic must have a pure extractable version.
             // See FinalScoreCalculator.kt for the full penalty table and behavior
             // notes; FinalScoreCalculatorTest.kt covers every bucket boundary.
+            //
+            // v4.4.0: GradingInput now consumes FILTERED aggregates. Ad-induced
+            // FPS spikes no longer contaminate the score. When no events are
+            // detected, `filterResult.filtered` ≡ raw and the grade is unchanged.
             val targetFps = inferGameTargetFps(avgFps = avgFps, maxFps = maxFps)
+            val gradedAgg = filterResult.filtered
             val gradingResult = FinalScoreCalculator.compute(
                 GradingInput(
                     targetFps = targetFps,
-                    p50 = p50,
-                    p5 = p5,
+                    p50 = gradedAgg.p50,
+                    p5 = gradedAgg.p5,
                     totalJank = totalJank.toLong(),
                     finalElapsed = finalElapsed.toDouble(),
                     totalStutter = totalStutter,
-                    peakMem = peakMem,
+                    peakMem = gradedAgg.peakMem,
                     // v4.3.6: maxTempCpu is now semantically "user-facing temp"
                     // (skin if available, else die fallback). The dual thermal
                     // threshold uses peakThermalDie to fire when only the
                     // silicon is overheated.
-                    maxTempCpu = maxTempCpu,
-                    avgCpu = avgCpu,
-                    peakThermalDie = maxTempDieCpu,
+                    maxTempCpu = gradedAgg.maxTempCpu,
+                    avgCpu = gradedAgg.avgCpu,
+                    peakThermalDie = gradedAgg.maxTempDieCpu,
                 )
             )
             val score = gradingResult.score
@@ -1550,7 +1598,14 @@ class AppViewModel(
                 problems = problems, reportPath = reportPath, isWifi = isWifiMode,
                 videoPath = videoPath,
                 deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
-                markers = sessionMarkers
+                markers = sessionMarkers,
+                // v4.4.0 — auto event detection payload. Phase 4 (T4.13) will
+                // populate `conclusions`; Phase 5 (T5.9) sets `detectionMode`
+                // based on the platform / Developer Mode probe. Until then the
+                // field defaults stay in place (empty / MANUAL_ONLY).
+                events = _events.value,
+                rawAggregates = filterResult.raw,
+                filteredAggregates = filterResult.filtered,
             )
 
             // P95 frame time
