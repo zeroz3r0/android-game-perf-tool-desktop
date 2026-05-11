@@ -14,6 +14,38 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.4.1] — 2026-05-11
+
+### Arreglos
+
+- **Actualizador**: el botón "Actualizar" ahora detecta cuando cancelás el cuadro de UAC ("Permitir cambios") o cuando el helper elevado falla, y muestra un panel de respaldo con dos botones: "Descargar manualmente vX.Y.Z" (abre el navegador en la página de la release) y "Ver guía de instalación". El panel incluye una sección plegable "Detalles técnicos" con los últimos 10 intentos de actualización. Antes la app cerraba en silencio si negabas el UAC y no había forma de saber qué pasó. Además, el JAR descargado en `%TEMP%\GamePerf-update\` se nombra con la versión destino (`android-game-perf-tool-desktop-4.4.1-staged.jar` en vez de `4.3.8`). Cada intento queda registrado en `~/GamePerf Reports/updates/history.jsonl` (cap 100 líneas, FIFO) para diagnóstico
+- **Player**: cuando arrastrabas la línea de tiempo del video y dabas Play, los primeros 1-2 segundos se veían entrecortados porque el preload window había quedado reducido tras el seek. Ahora reseteamos el window y cancelamos el debounce activo cuando arranca la reproducción
+- **Detección automática de eventos**: los eventos detectados (anuncios, IAP, cargas) ahora se persisten correctamente en `history.json` AND se renderizan como líneas verticales cian sobre el gráfico FPS en vivo durante la captura. Las sesiones grabadas con v4.4.0 no recuperan eventos retroactivamente, pero las nuevas ya los conservan + muestran
+- **Temperatura del dispositivo**: agregamos soporte para Pixel XL (sensor `tsens_tz_sensor*`) y Samsung Galaxy Tab A8 con SoC Unisoc T618 (sensores `cluster*-thermal`, `ump_thermal`). Mejoramos la heurística de fallback con un guardia anti-PMIC para no leer la temperatura del controlador de batería en lugar del CPU. Cuando ningún sensor es legible, el reporte ahora muestra "N/D" + la lista de zonas detectadas, en vez de "0°C" engañoso
+
+### Detalles técnicos
+
+- **`core/update/` (paquete nuevo, 6 archivos)** — `UpdateAttempt`, `UpdateOutcome` (sealed), `UpdateFallbackState`, `UpdateFallbackReason`, `UpdateHistoryStore` (jsonl append-only cap-100, corrupt-tolerant), `HelperLogWatcher` (polling 200 ms con canary `===== UAC update helper started =====`, Clock inyectable, default timeout 8 s)
+- **`AutoUpdater.kt` (modificado)** — staging filename usa `release.version` no `AppVersion.NAME` (spec N1/N2). Nuevos builders para fan-out de fallos (`buildDownloadFailureResult`, `buildWatchdogTimeoutResult`, `buildUnknownFailureResult`, `buildElevatedSuccessResult`). Nuevo orquestador `runWatchdogAndBuildResult` con closures inyectables (writeBreadcrumb, spawn, awaitCanary). `lastUpdateLogPath()` extraído como helper único usado por el writer del breadcrumb JVM y por el watcher (ADR-8). `UpdateResult` gana campo `outcome: UpdateOutcome?` (additivo, retro-compat). Nuevo overload `applyUpdate(file, targetVersion)`
+- **`UpdateDelegate.kt` (modificado)** — nuevo `updateFallback: StateFlow<UpdateFallbackState?>` (null = oculto, non-null = render panel). Nuevo `applyOutcome(result, attemptedVersion, durationMs, helperLogTail)` que hace fan-out a la StateFlow + append a `historyStore`. Nuevo `dismissFallback()`. `downloadAndApplyUpdate` ahora hilea `release.version` y llama `applyOutcome` en TODOS los caminos terminales (download fail, watchdog timeout, helper crash, elevated success, manual restart, excepción inesperada). Best-effort `launchWatchdogStatusTicker` emite "Verificando actualización... (Ns / 8s)" cada 1 s mientras el watchdog poll está activo, cancelado en `finally` cuando `applyUpdate` retorna
+- **`UpdateFallbackPanel.kt` (nuevo Compose)** — heading + subtitle por reason (5 mappings en castellano tuteo formal), 2 botones (descarga manual con `Desktop.browse`, guía de instalación), expander "Detalles técnicos" con últimos 10 intentos en formato monoespaciado, dismiss con icono X
+- **`HomeScreen.kt` (modificado, additivo)** — montaje del panel debajo del banner de update existente. UNA sola invocación composable + `collectAsState` de `vm.updateFallback`. Función file-private `openInBrowser(url)` envuelve `Desktop.browse` defensivamente
+- **`AppViewModel.kt` (modificado, dispatch-only)** — expone `updateFallback`, `dismissUpdateFallback()`, `recentUpdateAttempts(limit)`. Constructor de `UpdateDelegate` cambió a named-args al ganar el param `historyStore`. NO se tocó `startCapture` (baseline detekt preservada)
+- **`.github/workflows/release.yml` (modificado)** — nuevo job `msi` en `windows-latest` que probea WiX (`candle.exe` / `light.exe`), instala vía `choco install wixtoolset` solo si falta, ejecuta `./gradlew packageReleaseMsi`, ubica el `.msi` en `build/compose/binaries/main-release/msi/` (con fallback a `main/msi/`), y lo sube como artifact `game-perf-desktop-msi`. El job `release` ahora depende también de `msi` y publica `game-perf-desktop-msi/*.msi` junto a los JARs y los binarios del sidecar
+- **4 SDD changes archivados en este release**: `autoupdater-resilience` + `video-seek-play-lag` + `auto-event-detection-not-marking` + `temperature-not-shown`. 14 commits sobre `main` desde v4.4.0
+- **Tests**: 77 tests nuevos a lo largo del cambio `autoupdater-resilience` (32 tipos puros + 9 history store + 8 helper log watcher + 18 AutoUpdater integración + 10 UpdateDelegate state flow); B6/B7/B8 son STRUCT con safety net = suite completa verde. Suite total: 772 passing / 0 failing / 10 ignored
+- **Schema sin cambios** — `history.jsonl` es append-only y se crea on-demand; no hay migración necesaria. `UpdateResult.outcome` es nullable con default `null` así que clientes legacy siguen funcionando
+
+### Recuperación para usuarios atascados en v4.3.8 o v4.4.0
+
+Si tu instalación quedó atascada en v4.3.8/v4.4.0 y el botón "Actualizar" sigue fallando incluso después de aceptar el UAC, seguí estos pasos:
+
+1. Cerrá GamePerf si está abierto
+2. Descargá manualmente el archivo `GamePerf-windows-x64-4.4.1.msi` desde la [página de releases](https://github.com/zeroz3r0/android-game-perf-tool-desktop/releases/tag/v4.4.1)
+3. Ejecutalo aceptando el aviso de Windows (admin requerido). Esto reemplaza la instalación previa preservando tus reportes en `~/GamePerf Reports/`
+4. Si preferís solo reemplazar el JAR (sin reinstalar): copiá el JAR descargado de la release sobre `C:\Program Files\GamePerf\app\android-game-perf-tool-desktop-*.jar` (requiere abrir el explorador como administrador)
+5. Una vez en v4.4.1, los futuros updates funcionarán solos vía el botón "Actualizar" — y si el UAC fallara, el nuevo panel de respaldo te guiará al MSI manual sin que tengas que adivinar qué pasó
+
 ## [4.4.0] — 2026-05-08
 
 ### Que hay de nuevo
