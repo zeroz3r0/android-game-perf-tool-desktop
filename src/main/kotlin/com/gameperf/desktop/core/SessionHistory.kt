@@ -1,5 +1,9 @@
 package com.gameperf.desktop.core
 
+import com.gameperf.desktop.core.conclusions.Conclusion
+import com.gameperf.desktop.core.events.DetectedEvent
+import com.gameperf.desktop.core.metrics.MetricsAggregates
+import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
 import kotlinx.serialization.KSerializer
@@ -51,18 +55,23 @@ object SessionHistory {
      *  - v1..v3 — pre-kotlinx.serialization, hand-rolled JSON shapes (no explicit version field).
      *  - v4 — kotlinx.serialization migration (v4.1.0). [SerializableEntry] became the canonical
      *    on-disk schema. Forward-compat is provided by `Json { ignoreUnknownKeys = true }`.
-     *  - v5 — v4.4.0 / `auto-event-detection-and-clean-metrics` change. Adds (when persisted by
-     *    the in-memory [com.gameperf.desktop.viewmodel.SessionResult]) the optional fields
-     *    `events`, `rawAggregates`, `filteredAggregates`, `conclusions`, `detectionMode`.
+     *  - v5 — v4.4.0 schema bump for `auto-event-detection-and-clean-metrics`. The on-disk
+     *    keys were promised but the data classes were NOT widened — Bug 2 (v4.4.1
+     *    `auto-event-detection-not-marking`) revealed that the encoder silently dropped
+     *    the new fields. v4.4.1 is the first build where the schema actually carries the
+     *    payload: `events`, `detectionMode` (persisted as the enum's `.name` String for
+     *    forward compat with future enum values), `detectorWarnings`, `rawAggregates`,
+     *    `filteredAggregates`, `conclusions`, `captureStartMs`. All defaulted (empty list
+     *    or null) so pre-v4.4.1 rows still deserialize via `ignoreUnknownKeys = true`.
      *
      * The disk file does NOT carry this constant explicitly (no breaking change to existing
      * `history.json` payloads). It exists as a SOURCE-OF-TRUTH integer that callers (export
      * pipelines, future migrations, tests) can reference. Loading is fully forward-compat:
-     * a v4 file deserializes into a v5-aware code path with the new fields defaulting to
-     * empty/null. There is no v4→v5 *transformation* required — only an additive widening
-     * of the in-memory model.
+     * a v4 / v4.4.0 file deserializes into a v5-aware code path with the new fields
+     * defaulting to empty/null. There is no v4→v5 *transformation* required — only an
+     * additive widening of the in-memory model.
      *
-     * @since v4.4.0
+     * @since v4.4.0 (schema bump) / v4.4.1 (field set actually persisted)
      */
     const val SCHEMA_VERSION = 5
 
@@ -164,6 +173,17 @@ object SessionHistory {
         val isFavorite: Boolean = false,
         // v4.2.0: FPS timeline data for re-viewing past sessions
         val fpsTimed: List<List<Int>> = emptyList(),
+        // v4.4.1: auto-event detection payload promised by the v4.4.0 schema bump but never
+        // persisted until now. All defaulted so pre-v4.4.1 history.json rows hydrate cleanly
+        // via Json { ignoreUnknownKeys = true }.
+        val events: List<DetectedEvent> = emptyList(),
+        /** [DetectionMode.name] persisted as String for forward compat with new enum values. */
+        val detectionMode: String? = null,
+        val detectorWarnings: List<String> = emptyList(),
+        val rawAggregates: MetricsAggregates? = null,
+        val filteredAggregates: MetricsAggregates? = null,
+        val conclusions: List<Conclusion> = emptyList(),
+        val captureStartMs: Long? = null,
     )
 
     data class HistoryEntry(
@@ -194,6 +214,17 @@ object SessionHistory {
         val isFavorite: Boolean = false,
         /** v4.2.0: FPS timeline samples (second, fps) for re-viewing sessions. */
         val fpsTimed: List<Pair<Int, Int>> = emptyList(),
+        // v4.4.1: domain-side mirror of the auto-event detection payload (see
+        // SerializableEntry above). detectionMode is the typed enum here; the
+        // SerializableEntry stores its `.name` String so we keep core/ ignorant
+        // of viewmodel/ enum class membership at the wire level.
+        val events: List<DetectedEvent> = emptyList(),
+        val detectionMode: DetectionMode? = null,
+        val detectorWarnings: List<String> = emptyList(),
+        val rawAggregates: MetricsAggregates? = null,
+        val filteredAggregates: MetricsAggregates? = null,
+        val conclusions: List<Conclusion> = emptyList(),
+        val captureStartMs: Long? = null,
     )
 
     // ===== Conversion =====
@@ -209,6 +240,14 @@ object SessionHistory {
         markers = markers.map { SerializableMarker.from(it) },
         isFavorite = isFavorite,
         fpsTimed = fpsTimed.map { listOf(it.first, it.second) },
+        // v4.4.1: auto-event detection payload mirroring.
+        events = events,
+        detectionMode = detectionMode?.name,
+        detectorWarnings = detectorWarnings,
+        rawAggregates = rawAggregates,
+        filteredAggregates = filteredAggregates,
+        conclusions = conclusions,
+        captureStartMs = captureStartMs,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -224,6 +263,18 @@ object SessionHistory {
         markers = markers.map { it.toSessionMarker() },
         isFavorite = isFavorite,
         fpsTimed = fpsTimed.mapNotNull { if (it.size >= 2) it[0] to it[1] else null },
+        // v4.4.1: decode wire String → typed enum. Unknown / future enum names fall back to
+        // null instead of crashing the load (keeps the same forward-compat stance as
+        // MarkerTypeSerializer above).
+        events = events,
+        detectionMode = detectionMode?.let {
+            try { DetectionMode.valueOf(it) } catch (_: Exception) { null }
+        },
+        detectorWarnings = detectorWarnings,
+        rawAggregates = rawAggregates,
+        filteredAggregates = filteredAggregates,
+        conclusions = conclusions,
+        captureStartMs = captureStartMs,
     )
 
     // ===== Public API (unchanged contract) =====
