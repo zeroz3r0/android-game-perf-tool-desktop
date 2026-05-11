@@ -1717,6 +1717,15 @@ class AppViewModel(
                     detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
                     detectorWarnings = _detectorWarnings.value,
                     captureStartMs = captureStartTime,
+                    // v4.4.1 (temperature-not-shown, Phase 6 wire): propagate the
+                    // last-known thermal availability flag + diagnostic payload
+                    // so the report renders "N/D" + a Spanish-tuteo-formal banner
+                    // listing the raw vendor zone names instead of a misleading
+                    // "0°C". Defaults on the generator preserve baseline rendering
+                    // for legacy fixtures (ReportRenderingTest) and pre-v4.4.1
+                    // history re-loads where lastThermal.diagnostic is null.
+                    thermalAvailable = lastThermal.thermalAvailable,
+                    thermalDiagnostic = lastThermal.diagnostic,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")

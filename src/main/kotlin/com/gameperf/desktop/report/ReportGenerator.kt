@@ -10,6 +10,8 @@ import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventType
 import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.ThermalDiagnostic
+import com.gameperf.desktop.core.model.ThermalUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
@@ -71,6 +73,16 @@ object ReportGenerator {
         detectionMode: DetectionMode = DetectionMode.MANUAL_ONLY,
         detectorWarnings: List<String> = emptyList(),
         captureStartMs: Long = 0L,
+        // v4.4.1 -- thermal pipeline availability flag + diagnostic payload.
+        // When `thermalAvailable = false` the temperature card renders "N/D"
+        // instead of "0°C" (which the user would otherwise read as "device is
+        // cold") and the temp section gets a Spanish-tuteo-formal banner
+        // listing the raw vendor zone names that the classifier could not
+        // bucket. Defaults preserve pre-v4.4.1 rendering for legacy fixtures
+        // (ReportRenderingTest, ReportGradingTest) and re-renders of v4.3.x
+        // sessions reloaded from `.gameperf` history files.
+        thermalAvailable: Boolean = true,
+        thermalDiagnostic: ThermalDiagnostic? = null,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -347,19 +359,36 @@ $excessiveCalloutHtml
             // v4.3.6: card title + value + sub-line all depend on whether the
             // device exposed a skin sensor. Skin = case temp the user feels.
             // Die = silicon temp, routinely 80-95°C under load (NORMAL).
+            //
+            // v4.4.1 (temperature-not-shown): when the thermal pipeline reports
+            // unavailable (!thermalAvailable) the card renders "N/D" + sub-line
+            // "Sensor no disponible" with a neutral grade ('A' to avoid the
+            // misleading red/yellow visual). The user would otherwise read the
+            // legacy "0°C" / "N/A" fallback as "device is cold".
             run {
-                val cardTitle = if (showSkinAsPrimary) "Temperatura piel" else "Temperatura die"
-                val primaryValue = when {
-                    showSkinAsPrimary -> "${maxTempSkin.toInt()}\u00B0C"
-                    maxTempCpu > 0 -> "${maxTempCpu.toInt()}\u00B0C"
-                    else -> "N/A"
+                if (!thermalAvailable) {
+                    metricCard(
+                        title = "Temperatura",
+                        value = "N/D",
+                        icon = "temp",
+                        grade = 'A',
+                        gc = "#94a3b8",
+                        detail = "Sensor no disponible",
+                    )
+                } else {
+                    val cardTitle = if (showSkinAsPrimary) "Temperatura piel" else "Temperatura die"
+                    val primaryValue = when {
+                        showSkinAsPrimary -> "${maxTempSkin.toInt()}\u00B0C"
+                        maxTempCpu > 0 -> "${maxTempCpu.toInt()}\u00B0C"
+                        else -> "N/A"
+                    }
+                    val subLine = when {
+                        showSkinAsPrimary && maxTempCpu > 0 -> "Die máx: ${maxTempCpu.toInt()}\u00B0C"
+                        maxTempGpu > 0 -> "GPU ${maxTempGpu.toInt()}\u00B0C"
+                        else -> "Solo CPU"
+                    }
+                    metricCard(cardTitle, primaryValue, "temp", tempGrade, gradeColor(tempGrade), subLine)
                 }
-                val subLine = when {
-                    showSkinAsPrimary && maxTempCpu > 0 -> "Die máx: ${maxTempCpu.toInt()}\u00B0C"
-                    maxTempGpu > 0 -> "GPU ${maxTempGpu.toInt()}\u00B0C"
-                    else -> "Solo CPU"
-                }
-                metricCard(cardTitle, primaryValue, "temp", tempGrade, gradeColor(tempGrade), subLine)
             }
         }
         ${metricCard("Bateria", "${batteryDrain}%", "battery",
@@ -439,6 +468,7 @@ $excessiveCalloutHtml
         <h2>&#127777; Temperatura</h2>
         <span class="card-badge" style="background:${gradeColor(tempGrade)}20;color:${gradeColor(tempGrade)}">${tempGrade}</span>
     </div>
+    ${thermalDiagnosticBanner(thermalAvailable, thermalDiagnostic)}
     <p class="card-desc">${
         // v4.3.6: copy depends on whether we have skin or only die. Skin throttle
         // ~42°C; die throttle ~95°C. Mixing them was the v4.3.5 UX bug that made
@@ -1318,6 +1348,55 @@ $cards
     Las métricas filtradas pueden no ser representativas, así que las cifras mostradas son las brutas (toda la sesión) como salvaguarda.
     Considera capturar una sesión más larga sin tantas interrupciones para un análisis más fiable.
 </div>"""
+    }
+
+    /**
+     * v4.4.1 -- Diagnostic banner emitted at the top of the temperature section
+     * when the thermal pipeline reported unavailable (`!thermalAvailable`) AND
+     * the parser populated a [ThermalDiagnostic] payload. The banner explains
+     * (in Spanish tuteo-formal) WHY the pipeline failed and lists the raw
+     * vendor zone names so users / devs can file a vendor-catalog bug.
+     *
+     * Returns an empty string on the happy path (thermalAvailable=true) and
+     * when the caller did not pass a diagnostic — keeps the legacy temp
+     * section markup identical for v4.3.x re-renders.
+     *
+     * Reason copy is intentionally short (one sentence) so the banner stays
+     * visually balanced against the rest of the section. Zone names are
+     * `take(10)` capped defensively even though [com.gameperf.desktop.core.AdbThermalParser]
+     * already truncates the list at the source — `escapeHtml`-style escaping
+     * via [esc] protects against the (theoretical) vendor that puts HTML
+     * special chars in a sysfs node name.
+     */
+    private fun thermalDiagnosticBanner(
+        thermalAvailable: Boolean,
+        diagnostic: ThermalDiagnostic?,
+    ): String {
+        if (thermalAvailable) return ""
+        if (diagnostic == null) return ""
+        val reasonText = when (diagnostic.reason) {
+            ThermalUnavailableReason.NO_ZONES_DETECTED ->
+                "El dispositivo no reportó zonas térmicas legibles. Suele ocurrir cuando el acceso a sysfs queda bloqueado por permisos."
+            ThermalUnavailableReason.ALL_ZONES_UNCLASSIFIED ->
+                "No pudimos clasificar las zonas térmicas que expuso el fabricante. El catálogo de sensores no las reconoce."
+            ThermalUnavailableReason.ALL_TEMPS_INVALID ->
+                "Las temperaturas reportadas están fuera del rango plausible del sensor (probablemente lecturas corruptas o en otra escala)."
+            ThermalUnavailableReason.PERMISSION_DENIED ->
+                "El sistema operativo negó los permisos necesarios para leer los sensores térmicos. Probá habilitar adb root si tu dispositivo lo permite."
+            ThermalUnavailableReason.UNKNOWN ->
+                "El motivo exacto es desconocido. Reportá este caso adjuntando las zonas listadas debajo para que podamos extender el catálogo."
+        }
+        val zoneItems = diagnostic.rawZoneNames.take(10).joinToString("") { name ->
+            "<li><code>${esc(name)}</code></li>"
+        }
+        val zonesBlock = if (zoneItems.isEmpty()) "" else """
+        <p class="thermal-diag-zones-label">Zonas detectadas:</p>
+        <ul class="thermal-diag-zones">$zoneItems</ul>"""
+        return """
+    <div class="callout callout-warning thermal-diag-banner">
+        <strong>&#9888; Datos térmicos no disponibles.</strong>
+        <p>$reasonText</p>$zonesBlock
+    </div>"""
     }
 
     /**
