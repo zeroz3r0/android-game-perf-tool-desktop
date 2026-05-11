@@ -314,6 +314,19 @@ class AppViewModel(
     /** Active detector for the current capture session, or null when idle. */
     private var eventDetector: EventDetector? = null
 
+    /**
+     * v4.4.1 — public mirror of the private [captureStartTime] field, exposed for the live
+     * UI overlay (`MiniGraphWithEvents` on `CaptureScreen`) so vertical event lines can be
+     * positioned relative to the capture's wall-clock origin without reading a private field.
+     *
+     * Updated alongside every write to [captureStartTime]: set to the current ms when capture
+     * begins (`startCapture` start-clock block), reset to `0L` when capture ends. The UI treats
+     * `0L` as "no capture running" and skips the overlay (see [MiniGraphWithEvents.totalMs]
+     * guard).
+     */
+    private val _captureStartMs = MutableStateFlow(0L)
+    val captureStartMs: StateFlow<Long> = _captureStartMs
+
     // ===== Video Playback (delegated v4.1.0) =====
     private val videoDelegate = VideoDelegate()
     val videoPosition: StateFlow<Long> = videoDelegate.videoPosition
@@ -925,6 +938,9 @@ class AppViewModel(
             // NOW start the clock - video and metrics are synced from this point
             val startTime = System.currentTimeMillis()
             captureStartTime = startTime
+            // v4.4.1: mirror to the public StateFlow so the live UI overlay can compute
+            // event x-positions relative to capture origin without touching a private field.
+            _captureStartMs.value = startTime
 
             // ═══ v4.4.0 — Auto event detection (Android only, gated by Settings) ═══
             //
@@ -1745,6 +1761,8 @@ class AppViewModel(
             _history.value = SessionHistory.load()
 
             captureStartTime = 0L
+            // v4.4.1: keep the public mirror in sync — UI uses 0L as "no active capture".
+            _captureStartMs.value = 0L
             _isCapturing.value = false
             // v4.2.5: clear the processing-status overlay now that we're switching
             // to RESULTS — the user is about to see all the data and doesn't need
