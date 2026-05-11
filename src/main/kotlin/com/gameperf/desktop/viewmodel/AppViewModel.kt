@@ -1672,15 +1672,16 @@ class AppViewModel(
                 videoPath = videoPath,
                 deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
                 markers = sessionMarkers,
-                // v4.4.0 — auto event detection payload. Phase 4 (T4.13)
-                // populates `conclusions`; Phase 5 (T5.9) will set
-                // `detectionMode` based on the platform / Developer Mode probe.
-                // Until then the `detectionMode` field default stays in place
-                // (MANUAL_ONLY).
+                // v4.4.0 — auto event detection payload.
                 events = _events.value,
                 rawAggregates = filterResult.raw,
                 filteredAggregates = filterResult.filtered,
                 conclusions = conclusions,
+                // v4.4.1 — set detectionMode HERE so the pendingEntry builder below can
+                // copy it from _result.value verbatim. Without this line, detectionMode
+                // would always default to MANUAL_ONLY and the persisted history would
+                // lie about whether the auto-detector actually ran (Bug 2 fidelity fix).
+                detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
             )
 
             // P95 frame time
@@ -1723,6 +1724,18 @@ class AppViewModel(
                 maxTemp = maxTempCpu, score = score,
                 markers = sessionMarkers,
                 fpsTimed = fpsTimed.map { it.second to it.value.toInt() },
+                // v4.4.1 — additive named-args copying the auto-event-detection payload from
+                // the in-memory SessionResult / ViewModel state into the persisted HistoryEntry.
+                // Bug 2 (auto-event-detection-not-marking): the v4.4.0 schema bump promised
+                // these fields but the builder dropped them on the way to disk. Read BEFORE the
+                // `captureStartTime = 0L` reset on the next block — the value is still valid here.
+                events = _result.value.events,
+                detectionMode = _result.value.detectionMode,
+                detectorWarnings = _detectorWarnings.value,
+                rawAggregates = _result.value.rawAggregates,
+                filteredAggregates = _result.value.filteredAggregates,
+                conclusions = _result.value.conclusions,
+                captureStartMs = captureStartTime,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {
