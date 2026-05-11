@@ -13,6 +13,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -221,6 +222,67 @@ class SessionHistoryRoundTripTest {
         assertEquals(DetectionMode.ANDROID_FULL, loaded.detectionMode)
         assertNotNull(loaded.rawAggregates)
         assertNotNull(loaded.filteredAggregates)
+    }
+
+    @Test
+    fun `round-trip preserves thermalAvailable=true (v4_4_1 happy path)`() {
+        val entry = fullEntry().copy(
+            id = "thermal-true",
+            // Default true is the v4.3.x-compatible value — assert it survives the round trip.
+        )
+        SessionHistory.addEntry(entry)
+
+        val loaded = SessionHistory.load().firstOrNull { it.id == "thermal-true" }
+        assertNotNull(loaded)
+        assertTrue(loaded.thermalAvailable, "thermalAvailable=true must round-trip")
+    }
+
+    @Test
+    fun `round-trip preserves thermalAvailable=false (v4_4_1 unsupported vendor)`() {
+        val entry = fullEntry().copy(
+            id = "thermal-false",
+            thermalAvailable = false,
+        )
+        SessionHistory.addEntry(entry)
+
+        val loaded = SessionHistory.load().firstOrNull { it.id == "thermal-false" }
+        assertNotNull(loaded)
+        assertFalse(loaded.thermalAvailable, "thermalAvailable=false must round-trip")
+    }
+
+    @Test
+    fun `legacy v4_3_x JSON without thermalAvailable defaults to true`() {
+        // Hand-rolled v4.3.x payload (lacks thermalAvailable). Default true preserves the
+        // pre-v4.4.1 semantics: report renders the numeric temp instead of the N/D banner.
+        val legacyJson = """
+            [
+              {
+                "id": "legacy-thermal",
+                "name": "legacy session",
+                "gamePackage": "com.legacy.game",
+                "deviceModel": "Pixel 6",
+                "grade": "B",
+                "deviceGrade": "B",
+                "avgFps": 55,
+                "duration": 300,
+                "date": "01/01/2026 00:00",
+                "reportPath": "",
+                "videoPath": "",
+                "tag": "OUR_GAME",
+                "competitorName": "",
+                "isFavorite": false
+              }
+            ]
+        """.trimIndent()
+        tempFile.parentFile?.mkdirs()
+        tempFile.writeText(legacyJson)
+
+        val loaded = SessionHistory.load()
+        assertEquals(1, loaded.size)
+        assertTrue(
+            loaded.first().thermalAvailable,
+            "Missing thermalAvailable field defaults to true for v4.3.x compat",
+        )
     }
 
     @Test

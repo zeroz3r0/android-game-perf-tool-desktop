@@ -184,6 +184,13 @@ object SessionHistory {
         val filteredAggregates: MetricsAggregates? = null,
         val conclusions: List<Conclusion> = emptyList(),
         val captureStartMs: Long? = null,
+        // v4.4.1 (temperature-not-shown): availability flag for thermal data. Defaults to
+        // `true` so pre-v4.4.1 history.json rows hydrate as "thermal data is trustworthy"
+        // (the v4.3.x semantics — the report renders the raw value). Set to `false` by the
+        // ViewModel when AdbThermalParser could not classify any CPU/SKIN zone within the
+        // plausibility window (unsupported vendor, permission denied, ...). The report then
+        // renders "N/D" plus a diagnostic banner instead of a misleading "0°C".
+        val thermalAvailable: Boolean = true,
     )
 
     data class HistoryEntry(
@@ -225,6 +232,10 @@ object SessionHistory {
         val filteredAggregates: MetricsAggregates? = null,
         val conclusions: List<Conclusion> = emptyList(),
         val captureStartMs: Long? = null,
+        // v4.4.1 (temperature-not-shown): mirror of [SerializableEntry.thermalAvailable].
+        // Default `true` keeps every existing call site that constructs a HistoryEntry
+        // without naming this argument byte-equivalent to the pre-v4.4.1 behavior.
+        val thermalAvailable: Boolean = true,
     )
 
     // ===== Conversion =====
@@ -248,6 +259,8 @@ object SessionHistory {
         filteredAggregates = filteredAggregates,
         conclusions = conclusions,
         captureStartMs = captureStartMs,
+        // v4.4.1: persist the thermal-availability flag verbatim.
+        thermalAvailable = thermalAvailable,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -275,6 +288,8 @@ object SessionHistory {
         filteredAggregates = filteredAggregates,
         conclusions = conclusions,
         captureStartMs = captureStartMs,
+        // v4.4.1: hydrate the thermal-availability flag (default true for legacy rows).
+        thermalAvailable = thermalAvailable,
     )
 
     // ===== Public API (unchanged contract) =====
