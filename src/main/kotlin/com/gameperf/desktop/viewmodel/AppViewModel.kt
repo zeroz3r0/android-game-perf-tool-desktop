@@ -1179,7 +1179,21 @@ class AppViewModel(
                     if (runThermal) {
                         val t = adb.captureTemperature(device.id)
                         if (shouldStop) break
-                        lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(t.cpu, t.gpu, t.battery, t.skin)
+                        // v4.4.1 (temperature-not-shown, Q1): convert from positional to named args.
+                        // The 4-positional form silently dropped t.dieCpu (added in v4.3.6) AND
+                        // would also drop the new t.thermalAvailable / t.diagnostic fields landed
+                        // in T1 of this change. Named-args makes every field explicit so future
+                        // ThermalSnapshot widenings stay propagated automatically. ADDITIVE only —
+                        // no surrounding refactor (the enclosing startCapture body is detekt-baseline).
+                        lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(
+                            cpu = t.cpu,
+                            gpu = t.gpu,
+                            battery = t.battery,
+                            skin = t.skin,
+                            dieCpu = t.dieCpu,
+                            thermalAvailable = t.thermalAvailable,
+                            diagnostic = t.diagnostic,
+                        )
                     }
 
                     // SLOW TIER (every ~5s): memory
@@ -1275,7 +1289,18 @@ class AppViewModel(
                     // when skin is available. Falls back to die when no skin
                     // sensor exists. Old `.gameperf` exports stay readable
                     // because the field type didn't change.
-                    val userFacingTemp = when {
+                    //
+                    // v4.4.1 (temperature-not-shown): make the "no thermal data" path
+                    // EXPLICIT instead of silently falling through the three-branch
+                    // when() to NaN. AdbThermalParser flips lastThermal.thermalAvailable
+                    // to false when no CPU/SKIN zone classifies (unsupported vendor,
+                    // permission denied, all temps OOR). Short-circuiting here keeps
+                    // tempCpuHistory empty so the post-loop maxOrNull stays at 0.0 AND
+                    // the persisted thermalAvailable=false propagates downstream — the
+                    // report will render "N/D" + diagnostic banner instead of "0°C".
+                    val userFacingTemp = if (!lastThermal.thermalAvailable) {
+                        Double.NaN
+                    } else when {
                         !lastThermal.skin.isNaN() && lastThermal.skin > 0 -> lastThermal.skin
                         !lastThermal.dieCpu.isNaN() && lastThermal.dieCpu > 0 -> lastThermal.dieCpu
                         !lastThermal.cpu.isNaN() && lastThermal.cpu > 0 -> lastThermal.cpu
@@ -1771,6 +1796,16 @@ class AppViewModel(
                 filteredAggregates = _result.value.filteredAggregates,
                 conclusions = _result.value.conclusions,
                 captureStartMs = captureStartTime,
+                // v4.4.1 (temperature-not-shown, Q2): persist the per-tick availability
+                // flag from the last thermal sample. AdbThermalParser sets it to false
+                // when the device exposes no classifiable CPU/SKIN zone (unsupported
+                // vendor like Pixel XL pre-T0 + Tab A8 pre-T0, permission denied, all
+                // temps OOR). Default `true` on the var preserves v4.3.x behavior: a
+                // session that NEVER captured thermal at all (zero ticks, e.g. ultra
+                // short captures or an iOS-only run that bypassed the Android branch)
+                // still records `true` and the report renders the legacy 0°C cell —
+                // matching pre-v4.4.1 user experience.
+                thermalAvailable = lastThermal.thermalAvailable,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {
