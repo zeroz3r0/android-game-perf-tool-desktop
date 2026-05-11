@@ -1667,6 +1667,13 @@ class AppViewModel(
                     memTimedFiltered = memTimed.toList().outsideEventWindows(),
                     tempCpuTimedFiltered = tempCpuTimed.toList().outsideEventWindows(),
                     fpsTimedFiltered = fpsTimed.toList().outsideEventWindows(),
+                    // v4.4.1 (discovery #274 + Q2 frozen): sourced from the
+                    // last per-tick snapshot. When the thermal pipeline could
+                    // not classify any zone (vendor catalog gap, permission
+                    // denied, OOR), `false` propagates to the 3 thermal-derived
+                    // rules so they short-circuit instead of emitting a
+                    // fabricated "device has headroom" claim.
+                    thermalAvailable = lastThermal.thermalAvailable,
                 )
                 ConclusionEngine.run(conclusionInput)
             }

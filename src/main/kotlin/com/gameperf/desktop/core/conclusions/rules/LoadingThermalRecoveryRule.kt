@@ -28,6 +28,11 @@ object LoadingThermalRecoveryRule : Rule {
     private const val TEMP_DROP_DELTA = 1.5
 
     override fun matches(input: ConclusionInput): Boolean {
+        // v4.4.1 (discovery #274): the recovery delta is meaningless when both
+        // raw.maxTempCpu and filtered.maxTempCpu are sentinel zeros from a
+        // failed thermal pipeline. Short-circuit so the conclusions section
+        // does not surface a fake "loading offered thermal recovery" claim.
+        if (!input.thermalAvailable) return false
         val loadings = input.events.filter { ev ->
             ev.type == EventType.LOADING && ev.endMs != null
         }

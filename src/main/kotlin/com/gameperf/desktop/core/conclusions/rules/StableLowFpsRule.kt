@@ -31,6 +31,11 @@ object StableLowFpsRule : Rule {
     private const val THERMAL_HEADROOM_THRESHOLD = 42.0
 
     override fun matches(input: ConclusionInput): Boolean {
+        // v4.4.1 (discovery #274): without this guard a vendor-zone-catalog gap
+        // that silently zeroes maxTempCpu produces a fabricated "device has
+        // headroom" recommendation. Skip thermal-derived claims when the parser
+        // could not produce a usable snapshot.
+        if (!input.thermalAvailable) return false
         val targetFps = input.targetFps
         if (targetFps <= 0) return false
         return input.filtered.p50 <= FPS_RATIO_THRESHOLD * targetFps &&
