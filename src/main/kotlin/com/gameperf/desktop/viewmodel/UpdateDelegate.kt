@@ -12,9 +12,11 @@ import java.io.File
 import kotlin.system.exitProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -77,58 +79,158 @@ class UpdateDelegate(
         val release = _updateAvailable.value ?: return
         val downloadUrl = release.jarUrl
         if (downloadUrl == null) {
-            _updateError.value = "No hay JAR disponible para tu plataforma. Descarga manualmente desde: ${release.htmlUrl}"
+            // No JAR asset available — synthesize a download failure outcome so the
+            // fallback panel renders alongside the legacy banner string. Spec E1.
+            val message = "No hay JAR disponible para tu plataforma. " +
+                "Descarga manualmente desde: ${release.htmlUrl}"
+            _updateError.value = message
+            applyOutcome(
+                result = AutoUpdater.UpdateResult(
+                    success = false,
+                    message = message,
+                    outcome = UpdateOutcome.FailedDownload(httpStatus = null, message = message),
+                ),
+                attemptedVersion = release.version,
+                durationMs = 0L,
+            )
             return
         }
         scope.launch(Dispatchers.IO) {
             _updateProgress.value = 0f
             _updateError.value = null
+            val startedAtMs = System.currentTimeMillis()
             try {
                 val file = AutoUpdater.downloadUpdate(downloadUrl) { progress ->
                     _updateProgress.value = progress
                 }
-                if (file != null) {
-                    _updateProgress.value = 1f
-                    delay(500)
-                    val result = AutoUpdater.applyUpdate(file)
-                    when {
-                        // v4.3.8: protected-path Windows install — UAC helper has been
-                        // spawned. Show a status message, then exit so the helper can
-                        // replace the JAR and relaunch the app under the new version.
-                        result.success && result.pendingElevatedExit -> {
-                            _updateError.value = null
-                            _updateProgress.value = null
-                            onStatusMessage(
-                                "Cerrando GamePerf para aplicar la actualización con permisos de administrador. " +
-                                    "Volverá a abrir automáticamente."
-                            )
-                            // Give the user a beat to read the message before the window vanishes.
-                            delay(1500)
-                            exitProcess(0)
-                        }
-                        result.success && result.needsManualRestart -> {
-                            _updateError.value = null
-                            _updateProgress.value = null
-                            onStatusMessage(result.message)
-                        }
-                        !result.success -> {
-                            _updateError.value = result.message.ifEmpty { "Error al aplicar la actualización" }
-                            _updateProgress.value = null
-                        }
-                    }
-                } else {
+                if (file == null) {
                     val reason = AutoUpdater.lastDownloadError
-                    _updateError.value = if (reason.isNullOrBlank()) {
+                    val msg = if (reason.isNullOrBlank()) {
                         "Error al descargar la actualizacion."
                     } else {
                         "Error al descargar: $reason"
                     }
+                    _updateError.value = msg
                     _updateProgress.value = null
+                    // v4.4.1 (T6.3): production wiring of applyOutcome for the
+                    // download failure path. Spec E1.
+                    applyOutcome(
+                        result = AutoUpdater.UpdateResult(
+                            success = false,
+                            message = msg,
+                            outcome = UpdateOutcome.FailedDownload(httpStatus = null, message = msg),
+                        ),
+                        attemptedVersion = release.version,
+                        durationMs = System.currentTimeMillis() - startedAtMs,
+                    )
+                    return@launch
+                }
+                _updateProgress.value = 1f
+                delay(500)
+                // v4.4.1 (T6.4): kick off a best-effort status ticker so the user
+                // sees "Verificando actualización... (Ns / 8s)" while AutoUpdater's
+                // 8s post-spawn watchdog polls the helper canary. The ticker is
+                // cancelled the moment applyUpdate returns.
+                val watchdogTicker: Job = launchWatchdogStatusTicker()
+                val result = try {
+                    // v4.4.1 (T6.3): thread release.version to applyUpdate so the
+                    // staged JAR filename + downstream outcome surface the target
+                    // version (spec N1/N2).
+                    AutoUpdater.applyUpdate(file, release.version)
+                } finally {
+                    watchdogTicker.cancel()
+                }
+                when {
+                    // v4.3.8: protected-path Windows install — UAC helper has been
+                    // spawned. Show a status message, then exit so the helper can
+                    // replace the JAR and relaunch the app under the new version.
+                    result.success && result.pendingElevatedExit -> {
+                        _updateError.value = null
+                        _updateProgress.value = null
+                        // v4.4.1 (T6.3): record the success outcome BEFORE exitProcess
+                        // so the history.jsonl line is durable across the relaunch.
+                        applyOutcome(
+                            result = result,
+                            attemptedVersion = release.version,
+                            durationMs = System.currentTimeMillis() - startedAtMs,
+                        )
+                        onStatusMessage(
+                            "Cerrando GamePerf para aplicar la actualización con permisos de administrador. " +
+                                "Volverá a abrir automáticamente."
+                        )
+                        // Give the user a beat to read the message before the window vanishes.
+                        delay(1500)
+                        exitProcess(0)
+                    }
+                    result.success && result.needsManualRestart -> {
+                        _updateError.value = null
+                        _updateProgress.value = null
+                        applyOutcome(
+                            result = result,
+                            attemptedVersion = release.version,
+                            durationMs = System.currentTimeMillis() - startedAtMs,
+                        )
+                        onStatusMessage(result.message)
+                    }
+                    result.success -> {
+                        // Direct-write success path (FAT_JAR_STANDALONE etc. that
+                        // System.exit'd already; this branch is largely defensive).
+                        _updateError.value = null
+                        _updateProgress.value = null
+                        applyOutcome(
+                            result = result,
+                            attemptedVersion = release.version,
+                            durationMs = System.currentTimeMillis() - startedAtMs,
+                        )
+                    }
+                    else -> {
+                        _updateError.value = result.message.ifEmpty { "Error al aplicar la actualización" }
+                        _updateProgress.value = null
+                        // v4.4.1 (T6.3): every failure path (watchdog timeout,
+                        // helper crash, unknown) lands in applyOutcome — that's
+                        // what mounts the fallback panel + writes history.
+                        applyOutcome(
+                            result = result,
+                            attemptedVersion = release.version,
+                            durationMs = System.currentTimeMillis() - startedAtMs,
+                        )
+                    }
                 }
             } catch (e: Exception) {
-                _updateError.value = "Error: ${e.message}"
+                val msg = "Error: ${e.message}"
+                _updateError.value = msg
                 _updateProgress.value = null
+                applyOutcome(
+                    result = AutoUpdater.UpdateResult(
+                        success = false,
+                        message = msg,
+                        outcome = UpdateOutcome.FailedUnknown(msg),
+                    ),
+                    attemptedVersion = release.version,
+                    durationMs = System.currentTimeMillis() - startedAtMs,
+                )
             }
+        }
+    }
+
+    /**
+     * v4.4.1 (T6.4) — Best-effort UI status ticker for the post-spawn watchdog.
+     *
+     * Emits "Verificando actualización... ({elapsed}s / 8s)" via [onStatusMessage]
+     * roughly once per second while the 8s `HelperLogWatcher.awaitCanary` polls.
+     * The ticker is cancelled in `finally` once `AutoUpdater.applyUpdate` returns,
+     * so successful early canaries (typical \u003c2s) only flash one or two updates.
+     *
+     * Coupled to ADR-2's 8s default; if the watchdog timeout changes, bump
+     * [WATCHDOG_STATUS_MAX_SECONDS] so the displayed denominator stays accurate.
+     */
+    private fun launchWatchdogStatusTicker(): Job = scope.launch(Dispatchers.IO) {
+        for (elapsed in 1..WATCHDOG_STATUS_MAX_SECONDS) {
+            delay(WATCHDOG_STATUS_TICK_MS)
+            if (!isActive) return@launch
+            onStatusMessage(
+                "Verificando actualización... (${elapsed}s / ${WATCHDOG_STATUS_MAX_SECONDS}s)"
+            )
         }
     }
 
@@ -219,5 +321,11 @@ class UpdateDelegate(
             )
             return FileUpdateHistoryStore(file)
         }
+
+        /** Watchdog status ticker tick (1s — matches ADR-2 8s budget). */
+        private const val WATCHDOG_STATUS_TICK_MS: Long = 1_000L
+
+        /** Maximum elapsed seconds shown in the watchdog status text. */
+        private const val WATCHDOG_STATUS_MAX_SECONDS: Int = 8
     }
 }

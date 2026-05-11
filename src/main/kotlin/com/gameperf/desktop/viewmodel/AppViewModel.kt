@@ -378,6 +378,17 @@ class AppViewModel(
     val updateProgress: StateFlow<Float?> = updateDelegate.updateProgress
     val updateError: StateFlow<String?> = updateDelegate.updateError
 
+    // v4.4.1: fallback panel state — non-null when the last update attempt
+    // failed terminally and HomeScreen should render `UpdateFallbackPanel`.
+    // Supersedes `updateError` for UAC / watchdog / helper failures (those
+    // used to be invisible). Spec REQ "Fallback panel display".
+    val updateFallback: StateFlow<com.gameperf.desktop.core.update.UpdateFallbackState?> =
+        updateDelegate.updateFallback
+
+    /** v4.4.1 — Snapshot of recent [updateAttempts] for the fallback panel's "Detalles técnicos". */
+    fun recentUpdateAttempts(limit: Int = 10): List<com.gameperf.desktop.core.update.UpdateAttempt> =
+        com.gameperf.desktop.viewmodel.UpdateDelegate.defaultHistoryStore().recentAttempts(limit)
+
     // ===== Capture Error (device disconnect, etc.) =====
     /**
      * v4.2.5: live processing status for the post-capture pipeline.
@@ -754,6 +765,9 @@ class AppViewModel(
     fun checkForUpdates() = updateDelegate.checkForUpdates()
     fun downloadAndApplyUpdate() = updateDelegate.downloadAndApplyUpdate()
     fun dismissUpdate() = updateDelegate.dismissUpdate()
+
+    /** v4.4.1 — Wired to the fallback panel's close icon. Spec scenario D1. */
+    fun dismissUpdateFallback() = updateDelegate.dismissFallback()
 
     private fun startDevicePolling() {
         pollingJob?.cancel()
