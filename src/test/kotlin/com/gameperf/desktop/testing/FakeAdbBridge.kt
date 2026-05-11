@@ -90,8 +90,28 @@ open class FakeAdbBridge(
     override fun captureCpuPercent(deviceId: String): Int = 0
     override fun captureCpuPercent(deviceId: String, pkg: String): Int = captureCpuPercent(deviceId)
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? = null
+
+    /**
+     * v4.4.1 — Optional override for [captureTemperature]. When non-null, the
+     * fake returns this exact snapshot (additive — preserves the legacy
+     * NaN-quad default for tests that don't care about thermal). Use the
+     * [setThermal] builder to install a fixture.
+     */
+    @Volatile
+    private var scriptedThermal: ThermalSnapshot? = null
+
+    /**
+     * v4.4.1 builder — install a [ThermalSnapshot] fixture that
+     * [captureTemperature] will return. Defaults to `thermalAvailable=true`
+     * for the legacy NaN-quad case (preserves v4.3.x test semantics).
+     */
+    fun setThermal(snapshot: ThermalSnapshot): FakeAdbBridge {
+        scriptedThermal = snapshot
+        return this
+    }
+
     override fun captureTemperature(deviceId: String): ThermalSnapshot =
-        ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
+        scriptedThermal ?: ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
 
     override fun startScreenRecord(
         deviceId: String, sessionId: String, segment: Int,

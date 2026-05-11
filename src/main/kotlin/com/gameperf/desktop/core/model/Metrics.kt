@@ -1,5 +1,7 @@
 package com.gameperf.desktop.core.model
 
+import kotlinx.serialization.Serializable
+
 /**
  * Platform-agnostic frame timing snapshot.
  * Replaces `AdbBridge.FrameSnapshot`.
@@ -46,11 +48,26 @@ data class MemSnapshot(
  *
  *  v4.3.6 default for [dieCpu] is -1.0 to keep the data class compatible
  *  with kotlinx.serialization decoders for old exports that lack the field.
+ *
+ *  v4.4.1 -- additive widening for the "temperature-not-shown" change:
+ *  - [thermalAvailable] defaults to `true` so all v4.3.x callers keep the
+ *    same behavior. Set to `false` by [com.gameperf.desktop.core.AdbThermalParser]
+ *    when no CPU/SKIN zone yields a valid temperature within the plausibility
+ *    window (e.g. unsupported vendor, permission denied).
+ *  - [diagnostic] is `null` on the happy path. When [thermalAvailable] is
+ *    `false`, the parser populates a [ThermalDiagnostic] listing the raw
+ *    vendor zone names + bucket counts + reason so the report HTML can
+ *    surface a banner instead of rendering a misleading "0°C".
+ *  - `@Serializable` is added so [ThermalDiagnostic] survives `.gameperf`
+ *    export round-trip; pre-v4.4.1 JSON loads with the defaulted fields.
  */
+@Serializable
 data class ThermalSnapshot(
     val cpu: Double,
     val gpu: Double,
     val battery: Double,
     val skin: Double,
     val dieCpu: Double = -1.0,
+    val thermalAvailable: Boolean = true,
+    val diagnostic: ThermalDiagnostic? = null,
 )
