@@ -368,7 +368,12 @@ class AppViewModel(
     val selectedForComparison: StateFlow<Set<String>> = _selectedForComparison
 
     // ===== Auto-Update (delegated v4.1.0) =====
-    private val updateDelegate = UpdateDelegate(scope) { msg -> _statusMessage.value = msg }
+    // v4.4.1: trailing-lambda style replaced with named arg because the constructor
+    // gained an injectable historyStore param after onStatusMessage.
+    private val updateDelegate = UpdateDelegate(
+        scope = scope,
+        onStatusMessage = { msg -> _statusMessage.value = msg },
+    )
     val updateAvailable: StateFlow<AutoUpdater.ReleaseInfo?> = updateDelegate.updateAvailable
     val updateProgress: StateFlow<Float?> = updateDelegate.updateProgress
     val updateError: StateFlow<String?> = updateDelegate.updateError
