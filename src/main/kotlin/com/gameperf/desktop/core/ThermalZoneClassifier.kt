@@ -36,6 +36,24 @@ enum class ThermalCategory { Skin, DieCpu, DieGpu, Battery }
  */
 object ThermalZoneClassifier {
 
+    // ── v4.4.1 vendor catalog patterns (sdd/temperature-not-shown) ───────
+    // Extracted as named constants per design ADR-1, ADR-2 (REFACTOR step).
+
+    /** Pixel XL pre-Treble Qualcomm: `tsens_tz_sensor0` ... `tsens_tz_sensor99`. */
+    internal val TSENS_TZ_PATTERN: Regex = Regex("^tsens_tz_sensor\\d+$")
+
+    /** Samsung Galaxy Tab A8 Unisoc T618: `cluster0-thermal` / `cluster1_thermal` etc. */
+    internal val CLUSTER_THERMAL_PATTERN: Regex = Regex("^cluster\\d+[-_]thermal$")
+
+    /**
+     * v4.4.1 -- Stage-2 prefix guards. Charger IC and PMIC zone names often
+     * contain `cpu` / `skin` substrings (e.g. `chg-controller-cpu-tsens`,
+     * `pmic-thermal-cpu`) yet they MUST NOT pollute DieCpu / Skin buckets
+     * with non-thermal-state values. Belt-and-suspenders rejection BEFORE
+     * the keyword catch-all. See design ADR-2.
+     */
+    internal val STAGE2_REJECT_PREFIXES: List<String> = listOf("chg-", "pmic-")
+
     // ── Step 1 — ignore (literal matches + prefixes) ─────────────────────
 
     private val IGNORE_LITERAL: Set<String> = setOf(
@@ -101,6 +119,9 @@ object ThermalZoneClassifier {
         Regex("^cpu-\\d+-(step|fast)$"),                // Tensor cpu-1-step, cpu-1-fast
         Regex("^(gold|silver|prime)_cluster_thermal$"), // gold_cluster_thermal, etc.
         Regex("^aoss\\d+-usr$"),                        // aoss0-usr, aoss1-usr
+        // v4.4.1 vendor catalog additions (sdd/temperature-not-shown):
+        TSENS_TZ_PATTERN,                               // Pixel XL pre-Treble Qualcomm: tsens_tz_sensor[0-9]+
+        CLUSTER_THERMAL_PATTERN,                        // Tab A8 Unisoc T618: cluster[0-9]+(-|_)thermal
     )
 
     private val DIE_GPU_LITERAL: Set<String> = setOf(
@@ -108,6 +129,8 @@ object ThermalZoneClassifier {
         "g3d",
         "mali",
         "mali-thermal",
+        // v4.4.1 -- Tab A8 Unisoc Mali alias.
+        "ump_thermal",
     )
 
     private val DIE_GPU_PATTERN: List<Regex> = listOf(
@@ -140,5 +163,44 @@ object ThermalZoneClassifier {
         if (BATTERY_PATTERN.matches(name)) return ThermalCategory.Battery
 
         return null
+    }
+
+    /**
+     * v4.4.1 -- Stage-2 keyword catch-all heuristic, called by
+     * [com.gameperf.desktop.core.AdbThermalParser] ONLY when [classify]
+     * returns `null`. Lets the desktop tool produce a usable DieCpu / DieGpu
+     * / Skin reading on vendors not yet in the strict allow-list, instead of
+     * silently dropping the zone and showing the user a misleading 0 C.
+     *
+     * Order of operations (see design ADR-2):
+     *  1. Lowercase + trim the input.
+     *  2. Reject anything starting with [STAGE2_REJECT_PREFIXES] (`chg-`,
+     *     `pmic-`). These are charger / PMIC chips whose zone names contain
+     *     `cpu` / `skin` substrings but are NOT user-relevant temperatures.
+     *  3. Match keyword family:
+     *     - contains `cpu` OR `core` -> DieCpu
+     *     - contains `gpu` OR `mali` OR `kgsl` -> DieGpu
+     *     - contains `skin` OR `case` OR `back` -> Skin
+     *  4. No match -> `null` (caller leaves the snapshot unpopulated).
+     *
+     * Plausibility gating (value sanity) lives at the parser layer
+     * ([AdbThermalParser.parseThermalZonesOutput]) per design ADR-3, NOT
+     * here. This method is naming-only.
+     *
+     * Public so [AdbThermalParser] can call it directly without a friend
+     * class workaround. The strict allow-list classifier
+     * ([classify]) remains the primary entry point.
+     */
+    fun classifyHeuristic(typeName: String): ThermalCategory? {
+        val name = typeName.lowercase().trim()
+        if (name.isEmpty()) return null
+        // Belt-and-suspenders: prefix guard BEFORE keyword match.
+        if (STAGE2_REJECT_PREFIXES.any { name.startsWith(it) }) return null
+        return when {
+            "cpu" in name || "core" in name -> ThermalCategory.DieCpu
+            "gpu" in name || "mali" in name || "kgsl" in name -> ThermalCategory.DieGpu
+            "skin" in name || "case" in name || "back" in name -> ThermalCategory.Skin
+            else -> null
+        }
     }
 }
