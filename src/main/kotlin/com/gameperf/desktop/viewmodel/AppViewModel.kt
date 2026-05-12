@@ -112,7 +112,17 @@ data class LiveMetrics(
     val tempGpuHistory: List<Double> = emptyList(),
     val tempSkinHistory: List<Double> = emptyList(),
     val frameTimeHistory: List<Double> = emptyList(),
-    val allFrameTimes: List<Double> = emptyList()
+    val allFrameTimes: List<Double> = emptyList(),
+    // v4.5.0 — FPower live tile (mW/frame). The HUD reads [fpower] for the
+    // single scalar. [fpowerHistory] / [fpowerTimed] mirror the thermal-history
+    // snapshot pattern at lines 111-113 so the graphs draw without extra plumbing.
+    // Default 0.0 is the "no reading yet" value; the loop emits the real value
+    // only when [com.gameperf.desktop.core.model.FPowerSnapshot.fpowerAvailable]
+    // is true (otherwise it stays 0 and the HUD reads as "--", same convention
+    // the legacy `tempCpu` tile uses).
+    val fpower: Double = 0.0,
+    val fpowerHistory: List<Double> = emptyList(),
+    val fpowerTimed: List<TimedSample> = emptyList(),
 )
 
 /**
@@ -171,6 +181,17 @@ data class SessionResult(
     val filteredAggregates: com.gameperf.desktop.core.metrics.MetricsAggregates? = null,
     val conclusions: List<com.gameperf.desktop.core.conclusions.Conclusion> = emptyList(),
     val detectionMode: DetectionMode = DetectionMode.MANUAL_ONLY,
+    // v4.5.0 — FPower aggregates + history payload (spec FPW-008). Mirrors the
+    // [thermalAvailable] precedent: `fpowerAvailable=true` is the v4.4.x-compatible
+    // default so any caller that constructs a [SessionResult] without naming
+    // these args stays semantically unchanged. [fpowerAvg] / [fpowerPeak] are
+    // computed post-loop from [fpowerHistory] (empty → 0.0).
+    val fpowerAvailable: Boolean = true,
+    val fpowerDiagnostic: com.gameperf.desktop.core.model.FPowerDiagnostic? = null,
+    val fpowerHistory: List<Double> = emptyList(),
+    val fpowerTimed: List<TimedSample> = emptyList(),
+    val fpowerAvg: Double = 0.0,
+    val fpowerPeak: Double = 0.0,
 )
 
 /**
@@ -1078,6 +1099,12 @@ class AppViewModel(
             val frameTimeTimed = mutableListOf<TimedSample>()
             val jankTimed = mutableListOf<TimedSample>()
             val stutterTimed = mutableListOf<TimedSample>()
+            // v4.5.0 — FPower accumulators (design §9b). Parallels the thermal history
+            // pattern at lines 1056-1077. Single timeline; the per-tick capture lands a
+            // value when [com.gameperf.desktop.core.model.FPowerSnapshot.fpowerAvailable]
+            // is true AND `fpowerMwPerFrame > 0` (see history-append guard below).
+            val fpowerHistory = mutableListOf<Double>()
+            val fpowerTimed = mutableListOf<TimedSample>()
             var totalJank = 0
             var totalStutter = 0
             var consecutiveAdbFailures = 0
@@ -1105,6 +1132,13 @@ class AppViewModel(
             var iterCount = 0
             var lastMem: com.gameperf.desktop.core.model.MemSnapshot? = null
             var lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
+            // v4.5.0 — FPower live cache (design §9a). The default snapshot has all
+            // numeric fields = -1.0 with `fpowerAvailable=true` (the v4.4.x-compatible
+            // sentinel from FPowerSnapshot in Metrics.kt:93). The per-tick capture
+            // overwrites this when the medium-cadence (`iterCount % 4 == 0`) tier fires.
+            // Pre-first-poll the history-append guard `fpowerMwPerFrame > 0` excludes
+            // the sentinel so no -1.0 value contaminates [fpowerHistory].
+            var lastFPower = com.gameperf.desktop.core.model.FPowerSnapshot()
 
             // v4.3.5 — FPS resume after ad / interstitial:
             // After an ad close the SurfaceFlinger layer cache (inside AdbBridge)
@@ -1194,6 +1228,17 @@ class AppViewModel(
                             thermalAvailable = t.thermalAvailable,
                             diagnostic = t.diagnostic,
                         )
+                        // v4.5.0 — FPower poll co-located with thermal at the medium tier
+                        // (~2s cadence at the 500ms loop, design §9c + ADR-6). The bridge
+                        // owns the per-device path cache so steady-state cost is ~2 shell
+                        // reads. We pass [frame?.fps] as the per-tick honest reading per
+                        // ADR-3 (FPS = same per-tick value, NOT smoothed). On `fps <= 0`
+                        // the parser raises FPS_ZERO and the tick is dropped by the
+                        // history-append guard below.
+                        val rawFpsForFpower = (frame?.fps ?: 0).toDouble()
+                        val fpowerSnap = adb.captureFPower(device.id, currentFps = rawFpsForFpower)
+                        if (shouldStop) break
+                        lastFPower = fpowerSnap
                     }
 
                     // SLOW TIER (every ~5s): memory
@@ -1330,6 +1375,18 @@ class AppViewModel(
                         if (tempDieCpuHistory.size > MAX_HISTORY_SIZE) tempDieCpuHistory.removeFirst()
                         if (tempDieCpuTimed.size > MAX_HISTORY_SIZE) tempDieCpuTimed.removeFirst()
                     }
+                    // v4.5.0 — FPower history append (design §9d). Co-located with thermal
+                    // recording at the same `iterCount % 4 == 1` cadence (one tick AFTER
+                    // the poll above so the freshest read lands here). Guards both on the
+                    // availability flag AND `> 0` so the sentinel -1.0 from a pre-first-poll
+                    // [FPowerSnapshot] AND the parser's `IMPLAUSIBLE_VALUE` fallback both
+                    // stay out of the persisted timeline.
+                    if (lastFPower.fpowerAvailable && lastFPower.fpowerMwPerFrame > 0) {
+                        fpowerHistory.add(lastFPower.fpowerMwPerFrame)
+                        fpowerTimed.add(TimedSample(sampleSecond, lastFPower.fpowerMwPerFrame))
+                        if (fpowerHistory.size > MAX_HISTORY_SIZE) fpowerHistory.removeFirst()
+                        if (fpowerTimed.size > MAX_HISTORY_SIZE) fpowerTimed.removeFirst()
+                    }
                 }
                 if (frame != null && frame.avgFrameTime > 0) {
                     frameTimeAvgHistory.add(frame.avgFrameTime)
@@ -1396,7 +1453,15 @@ class AppViewModel(
                     tempGpuHistory = if (snapshotHistories) tempGpuHistory.toList() else prev.tempGpuHistory,
                     tempSkinHistory = if (snapshotHistories) tempSkinHistory.toList() else prev.tempSkinHistory,
                     frameTimeHistory = if (snapshotHistories) frameTimeAvgHistory.toList() else prev.frameTimeHistory,
-                    allFrameTimes = if (snapshotHistories) allFrameTimes.toList() else prev.allFrameTimes
+                    allFrameTimes = if (snapshotHistories) allFrameTimes.toList() else prev.allFrameTimes,
+                    // v4.5.0 — FPower live tile + history (design §9e). The scalar follows
+                    // the same "0.0 when unavailable" convention as the legacy thermal
+                    // tiles: HUD reads as "--" instead of a misleading numeric value. List
+                    // snapshots mirror the `snapshotHistories` 0.5 Hz gate so the graphs
+                    // refresh at the same cadence as the thermal histories.
+                    fpower = if (lastFPower.fpowerAvailable) lastFPower.fpowerMwPerFrame else 0.0,
+                    fpowerHistory = if (snapshotHistories) fpowerHistory.toList() else prev.fpowerHistory,
+                    fpowerTimed = if (snapshotHistories) fpowerTimed.toList() else prev.fpowerTimed,
                 )
             }
 
@@ -1758,6 +1823,15 @@ class AppViewModel(
                 // would always default to MANUAL_ONLY and the persisted history would
                 // lie about whether the auto-detector actually ran (Bug 2 fidelity fix).
                 detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
+                // v4.5.0 — FPower aggregates + history payload (design §9f, spec FPW-008).
+                // Empty history → 0.0 for both avg and peak (mirrors the post-loop guard at
+                // `maxTempCpu = tempCpuHistory.maxOrNull() ?: 0.0`).
+                fpowerAvailable = lastFPower.fpowerAvailable,
+                fpowerDiagnostic = lastFPower.diagnostic,
+                fpowerHistory = fpowerHistory.toList(),
+                fpowerTimed = fpowerTimed.toList(),
+                fpowerAvg = if (fpowerHistory.isNotEmpty()) fpowerHistory.average() else 0.0,
+                fpowerPeak = fpowerHistory.maxOrNull() ?: 0.0,
             )
 
             // P95 frame time
@@ -1822,6 +1896,17 @@ class AppViewModel(
                 // still records `true` and the report renders the legacy 0°C cell —
                 // matching pre-v4.4.1 user experience.
                 thermalAvailable = lastThermal.thermalAvailable,
+                // v4.5.0 — FPower mirror of the session payload (design §9f, spec FPW-008).
+                // Pull from _result.value so a future refactor that drops a field at the
+                // SessionResult build site here gets caught by the round-trip tests at the
+                // HistoryEntry boundary. Mirrors how detectionMode/events/aggregates are
+                // sourced from _result.value (Bug 2 lesson — single source of truth).
+                fpowerAvailable = _result.value.fpowerAvailable,
+                fpowerDiagnostic = _result.value.fpowerDiagnostic,
+                fpowerHistory = _result.value.fpowerHistory,
+                fpowerTimed = _result.value.fpowerTimed,
+                fpowerAvg = _result.value.fpowerAvg,
+                fpowerPeak = _result.value.fpowerPeak,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {

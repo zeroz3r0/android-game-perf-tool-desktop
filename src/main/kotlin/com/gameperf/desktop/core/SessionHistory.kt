@@ -3,9 +3,11 @@ package com.gameperf.desktop.core
 import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.metrics.MetricsAggregates
+import com.gameperf.desktop.core.model.FPowerDiagnostic
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
+import com.gameperf.desktop.viewmodel.TimedSample
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -191,6 +193,19 @@ object SessionHistory {
         // plausibility window (unsupported vendor, permission denied, ...). The report then
         // renders "N/D" plus a diagnostic banner instead of a misleading "0°C".
         val thermalAvailable: Boolean = true,
+        // v4.5.0 — FPower metric (mW per frame, see core/model/FPowerSnapshot). Defaults
+        // mirror the thermalAvailable pattern: `fpowerAvailable=true` preserves backward
+        // compat with v4.4.1 history.json rows (no FPower section rendered if history is
+        // empty AND fpowerAvailable=true). [FPowerDiagnostic] is itself @Serializable so
+        // it nests cleanly into the entry. [fpowerTimed] uses `List<List<Double>>` of
+        // shape `[second, value]` to mirror the [fpsTimed] workaround for non-@Serializable
+        // [TimedSample] — converted both ways in [toSerializable] / [toHistoryEntry].
+        val fpowerAvailable: Boolean = true,
+        val fpowerDiagnostic: FPowerDiagnostic? = null,
+        val fpowerHistory: List<Double> = emptyList(),
+        val fpowerTimed: List<List<Double>> = emptyList(),
+        val fpowerAvg: Double = 0.0,
+        val fpowerPeak: Double = 0.0,
     )
 
     data class HistoryEntry(
@@ -236,6 +251,17 @@ object SessionHistory {
         // Default `true` keeps every existing call site that constructs a HistoryEntry
         // without naming this argument byte-equivalent to the pre-v4.4.1 behavior.
         val thermalAvailable: Boolean = true,
+        // v4.5.0 — FPower mirror of [SerializableEntry] fpower* fields. [fpowerTimed]
+        // is the typed [TimedSample] form on the domain side; the wire format flattens
+        // each sample to a `[second, value]` 2-list. Defaults align with v4.4.1 compat:
+        // `fpowerAvailable=true`, empty history, null diagnostic — a pre-v4.5.0 row
+        // hydrates as "fpower section not present, render unchanged".
+        val fpowerAvailable: Boolean = true,
+        val fpowerDiagnostic: FPowerDiagnostic? = null,
+        val fpowerHistory: List<Double> = emptyList(),
+        val fpowerTimed: List<TimedSample> = emptyList(),
+        val fpowerAvg: Double = 0.0,
+        val fpowerPeak: Double = 0.0,
     )
 
     // ===== Conversion =====
@@ -261,6 +287,15 @@ object SessionHistory {
         captureStartMs = captureStartMs,
         // v4.4.1: persist the thermal-availability flag verbatim.
         thermalAvailable = thermalAvailable,
+        // v4.5.0 — FPower fields. [TimedSample] is non-@Serializable so we flatten
+        // each sample to a 2-element `[second, value]` Double list (mirrors the
+        // [fpsTimed] precedent).
+        fpowerAvailable = fpowerAvailable,
+        fpowerDiagnostic = fpowerDiagnostic,
+        fpowerHistory = fpowerHistory,
+        fpowerTimed = fpowerTimed.map { listOf(it.second.toDouble(), it.value) },
+        fpowerAvg = fpowerAvg,
+        fpowerPeak = fpowerPeak,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -290,6 +325,17 @@ object SessionHistory {
         captureStartMs = captureStartMs,
         // v4.4.1: hydrate the thermal-availability flag (default true for legacy rows).
         thermalAvailable = thermalAvailable,
+        // v4.5.0 — FPower hydration. The wire form is `List<List<Double>>` (each entry
+        // shape `[second, value]`); skip malformed sub-arrays defensively (mirrors the
+        // [fpsTimed] decoder hardening in this same converter).
+        fpowerAvailable = fpowerAvailable,
+        fpowerDiagnostic = fpowerDiagnostic,
+        fpowerHistory = fpowerHistory,
+        fpowerTimed = fpowerTimed.mapNotNull {
+            if (it.size >= 2) TimedSample(it[0].toInt(), it[1]) else null
+        },
+        fpowerAvg = fpowerAvg,
+        fpowerPeak = fpowerPeak,
     )
 
     // ===== Public API (unchanged contract) =====

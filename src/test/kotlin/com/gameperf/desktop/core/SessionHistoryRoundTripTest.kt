@@ -6,7 +6,10 @@ import com.gameperf.desktop.core.events.Confidence
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventType
 import com.gameperf.desktop.core.metrics.MetricsAggregates
+import com.gameperf.desktop.core.model.FPowerDiagnostic
+import com.gameperf.desktop.core.model.FPowerUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
+import com.gameperf.desktop.viewmodel.TimedSample
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -283,6 +286,110 @@ class SessionHistoryRoundTripTest {
             loaded.first().thermalAvailable,
             "Missing thermalAvailable field defaults to true for v4.3.x compat",
         )
+    }
+
+    // ===== v4.5.0 — FPower fields round-trip =====
+
+    @Test
+    fun `round-trip preserves fpower happy path (available + history)`() {
+        val history = listOf(38.4, 42.1, 50.0, 51.2)
+        val timed = history.mapIndexed { i, v -> TimedSample(i * 2, v) }
+        val entry = fullEntry().copy(
+            id = "fpower-happy",
+            fpowerAvailable = true,
+            fpowerHistory = history,
+            fpowerTimed = timed,
+            fpowerAvg = history.average(),
+            fpowerPeak = history.max(),
+        )
+        SessionHistory.addEntry(entry)
+
+        val loaded = SessionHistory.load().firstOrNull { it.id == "fpower-happy" }
+        assertNotNull(loaded)
+        assertTrue(loaded.fpowerAvailable, "fpowerAvailable=true must round-trip")
+        assertEquals(history, loaded.fpowerHistory, "fpowerHistory must round-trip")
+        assertEquals(timed.size, loaded.fpowerTimed.size, "fpowerTimed arity must match")
+        // TimedSample is a data class — element equality is structural.
+        assertEquals(timed, loaded.fpowerTimed, "fpowerTimed must round-trip element-equal")
+        assertEquals(history.average(), loaded.fpowerAvg, 0.0001)
+        assertEquals(history.max(), loaded.fpowerPeak, 0.0001)
+        assertNull(loaded.fpowerDiagnostic, "happy path has no diagnostic")
+    }
+
+    @Test
+    fun `round-trip preserves fpower unavailable path with diagnostic`() {
+        val diag = FPowerDiagnostic(
+            rawPathsTried = listOf(
+                "/sys/class/power_supply/battery/current_now",
+                "/sys/class/power_supply/battery/voltage_now",
+                "/sys/class/power_supply/battery/batt_current_ua_now",
+            ),
+            lastReadout = mapOf(
+                "/sys/class/power_supply/battery/current_now" to "",
+                "/sys/class/power_supply/battery/voltage_now" to "",
+            ),
+            reason = FPowerUnavailableReason.BATTERY_PATH_MISSING,
+        )
+        val entry = fullEntry().copy(
+            id = "fpower-unavail",
+            fpowerAvailable = false,
+            fpowerDiagnostic = diag,
+            fpowerHistory = emptyList(),
+            fpowerTimed = emptyList(),
+        )
+        SessionHistory.addEntry(entry)
+
+        val loaded = SessionHistory.load().firstOrNull { it.id == "fpower-unavail" }
+        assertNotNull(loaded)
+        assertFalse(loaded.fpowerAvailable, "fpowerAvailable=false must round-trip")
+        val diag2 = loaded.fpowerDiagnostic
+        assertNotNull(diag2)
+        assertEquals(FPowerUnavailableReason.BATTERY_PATH_MISSING, diag2.reason)
+        assertEquals(3, diag2.rawPathsTried.size)
+        assertEquals(2, diag2.lastReadout.size)
+        assertTrue(loaded.fpowerHistory.isEmpty())
+    }
+
+    @Test
+    fun `legacy v4_4_1 JSON without fpower fields loads with defaults (FPW-012)`() {
+        // Hand-rolled v4.4.1 payload — has thermalAvailable but no fpower fields.
+        // FPW-012 backward compat: fpowerAvailable=true, history empty, diagnostic null.
+        val legacyJson = """
+            [
+              {
+                "id": "legacy-v441",
+                "name": "legacy v4.4.1 session",
+                "gamePackage": "com.legacy.game",
+                "deviceModel": "Pixel 6",
+                "grade": "B",
+                "deviceGrade": "B",
+                "avgFps": 55,
+                "duration": 300,
+                "date": "01/01/2026 00:00",
+                "reportPath": "",
+                "videoPath": "",
+                "tag": "OUR_GAME",
+                "competitorName": "",
+                "isFavorite": false,
+                "thermalAvailable": true
+              }
+            ]
+        """.trimIndent()
+        tempFile.parentFile?.mkdirs()
+        tempFile.writeText(legacyJson)
+
+        val loaded = SessionHistory.load()
+        assertEquals(1, loaded.size)
+        val entry = loaded.first()
+        assertTrue(
+            entry.fpowerAvailable,
+            "Missing fpowerAvailable defaults to true (v4.4.1 compat)",
+        )
+        assertNull(entry.fpowerDiagnostic, "Missing fpowerDiagnostic defaults to null")
+        assertTrue(entry.fpowerHistory.isEmpty(), "Missing fpowerHistory defaults to empty")
+        assertTrue(entry.fpowerTimed.isEmpty(), "Missing fpowerTimed defaults to empty")
+        assertEquals(0.0, entry.fpowerAvg, "Missing fpowerAvg defaults to 0.0")
+        assertEquals(0.0, entry.fpowerPeak, "Missing fpowerPeak defaults to 0.0")
     }
 
     @Test
