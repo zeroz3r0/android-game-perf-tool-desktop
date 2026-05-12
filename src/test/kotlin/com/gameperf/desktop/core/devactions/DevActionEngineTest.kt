@@ -147,23 +147,90 @@ class DevActionEngineTest {
     }
 
     @Test
-    fun `DAB-003 - DevActionEngine returns empty codeAreaHints in Sprint 0 (catalogs empty)`() {
+    fun `DAB-003 - DevActionEngine populates codeAreaHints from catalog in Sprint 1`() {
         val brief = DevActionEngine.run(multiRuleInput())
         brief.items.forEach { item ->
             assertTrue(
-                item.codeAreaHints.isEmpty(),
-                "Sprint 0 catalog must be empty; got ${item.codeAreaHints} for ${item.ruleId}",
+                item.codeAreaHints.isNotEmpty(),
+                "Sprint 1 catalog must yield hints; got empty for ${item.ruleId}",
             )
         }
     }
 
     @Test
-    fun `DAB-004 - DevActionEngine returns empty suggestedActions in Sprint 0 (catalogs empty)`() {
+    fun `DAB-004 - DevActionEngine populates suggestedActions from catalog in Sprint 1`() {
         val brief = DevActionEngine.run(multiRuleInput())
         brief.items.forEach { item ->
             assertTrue(
-                item.suggestedActions.isEmpty(),
-                "Sprint 0 catalog must be empty; got ${item.suggestedActions} for ${item.ruleId}",
+                item.suggestedActions.isNotEmpty(),
+                "Sprint 1 catalog must yield actions; got empty for ${item.ruleId}",
+            )
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Sprint 1 — per-rule × per-engine enrichment (DAB-003, DAB-004, DAB-006)
+    // ────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `DAB-003 - Sprint 1 — every production rule yields engine-tagged hints for UNITY`() {
+        assertEverRuleProducesHintsFor(GameEngine.UNITY)
+    }
+
+    @Test
+    fun `DAB-003 - Sprint 1 — every production rule yields engine-tagged hints for UNREAL`() {
+        assertEverRuleProducesHintsFor(GameEngine.UNREAL)
+    }
+
+    @Test
+    fun `DAB-003 - Sprint 1 — every production rule yields engine-tagged hints for COCOS2D`() {
+        assertEverRuleProducesHintsFor(GameEngine.COCOS2D)
+    }
+
+    @Test
+    fun `DAB-006 - Sprint 1 — GODOT engine input falls through to GENERIC hints`() {
+        // GameEngine.GODOT has no dedicated catalog entries (design ADR-3 — fall through to GENERIC).
+        // We cannot wire the engine into DevActionEngine.run yet (Sprint 2 ships GameEngineDetector),
+        // but the catalog itself must already implement the fallback so Sprint 2 has the contract.
+        com.gameperf.desktop.core.conclusions.RuleRegistry.all.forEach { rule ->
+            val godot = CodeAreaCatalog.lookup(rule.id, GameEngine.GODOT)
+            val generic = CodeAreaCatalog.lookup(rule.id, GameEngine.GENERIC)
+            assertEquals(generic, godot, "GODOT must fall through to GENERIC for ${rule.id}")
+        }
+    }
+
+    @Test
+    fun `DAB-004 - Sprint 1 — engineSpecific filtering drops UNITY-only steps when engine is UNREAL`() {
+        // We probe the catalog directly for any rule that has at least one UNITY-tagged step.
+        val ruleWithUnityStep = com.gameperf.desktop.core.conclusions.RuleRegistry.all.firstOrNull { rule ->
+            ActionStepsCatalog.lookup(rule.id).any { it.engineSpecific == GameEngine.UNITY }
+        }
+        // If no Unity-tagged step exists this assertion is vacuously true; Sprint 1 expectation is
+        // at least one Unity-specific step somewhere in the catalog.
+        assertTrue(
+            ruleWithUnityStep != null,
+            "Sprint 1 must ship at least one ActionStep with engineSpecific=UNITY.",
+        )
+        val steps = ActionStepsCatalog.lookup(ruleWithUnityStep.id)
+        val filteredForUnreal = steps.filter {
+            it.engineSpecific == null || it.engineSpecific == GameEngine.UNREAL
+        }
+        assertTrue(
+            filteredForUnreal.none { it.engineSpecific == GameEngine.UNITY },
+            "Unity-tagged steps must NOT survive a filter for UNREAL.",
+        )
+    }
+
+    private fun assertEverRuleProducesHintsFor(engine: GameEngine) {
+        com.gameperf.desktop.core.conclusions.RuleRegistry.all.forEach { rule ->
+            val hints = CodeAreaCatalog.lookup(rule.id, engine)
+            assertTrue(
+                hints.isNotEmpty(),
+                "${rule.id} must have $engine-specific hints in Sprint 1.",
+            )
+            assertTrue(
+                hints.all { it.engine == engine },
+                "All hints for ${rule.id} under $engine must carry that engine tag.",
             )
         }
     }
