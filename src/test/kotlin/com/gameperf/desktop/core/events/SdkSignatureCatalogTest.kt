@@ -34,13 +34,15 @@ class SdkSignatureCatalogTest {
     // ═══════ catalog-level invariants ═══════
 
     @Test
-    fun `catalog contains exactly the sixteen catalogued SDKs and engines`() {
+    fun `catalog contains exactly the seventeen catalogued SDKs and engines`() {
         // If anyone removes an SDK they MUST update this assertion deliberately.
         // v4.4.0 baseline: six ad/billing SDKs.
         // v4.4.1 quickfix (audit obs #308): added three engine LOADING signatures.
         // Sprint 1 (event-segmentation-coverage): added six SDK_INIT entries +
         // System ANR — `9 + 7 = 16`.
-        assertEquals(16, SdkSignatureCatalog.ALL.size, "expected 16 catalogued SDKs/engines")
+        // Sprint 5 (event-segmentation-coverage): added Google Play In-App
+        // Review — `16 + 1 = 17`.
+        assertEquals(17, SdkSignatureCatalog.ALL.size, "expected 17 catalogued SDKs/engines")
         val sdkNames = SdkSignatureCatalog.ALL.map { it.sdk }.toSet()
         val expected = setOf(
             "AdMob",
@@ -61,6 +63,8 @@ class SdkSignatureCatalogTest {
             "AppLovin Init",
             // Sprint 1 — ANR
             "System ANR",
+            // Sprint 5 — RATE_US
+            "Google Play In-App Review",
         )
         assertEquals(expected, sdkNames, "catalog SDK set drifted from spec")
     }
@@ -73,14 +77,16 @@ class SdkSignatureCatalogTest {
 
             // closePatterns invariant — required for entries that model a
             // bracketed lifecycle (ad/IAP/loading: every show has a dismiss;
-            // ANR: am_anr eventually pairs with am_proc_died). SDK_INIT
-            // entries are instantaneous markers (no natural close on the
-            // logcat side; the report renders them as point events) so an
+            // ANR: am_anr eventually pairs with am_proc_died). SDK_INIT and
+            // RATE_US entries are instantaneous markers (no natural close on
+            // the logcat side; the report renders them as point events) so an
             // empty closePatterns list is acceptable for them.
-            if (sig.defaultType != EventType.SDK_INIT) {
+            val instantaneous = sig.defaultType == EventType.SDK_INIT ||
+                sig.defaultType == EventType.RATE_US
+            if (!instantaneous) {
                 assertTrue(
                     sig.closePatterns.isNotEmpty(),
-                    "${sig.sdk}: no close patterns (only SDK_INIT entries may have empty closePatterns)",
+                    "${sig.sdk}: no close patterns (only SDK_INIT/RATE_US entries may have empty closePatterns)",
                 )
             }
 
@@ -581,6 +587,102 @@ class SdkSignatureCatalogTest {
         assertNotNull(result)
         assertEquals("Meta Audience Network", result.sig.sdk)
         assertEquals(EventType.INTERSTITIAL, result.resolvedType)
+    }
+
+    // ═══════ Sprint 5 — RATE_US (Google Play In-App Review API) ═══════
+    //
+    // Single catalog entry for the Google Play In-App Review API. RATE_US is
+    // an instantaneous event (no natural close on the logcat side, similar to
+    // SDK_INIT), so `closePatterns` is empty and the catalog invariant test
+    // tolerates it. Patterns are best-effort from the public Google Play Core
+    // Library docs and should be refined post empirical capture.
+    //
+    // Spec refs: ESC-RATE-001 (RATE_US signature), ESC-RATE-002 (tag-allowlist
+    // guards against generic "Review" false-positives), ESC-RATE-003 (regression
+    // — Sprint 1 catalog ordering preserved), ESC-RATE-004 (ReportGenerator
+    // renders the label without an `else` fallback — already wired by Sprint 0).
+
+    @Test
+    fun `RATE_US signature matches ReviewManager launchReviewFlow log line`() {
+        val line = lineFor(tag = "PlayCore", msg = "ReviewManager.launchReviewFlow(activity, info)")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "ReviewManager.launchReviewFlow log must match")
+        assertEquals("Google Play In-App Review", result.sig.sdk)
+        assertEquals(EventType.RATE_US, result.resolvedType)
+    }
+
+    @Test
+    fun `RATE_US signature matches requestReviewFlow log line`() {
+        val line = lineFor(tag = "ReviewManager", msg = "requestReviewFlow: starting request")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "requestReviewFlow log must match")
+        assertEquals("Google Play In-App Review", result.sig.sdk)
+        assertEquals(EventType.RATE_US, result.resolvedType)
+    }
+
+    @Test
+    fun `RATE_US matches ReviewActivity component via matchActivity`() {
+        val sig = SdkSignatureCatalog.matchActivity(
+            "com.example.game/com.google.android.play.core.review.ReviewActivity",
+        )
+        assertNotNull(sig, "ReviewActivity component must resolve")
+        assertEquals("Google Play In-App Review", sig.sdk)
+        assertEquals(EventType.RATE_US, sig.defaultType)
+    }
+
+    @Test
+    fun `RATE_US rejects generic Review token on unrelated tag (tag-allowlist)`() {
+        // A random component or message containing "Review" on a tag that is
+        // NOT in the In-App Review allowlist must NOT match RATE_US. This
+        // guards against false-positives from app-internal review screens.
+        val rogue = lineFor(tag = "Unrelated", msg = "User opened the Review screen")
+        assertNull(SdkSignatureCatalog.matchOpen(rogue))
+    }
+
+    @Test
+    fun `existing SDK signatures still match after Sprint 5 catalog growth`() {
+        // Regression: the matchOpen first-match-wins linear scan must still
+        // resolve to the canonical entry for each pre-existing SDK after the
+        // RATE_US entry was added. Guards against accidental ordering breakage.
+        data class Fixture(val tag: String, val msg: String, val expectedSdk: String, val expectedType: EventType)
+        val fixtures = listOf(
+            Fixture("AdActivity", "Showing ad", "AdMob", EventType.INTERSTITIAL),
+            Fixture("UnityAds", "UnityAdsShowStart placement=rewarded", "Unity Ads", EventType.REWARDED_VIDEO),
+            Fixture("IronSource", "interstitialDidOpen instanceId=1", "IronSource", EventType.INTERSTITIAL),
+            Fixture("AppLovinSdk", "onAdDisplayed adUnitId=xxx", "AppLovin", EventType.INTERSTITIAL),
+            Fixture("FBAudienceNetworkLog", "Interstitial impression logged", "Meta Audience Network", EventType.INTERSTITIAL),
+            Fixture("BillingClient", "launchBillingFlow starting", "Google Play Billing", EventType.IAP),
+            Fixture("Unity", "Loading scene Foo", "Unity Engine", EventType.LOADING),
+            Fixture("UE4", "LogStreaming: Loading package /Game/Maps/X", "Unreal Engine", EventType.LOADING),
+            Fixture("cocos2d", "Director::replaceScene to GameScene", "Cocos2d", EventType.LOADING),
+            Fixture("FirebaseApp", "FirebaseApp initialization successful", "Firebase Init", EventType.SDK_INIT),
+            Fixture("ActivityManager", "am_anr: pid 1234", "System ANR", EventType.ANR),
+        )
+        for (f in fixtures) {
+            val line = lineFor(tag = f.tag, msg = f.msg)
+            val result = SdkSignatureCatalog.matchOpen(line)
+            assertNotNull(result, "${f.expectedSdk}: '${f.msg}' on tag=${f.tag} stopped matching after Sprint 5")
+            assertEquals(
+                f.expectedSdk, result.sig.sdk,
+                "${f.expectedSdk}: matched the wrong SDK (got ${result.sig.sdk}) — ordering broke after Sprint 5",
+            )
+            assertEquals(
+                f.expectedType, result.resolvedType,
+                "${f.expectedSdk}: resolved type drifted after Sprint 5",
+            )
+        }
+    }
+
+    @Test
+    fun `RATE_US is an instantaneous event with empty closePatterns`() {
+        // RATE_US is a point event — there is no natural close signal on the
+        // logcat side. The catalog invariant test tolerates empty
+        // closePatterns for SDK_INIT and RATE_US entries; this test pins the
+        // contract explicitly for RATE_US so a future refactor doesn't
+        // silently introduce a stray close pattern.
+        val sig = SdkSignatureCatalog.ALL.first { it.sdk == "Google Play In-App Review" }
+        assertEquals(EventType.RATE_US, sig.defaultType)
+        assertTrue(sig.closePatterns.isEmpty(), "RATE_US must remain instantaneous (no closePatterns)")
     }
 
     // ═══════ helpers ═══════

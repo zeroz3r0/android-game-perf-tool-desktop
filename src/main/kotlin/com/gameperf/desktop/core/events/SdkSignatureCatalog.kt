@@ -359,6 +359,38 @@ internal object SdkSignatureCatalog {
             closePatterns = emptyList(),
         ),
         // ────────────────────────────────────────────────────────────────
+        //  Sprint 5 — RATE_US (Google Play In-App Review API)
+        // ────────────────────────────────────────────────────────────────
+        //
+        // Single SDK signature for Google's In-App Review API. The API is
+        // exposed through `ReviewManager` / `ReviewManagerFactory` from the
+        // `com.google.android.play:core` (or split `play-review`) module and
+        // surfaces a system-managed sheet via `ReviewActivity`.
+        //
+        // RATE_US is instantaneous — there is no natural close signal on the
+        // logcat side, so `closePatterns = emptyList()`. The catalog invariant
+        // test (`every SDK has at least one open pattern…`) tolerates empty
+        // closePatterns for SDK_INIT and RATE_US entries; the report renders
+        // RATE_US as a point event (label + color wired in Sprint 0).
+        //
+        // note: patterns BEST-EFFORT from public docs — refine after empirical
+        // capture. Tag allowlist (`PlayCore`, `ReviewManager`, `InAppReview`)
+        // prevents false-positives from app-internal review screens.
+        SdkSignature(
+            sdk = "Google Play In-App Review",
+            defaultType = EventType.RATE_US,
+            activityClasses = listOf(
+                "com.google.android.play.core.review.ReviewActivity",
+            ),
+            logcatTags = listOf("PlayCore", "ReviewManager", "InAppReview"),
+            openPatterns = listOf(
+                Regex("""(?i)\bReviewManager\b.*\b(launchReviewFlow|launch)""") to EventType.RATE_US,
+                Regex("""(?i)\brequestReviewFlow\b""") to EventType.RATE_US,
+                Regex("""(?i)\bInAppReview\b.*\bshown\b""") to EventType.RATE_US,
+            ),
+            closePatterns = emptyList(), // instantaneous event
+        ),
+        // ────────────────────────────────────────────────────────────────
         //  Sprint 1 — ANR (Android system "Application Not Responding")
         // ────────────────────────────────────────────────────────────────
         //
