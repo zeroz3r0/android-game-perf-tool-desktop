@@ -260,6 +260,66 @@ class EventDetectorImplTest {
         )
     }
 
+    // ──────────────────────── LOADING signatures (v4.4.1 quickfix, audit obs #308) ───
+
+    @Test
+    fun `Unity Engine loading line emits a LOADING DetectedEvent`() {
+        val det = newDetectorAtTime(1_000L)
+
+        // OPEN: real Unity scene load line as observed in unity-ads.log:5
+        det.handleLogLine(LogLine(tsMs = 1_000L, pid = 1, tid = 1, level = 'I',
+            tag = "Unity", msg = "Loading scene transition"))
+
+        var events = det.events.value
+        assertEquals(1, events.size, "Unity 'Loading scene' must open one event")
+        assertEquals(EventType.LOADING, events[0].type, "must classify as LOADING (not REWARDED_VIDEO)")
+        assertEquals("Unity Engine", events[0].sdkSource)
+        assertNull(events[0].endMs, "open event has no endMs until close")
+        assertEquals(Confidence.HIGH, events[0].confidence)
+
+        // CLOSE: Scene loaded
+        det.handleLogLine(LogLine(tsMs = 3_000L, pid = 1, tid = 1, level = 'I',
+            tag = "Unity", msg = "Scene loaded successfully"))
+
+        events = det.events.value
+        assertEquals(1, events.size, "close must NOT add a new event")
+        assertEquals(3_000L, events[0].endMs)
+        assertEquals(0, det.openEventCountForTest(), "open map must be empty after close")
+    }
+
+    @Test
+    fun `Unreal Engine LogStreaming open and Flushing close emits LOADING`() {
+        val det = newDetectorAtTime(2_000L)
+
+        det.handleLogLine(LogLine(tsMs = 2_000L, pid = 1, tid = 1, level = 'I',
+            tag = "UE4", msg = "LogStreaming: Loading package /Game/Maps/Arena"))
+        det.handleLogLine(LogLine(tsMs = 5_000L, pid = 1, tid = 1, level = 'I',
+            tag = "UE4", msg = "LogStreaming: Flushing async loaders"))
+
+        val events = det.events.value
+        assertEquals(1, events.size)
+        assertEquals(EventType.LOADING, events[0].type)
+        assertEquals("Unreal Engine", events[0].sdkSource)
+        assertEquals(2_000L, events[0].startMs)
+        assertEquals(5_000L, events[0].endMs)
+    }
+
+    @Test
+    fun `Cocos2d replaceScene open and onEnter close emits LOADING`() {
+        val det = newDetectorAtTime(3_000L)
+
+        det.handleLogLine(LogLine(tsMs = 3_000L, pid = 1, tid = 1, level = 'I',
+            tag = "cocos2d", msg = "Director::replaceScene to GameScene"))
+        det.handleLogLine(LogLine(tsMs = 4_500L, pid = 1, tid = 1, level = 'I',
+            tag = "cocos2d", msg = "GameScene onEnter called"))
+
+        val events = det.events.value
+        assertEquals(1, events.size)
+        assertEquals(EventType.LOADING, events[0].type)
+        assertEquals("Cocos2d", events[0].sdkSource)
+        assertEquals(4_500L, events[0].endMs)
+    }
+
     // ──────────────────────── Lifecycle smoke test ────────────────────────
 
     @Test

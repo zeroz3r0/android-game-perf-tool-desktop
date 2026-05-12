@@ -7,13 +7,16 @@ package com.gameperf.desktop.core.events
  * other files (per CLAUDE.md anti-duplication rule, the same trap that
  * v4.2.13 had to fix for `ToolResolver` candidates).
  *
- * Verified SDKs (initial catalog — six entries):
+ * Verified SDKs and engines (nine entries):
  *  - AdMob (Google Mobile Ads SDK) — interstitial
  *  - Unity Ads — rewarded video
  *  - IronSource (LevelPlay) — interstitial
  *  - AppLovin / MAX — interstitial
  *  - Meta Audience Network — interstitial
  *  - Google Play Billing — IAP launch
+ *  - Unity Engine — scene/asset loading (v4.4.1 quickfix, audit obs #308)
+ *  - Unreal Engine — package/level streaming (v4.4.1 quickfix, audit obs #308)
+ *  - Cocos2d — scene transitions (v4.4.1 quickfix, audit obs #308)
  *
  * Patterns flagged "needs verification" should be confirmed against real device
  * recordings before relying on production. See `explore.md` "Risks" section
@@ -144,6 +147,72 @@ internal object SdkSignatureCatalog {
             closePatterns = listOf(
                 Regex("""(?i)\bonPurchasesUpdated\b"""),
                 Regex("""(?i)\bbilling flow finished\b"""),
+            ),
+        ),
+        // ── Unity Engine (scene/asset loading) — v4.4.1 quickfix (audit obs #308) ─
+        //
+        // Wires `EventType.LOADING` (declared since v4.4.0 but never produced
+        // by any signature) to real Unity engine output. The "Unity" tag is
+        // shared with Unity Ads, but the open patterns here ("Loading scene",
+        // "AsyncOperation") never overlap with the Unity Ads ad-show messages
+        // ("Show begin", "UnityAdsShowStart"), so both signatures coexist on
+        // the same tag without aliasing.
+        //
+        // note: activityClasses kept empty — Unity scene loads do NOT push a
+        // new Android Activity (single-activity engine); only the logcat path
+        // contributes here.
+        SdkSignature(
+            sdk = "Unity Engine",
+            type = EventType.LOADING,
+            activityClasses = emptyList(),
+            logcatTags = listOf("Unity", "UnityEngine"),
+            openPatterns = listOf(
+                Regex("""(?i)\bLoading scene\b"""),
+                Regex("""(?i)\bAsyncOperation\b"""),
+            ),
+            closePatterns = listOf(
+                Regex("""(?i)\bScene loaded\b"""),
+                Regex("""(?i)\bAsyncOperation done\b"""),
+            ),
+        ),
+        // ── Unreal Engine (package/level streaming) — v4.4.1 quickfix ───
+        //
+        // Sources: Unreal Engine LogCategories — `LogStreaming` is emitted by
+        // the async package loader; `LoadingScreen Shown/Hidden` comes from
+        // the Loading Screen plugin (most shipped Unreal mobile games include
+        // it). Tag allowlist excludes generic `LogTemp` to avoid noise.
+        SdkSignature(
+            sdk = "Unreal Engine",
+            type = EventType.LOADING,
+            activityClasses = emptyList(),
+            logcatTags = listOf("UE4", "Unreal", "LogStreaming", "LoadingScreen"),
+            openPatterns = listOf(
+                Regex("""(?i)\bLogStreaming:\s*Loading\b"""),
+                Regex("""(?i)\bLoadingScreen\s+Shown\b"""),
+            ),
+            closePatterns = listOf(
+                Regex("""(?i)\bFlushing async loaders\b"""),
+                Regex("""(?i)\bLoadingScreen\s+Hidden\b"""),
+            ),
+        ),
+        // ── Cocos2d (scene transitions) — v4.4.1 quickfix ───────────────
+        //
+        // note: close pattern uses `onEnter` (new scene lifecycle) which is
+        // intentionally broad — but the tag-allowlist (`cocos2d`/`Cocos2dx`
+        // family only) prevents false positives on foreign components that
+        // happen to call methods named `onEnter`. See `LoadingSignaturesTest`
+        // negative case `Cocos2d ignores onEnter on foreign tag`.
+        SdkSignature(
+            sdk = "Cocos2d",
+            type = EventType.LOADING,
+            activityClasses = emptyList(),
+            logcatTags = listOf("cocos2d", "Cocos2d", "Cocos2dx", "CCDirector"),
+            openPatterns = listOf(
+                Regex("""\bDirector::replaceScene\b"""),
+                Regex("""\bCCDirector\.replaceScene\b"""),
+            ),
+            closePatterns = listOf(
+                Regex("""\bonEnter\b"""),
             ),
         ),
     )

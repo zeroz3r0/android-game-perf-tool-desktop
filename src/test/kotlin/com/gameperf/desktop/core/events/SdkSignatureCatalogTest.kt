@@ -34,9 +34,11 @@ class SdkSignatureCatalogTest {
     // ═══════ catalog-level invariants ═══════
 
     @Test
-    fun `catalog contains exactly the six initial SDKs`() {
+    fun `catalog contains exactly the nine catalogued SDKs and engines`() {
         // If anyone removes an SDK they MUST update this assertion deliberately.
-        assertEquals(6, SdkSignatureCatalog.ALL.size, "expected 6 verified SDKs")
+        // v4.4.0 baseline: six ad/billing SDKs.
+        // v4.4.1 quickfix (audit obs #308): added three engine LOADING signatures.
+        assertEquals(9, SdkSignatureCatalog.ALL.size, "expected 9 catalogued SDKs/engines")
         val sdkNames = SdkSignatureCatalog.ALL.map { it.sdk }.toSet()
         val expected = setOf(
             "AdMob",
@@ -45,6 +47,9 @@ class SdkSignatureCatalogTest {
             "AppLovin",
             "Meta Audience Network",
             "Google Play Billing",
+            "Unity Engine",
+            "Unreal Engine",
+            "Cocos2d",
         )
         assertEquals(expected, sdkNames, "catalog SDK set drifted from spec")
     }
@@ -54,8 +59,15 @@ class SdkSignatureCatalogTest {
         for (sig in SdkSignatureCatalog.ALL) {
             assertTrue(sig.openPatterns.isNotEmpty(), "${sig.sdk}: no open patterns")
             assertTrue(sig.closePatterns.isNotEmpty(), "${sig.sdk}: no close patterns")
-            assertTrue(sig.activityClasses.isNotEmpty(), "${sig.sdk}: no activity classes")
             assertTrue(sig.logcatTags.isNotEmpty(), "${sig.sdk}: no logcat tags")
+            // activityClasses MAY be empty for engine-level signatures (Unity
+            // Engine, Unreal Engine, Cocos2d) because scene loading runs in
+            // the game process without pushing a new Android Activity onto
+            // the back stack. For ad/billing SDKs (which DO push activities)
+            // the field must still be populated.
+            if (sig.type != EventType.LOADING) {
+                assertTrue(sig.activityClasses.isNotEmpty(), "${sig.sdk}: no activity classes")
+            }
         }
     }
 
