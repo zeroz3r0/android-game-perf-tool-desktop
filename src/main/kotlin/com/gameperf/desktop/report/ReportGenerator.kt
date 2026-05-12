@@ -5,6 +5,8 @@ import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.conclusions.Severity
+import com.gameperf.desktop.core.devactions.DevActionBrief
+import com.gameperf.desktop.core.devactions.DevActionItem
 import com.gameperf.desktop.core.events.Confidence
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventType
@@ -96,6 +98,13 @@ object ReportGenerator {
         fpowerPeak: Double = 0.0,
         fpowerAvailable: Boolean = true,
         fpowerDiagnostic: FPowerDiagnostic? = null,
+        // v4.5.0 Sprint 3 — DevActionBrief (spec DAB-008, ADR-7).
+        // Rendered at TOP of body BEFORE the summary section, with a
+        // nav-link "Acción Dev" as the FIRST nav entry. Defaults to
+        // null so legacy fixtures (ReportRenderingTest, ReportGradingTest)
+        // and pre-Sprint-3 history re-renders skip the new section
+        // entirely (backward compat DAB-010 negative case).
+        devActionBrief: DevActionBrief? = null,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -212,6 +221,14 @@ object ReportGenerator {
             diagnostic = fpowerDiagnostic,
         )
 
+        // v4.5.0 Sprint 3 — DevActionBrief section (spec DAB-008, ADR-7).
+        // Rendered at TOP of body BEFORE the summary section. Empty string
+        // when brief is null or has no items (backward compat DAB-010).
+        val devActionBriefHtml = sectionDevActionBrief(devActionBrief)
+        val devActionBriefNavLink = if (devActionBriefHtml.isNotEmpty()) {
+            """<a href="#sec-dev-action-brief" class="nav-link">Acción Dev</a>"""
+        } else ""
+
         // Problems HTML
         val problemsHtml = if (problems.isEmpty()) {
             """<div class="status-box status-ok"><span class="status-icon">&#10003;</span> Sin problemas criticos detectados. Rendimiento optimo.</div>"""
@@ -287,6 +304,7 @@ $CSS
 
 <nav class="topnav" id="topnav">
     <div class="nav-inner">
+        $devActionBriefNavLink
         <a href="#sec-summary" class="nav-link">Resumen</a>
         ${if (conclusionsHtml.isNotEmpty()) """<a href="#sec-conclusions" class="nav-link">Conclusiones</a>""" else ""}
         <a href="#sec-dashboard" class="nav-link">Metricas</a>
@@ -320,6 +338,8 @@ $CSS
 </header>
 
 $detectionBannerHtml
+
+$devActionBriefHtml
 
 <section id="sec-summary" class="card card-summary">
     <div class="summary-grid">
@@ -1145,6 +1165,116 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
         return """<div class="metric-raw">$prefix: $rawStr$unit</div>"""
     }
 
+    /**
+     * v4.5.0 Sprint 3 — `#sec-dev-action-brief` renderer (spec DAB-008,
+     * design ADR-7). Rendered at the TOP of `<body>` BEFORE the summary
+     * section. Hidden entirely when the brief is null or has no items
+     * (DAB-008 negative + DAB-010 backward compat).
+     *
+     * Layout (Spanish tuteo-formal, design ADR-4):
+     *  - `<h2>` headline with target audience signal
+     *  - per-item `<article>` with severity badge (CRITICAL/WARNING/INFO),
+     *    confidence badge, evidence list, diagnostic paragraph, code-area
+     *    hints, suggested actions (each with optional doc link).
+     *  - Top-N visible by default (DAB-012); when items.size > topN a
+     *    "Mostrar todos los hallazgos (N más)" toggle reveals the rest.
+     *
+     * Severity-CSS classes (`severity-CRITICAL`, `severity-WARNING`,
+     * `severity-INFO`) match the spec's `.dev-action-severity-*` family
+     * (DAB-011) — we keep the inline form to align with the `.severity-*`
+     * convention already used by the existing problem rows.
+     */
+    private fun sectionDevActionBrief(brief: DevActionBrief?): String {
+        if (brief == null || brief.items.isEmpty()) return ""
+        val items = brief.items
+        val topN = brief.topN
+        val itemsHtml = items.joinToString("\n") { renderDevActionItem(it) }
+        val toggleHtml = if (items.size > topN) {
+            val rest = items.size - topN
+            """<button class="show-all-toggle" onclick="document.querySelector('.dev-action-brief').classList.toggle('show-all')">Mostrar todos los hallazgos ($rest más)</button>"""
+        } else ""
+        return """
+<section id="sec-dev-action-brief" class="dev-action-brief">
+    <h2>&#127919; Para el equipo dev — acciones priorizadas</h2>
+    <div class="brief-summary">
+        Se identificaron <strong>${items.size}</strong> hallazgos. ${if (items.size > topN) "Top $topN mostrados." else "Todos mostrados."}
+    </div>
+    <div class="brief-items">
+$itemsHtml
+    </div>
+    $toggleHtml
+</section>"""
+    }
+
+    /** Per-item `<article>` block. Spanish tuteo-formal copy. */
+    private fun renderDevActionItem(item: DevActionItem): String {
+        val severityName = item.severity.name
+        val (badgeLabel, badgeIcon) = when (item.severity) {
+            Severity.CRITICAL -> "CRÍTICO" to "&#9940;"
+            Severity.WARNING -> "ALERTA" to "&#9888;"
+            Severity.INFO -> "INFO" to "&#8505;"
+        }
+        val confidenceLabel = when (item.confidence) {
+            com.gameperf.desktop.core.devactions.Confidence.HIGH -> "confianza alta"
+            com.gameperf.desktop.core.devactions.Confidence.MEDIUM -> "confianza media"
+            com.gameperf.desktop.core.devactions.Confidence.LOW -> "confianza baja"
+        }
+        val evidenceItems = item.evidence.values.entries.joinToString("\n") { (k, v) ->
+            "                <li><strong>${esc(k)}</strong>: ${esc(v)}</li>"
+        }
+        val evidenceBlock = if (item.evidence.values.isNotEmpty()) {
+            """
+        <section class="evidence">
+            <h4>&#128202; Evidencia (${esc(item.evidence.segment)}):</h4>
+            <ul>
+$evidenceItems
+            </ul>
+        </section>"""
+        } else ""
+        val diagnosticBlock = if (item.diagnostic.isNotBlank()) {
+            """
+        <section class="diagnostic">
+            <h4>&#128269; Diagnóstico probable:</h4>
+            <p>${esc(item.diagnostic)}</p>
+        </section>"""
+        } else ""
+        val hintsItems = item.codeAreaHints.joinToString("\n") { hint ->
+            val link = hint.docLink?.let { """ <a href="${esc(it)}">Doc</a>""" } ?: ""
+            "                <li><strong>${esc(hint.area)}</strong> — ${esc(hint.whyHere)}$link</li>"
+        }
+        val hintsBlock = if (item.codeAreaHints.isNotEmpty()) {
+            """
+        <section class="code-areas">
+            <h4>&#127919; Dónde mirar:</h4>
+            <ul>
+$hintsItems
+            </ul>
+        </section>"""
+        } else ""
+        val actionsItems = item.suggestedActions.joinToString("\n") { step ->
+            val tool = step.tool?.let { " <em>(${esc(it)})</em>" } ?: ""
+            val link = step.docLink?.let { """ <a href="${esc(it)}">Doc</a>""" } ?: ""
+            "                <li>${esc(step.description)}$tool$link</li>"
+        }
+        val actionsBlock = if (item.suggestedActions.isNotEmpty()) {
+            """
+        <section class="actions">
+            <h4>&#9881;&#65039; Acciones sugeridas:</h4>
+            <ol>
+$actionsItems
+            </ol>
+        </section>"""
+        } else ""
+        return """
+    <article class="brief-item severity-$severityName" data-confidence="${item.confidence.name}">
+        <header class="brief-item-header">
+            <span class="severity-badge">$badgeIcon $badgeLabel</span>
+            <h3>${esc(item.title)}</h3>
+            <span class="confidence-badge">$confidenceLabel</span>
+        </header>$evidenceBlock$diagnosticBlock$hintsBlock$actionsBlock
+    </article>"""
+    }
+
     private fun sectionConclusions(conclusions: List<Conclusion>): String {
         if (conclusions.isEmpty()) return ""
         val isInsufficientData = conclusions.size == 1 && conclusions[0].ruleId == "insufficient-data"
@@ -1771,6 +1901,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .conclusion-rec{color:#94a3b8;font-size:12px;line-height:1.6;margin:0}
 .events-table .source-auto{color:#38bdf8;font-weight:700}
 .events-table .source-manual{color:#f97316;font-weight:700}
+/* v4.5.0 Sprint 3 — DevActionBrief section (DAB-008..DAB-013) */
+.dev-action-brief{max-width:960px;margin:0 auto 20px;background:linear-gradient(135deg,rgba(99,102,241,0.08),rgba(15,23,42,0.5));border:1px solid rgba(99,102,241,0.2);border-left:4px solid #6366f1;border-radius:14px;padding:18px 22px}
+.dev-action-brief h2{color:#e2e8f0;font-size:1.15rem;font-weight:700;margin-bottom:8px;letter-spacing:-0.2px}
+.brief-summary{color:#94a3b8;font-size:13px;margin-bottom:14px}
+.brief-summary strong{color:#e2e8f0;font-weight:700}
+.brief-items{display:flex;flex-direction:column;gap:10px}
+.brief-item{background:rgba(15,23,42,0.6);border:1px solid rgba(148,163,184,0.1);border-left:4px solid #64748b;border-radius:10px;padding:12px 14px}
+.brief-item.severity-CRITICAL{border-left-color:#ef4444;background:rgba(239,68,68,0.04)}
+.brief-item.severity-WARNING{border-left-color:#f59e0b;background:rgba(245,158,11,0.04)}
+.brief-item.severity-INFO{border-left-color:#38bdf8;background:rgba(56,189,248,0.04)}
+.brief-item-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.brief-item-header h3{color:#e2e8f0;font-size:0.95rem;font-weight:700;margin:0;flex:1;line-height:1.4}
+.severity-badge{display:inline-block;padding:3px 10px;border-radius:6px;font-weight:800;font-size:10px;letter-spacing:0.4px}
+.brief-item.severity-CRITICAL .severity-badge{background:rgba(239,68,68,0.15);color:#ef4444}
+.brief-item.severity-WARNING .severity-badge{background:rgba(245,158,11,0.15);color:#f59e0b}
+.brief-item.severity-INFO .severity-badge{background:rgba(56,189,248,0.15);color:#38bdf8}
+.confidence-badge{color:#64748b;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px}
+.brief-item h4{color:#cbd5e1;font-size:11.5px;font-weight:700;margin:10px 0 4px;text-transform:uppercase;letter-spacing:0.4px}
+.brief-item section{margin:6px 0}
+.brief-item ul,.brief-item ol{margin:4px 0 4px 22px;color:#94a3b8;font-size:12.5px;line-height:1.6}
+.brief-item li{margin:2px 0}
+.brief-item strong{color:#cbd5e1;font-weight:700}
+.brief-item em{color:#64748b;font-style:italic}
+.brief-item a{color:#818cf8;text-decoration:none;font-size:11px;font-weight:600;border-bottom:1px dotted rgba(129,140,248,0.4)}
+.brief-item a:hover{color:#a5b4fc;border-bottom-color:#a5b4fc}
+.brief-item p{color:#94a3b8;font-size:12.5px;line-height:1.6;margin:2px 0}
+.show-all-toggle{margin-top:12px;background:linear-gradient(135deg,#6366f1,#818cf8);color:#fff;border:none;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:0.3px;transition:all 0.2s ease}
+.show-all-toggle:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(99,102,241,0.4)}
+.dev-action-brief:not(.show-all) .brief-item:nth-child(n+6){display:none}
 @media(max-width:768px){.container{padding:0 12px 32px}.report-header{padding:32px 20px 28px}.header-title{font-size:1.6rem}.header-meta{flex-direction:column;gap:4px}.meta-sep{display:none}.summary-grid{grid-template-columns:1fr}.summary-grade{padding:24px;border-right:none;border-bottom:1px solid rgba(148,163,184,0.06)}.summary-stats{grid-template-columns:repeat(2,1fr)}.metrics-grid{grid-template-columns:repeat(2,1fr)}.hw-grid{grid-template-columns:1fr}.hw-item{border-radius:0!important}.hw-item:first-child{border-radius:10px 10px 0 0!important}.hw-item:last-child{border-radius:0 0 10px 10px!important}.stats-row{gap:6px}.stat-pill{padding:6px 10px;font-size:12px}.grade-ring{width:110px;height:110px}.grade-letter{font-size:2.8rem}.fab-group{top:auto;bottom:16px;right:16px}.detection-banner{margin:0 12px 16px;font-size:12px}.callout{margin:0 12px 16px}}
 @media(max-width:480px){.metrics-grid{grid-template-columns:1fr}.summary-stats{grid-template-columns:1fr 1fr}.nav-link{font-size:11px;padding:5px 8px}}
 @media print {

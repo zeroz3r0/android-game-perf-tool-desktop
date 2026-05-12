@@ -1,6 +1,7 @@
 package com.gameperf.desktop.core
 
 import com.gameperf.desktop.core.conclusions.Conclusion
+import com.gameperf.desktop.core.devactions.DevActionBrief
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.FPowerDiagnostic
@@ -206,6 +207,14 @@ object SessionHistory {
         val fpowerTimed: List<List<Double>> = emptyList(),
         val fpowerAvg: Double = 0.0,
         val fpowerPeak: Double = 0.0,
+        // v4.5.0 Sprint 3 — DevActionBrief (spec DAB-007). Defaulted to the
+        // empty brief shape (items=emptyList, topN=5) for backward compat with
+        // pre-Sprint-3 history.json rows. [DevActionBrief] is @Serializable so
+        // nests cleanly. The brief is never present on the wire for sessions
+        // captured before Sprint 3 ships; loaders rely on Json {
+        // ignoreUnknownKeys = true } AND this defaulted field to hydrate them
+        // safely.
+        val devActionBrief: DevActionBrief = DevActionBrief(),
     )
 
     data class HistoryEntry(
@@ -262,6 +271,11 @@ object SessionHistory {
         val fpowerTimed: List<TimedSample> = emptyList(),
         val fpowerAvg: Double = 0.0,
         val fpowerPeak: Double = 0.0,
+        // v4.5.0 Sprint 3 — DevActionBrief (spec DAB-007). Mirror of the
+        // [SerializableEntry] field. Defaulted to the empty-brief shape so
+        // every existing call site that constructs a HistoryEntry without
+        // naming this argument stays byte-equivalent to pre-Sprint-3 behavior.
+        val devActionBrief: DevActionBrief = DevActionBrief(),
     )
 
     // ===== Conversion =====
@@ -296,6 +310,8 @@ object SessionHistory {
         fpowerTimed = fpowerTimed.map { listOf(it.second.toDouble(), it.value) },
         fpowerAvg = fpowerAvg,
         fpowerPeak = fpowerPeak,
+        // v4.5.0 Sprint 3 — DevActionBrief forward through the wire format.
+        devActionBrief = devActionBrief,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -336,6 +352,11 @@ object SessionHistory {
         },
         fpowerAvg = fpowerAvg,
         fpowerPeak = fpowerPeak,
+        // v4.5.0 Sprint 3 — DevActionBrief hydration. Defaulted to the empty
+        // brief on the SerializableEntry side, so a pre-Sprint-3 row decodes
+        // as DevActionBrief() and rendering omits the section (DAB-008
+        // negative case).
+        devActionBrief = devActionBrief,
     )
 
     // ===== Public API (unchanged contract) =====

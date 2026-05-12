@@ -2,6 +2,12 @@ package com.gameperf.desktop.core
 
 import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.conclusions.Severity
+import com.gameperf.desktop.core.devactions.ActionStep
+import com.gameperf.desktop.core.devactions.CodeAreaHint
+import com.gameperf.desktop.core.devactions.DevActionBrief
+import com.gameperf.desktop.core.devactions.DevActionEvidence
+import com.gameperf.desktop.core.devactions.DevActionItem
+import com.gameperf.desktop.core.devactions.GameEngine
 import com.gameperf.desktop.core.events.Confidence
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventType
@@ -10,6 +16,7 @@ import com.gameperf.desktop.core.model.FPowerDiagnostic
 import com.gameperf.desktop.core.model.FPowerUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.TimedSample
+import com.gameperf.desktop.core.devactions.Confidence as DevConfidence
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -390,6 +397,110 @@ class SessionHistoryRoundTripTest {
         assertTrue(entry.fpowerTimed.isEmpty(), "Missing fpowerTimed defaults to empty")
         assertEquals(0.0, entry.fpowerAvg, "Missing fpowerAvg defaults to 0.0")
         assertEquals(0.0, entry.fpowerPeak, "Missing fpowerPeak defaults to 0.0")
+    }
+
+    // ===== v4.5.0 Sprint 3 — DevActionBrief round-trip =====
+
+    private fun sampleBrief(): DevActionBrief = DevActionBrief(
+        items = listOf(
+            DevActionItem(
+                ruleId = "stable-low-fps-low-cpu",
+                severity = Severity.CRITICAL,
+                title = "FPS bajo estable con CPU disponible.",
+                evidence = DevActionEvidence(
+                    metric = "fps",
+                    segment = "FILTERED",
+                    values = mapOf("p50" to "28", "avgCpu" to "45"),
+                ),
+                diagnostic = "Revisa el target FPS del motor.",
+                codeAreaHints = listOf(
+                    CodeAreaHint(
+                        engine = GameEngine.UNITY,
+                        area = "Application.targetFrameRate",
+                        whyHere = "Revisa el frame-rate objetivo.",
+                        docLink = "https://docs.unity3d.com/Manual/profiler.html",
+                    ),
+                ),
+                suggestedActions = listOf(
+                    ActionStep(
+                        description = "Verifica el valor de Application.targetFrameRate.",
+                        tool = "Unity Profiler",
+                        docLink = "https://docs.unity3d.com/ScriptReference/Application-targetFrameRate.html",
+                        engineSpecific = GameEngine.UNITY,
+                    ),
+                ),
+                relatedLogcatLines = emptyList(),
+                confidence = DevConfidence.HIGH,
+            ),
+        ),
+        topN = 5,
+    )
+
+    @Test
+    fun `DAB-007 round-trip preserves devActionBrief losslessly`() {
+        val brief = sampleBrief()
+        val entry = fullEntry().copy(id = "dab-rt", devActionBrief = brief)
+        SessionHistory.addEntry(entry)
+
+        val loaded = SessionHistory.load().firstOrNull { it.id == "dab-rt" }
+        assertNotNull(loaded, "entry must round-trip")
+        assertEquals(brief, loaded.devActionBrief, "devActionBrief must be byte-equal after round-trip")
+        assertEquals(1, loaded.devActionBrief.items.size, "one item preserved")
+        assertEquals(5, loaded.devActionBrief.topN, "topN preserved")
+    }
+
+    @Test
+    fun `DAB-010 legacy v4_5_0-pre-Sprint3 JSON without devActionBrief defaults to empty brief`() {
+        // Pre-Sprint 3 payload — has fpower fields but no devActionBrief. Defaulted
+        // brief means items.isEmpty() && topN == DEFAULT_TOP_N (backward compat path).
+        val legacyJson = """
+            [
+              {
+                "id": "legacy-pre-sprint3",
+                "name": "legacy session",
+                "gamePackage": "com.legacy.game",
+                "deviceModel": "Pixel 6",
+                "grade": "B",
+                "deviceGrade": "B",
+                "avgFps": 55,
+                "duration": 300,
+                "date": "01/01/2026 00:00",
+                "reportPath": "",
+                "videoPath": "",
+                "tag": "OUR_GAME",
+                "competitorName": "",
+                "isFavorite": false,
+                "thermalAvailable": true,
+                "fpowerAvailable": true
+              }
+            ]
+        """.trimIndent()
+        tempFile.parentFile?.mkdirs()
+        tempFile.writeText(legacyJson)
+
+        val loaded = SessionHistory.load()
+        assertEquals(1, loaded.size)
+        val entry = loaded.first()
+        assertTrue(
+            entry.devActionBrief.items.isEmpty(),
+            "missing devActionBrief field defaults to empty items",
+        )
+        assertEquals(
+            DevActionBrief.DEFAULT_TOP_N,
+            entry.devActionBrief.topN,
+            "missing devActionBrief field defaults topN to DEFAULT_TOP_N",
+        )
+    }
+
+    @Test
+    fun `DAB-007 round-trip with empty brief preserves empty items`() {
+        val entry = fullEntry().copy(id = "dab-empty", devActionBrief = DevActionBrief(items = emptyList()))
+        SessionHistory.addEntry(entry)
+
+        val loaded = SessionHistory.load().firstOrNull { it.id == "dab-empty" }
+        assertNotNull(loaded)
+        assertTrue(loaded.devActionBrief.items.isEmpty(), "empty brief round-trips empty")
+        assertEquals(DevActionBrief.DEFAULT_TOP_N, loaded.devActionBrief.topN)
     }
 
     @Test

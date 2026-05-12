@@ -21,6 +21,8 @@ import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.conclusions.ConclusionEngine
 import com.gameperf.desktop.core.conclusions.ConclusionInput
 import com.gameperf.desktop.core.conclusions.Severity
+import com.gameperf.desktop.core.devactions.DevActionBrief
+import com.gameperf.desktop.core.devactions.DevActionEngine
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventDetector
 import com.gameperf.desktop.core.events.EventDetectorImpl
@@ -192,6 +194,13 @@ data class SessionResult(
     val fpowerTimed: List<TimedSample> = emptyList(),
     val fpowerAvg: Double = 0.0,
     val fpowerPeak: Double = 0.0,
+    // v4.5.0 Sprint 3 — DevActionBrief payload (spec DAB-007). Null when the
+    // capture had no firing rules OR pre-Sprint-3 entries that lack the field.
+    // Defaulted to null for backward compat with v4.5.0-pre-Sprint3 .gameperf
+    // history rows (parsed via Json { ignoreUnknownKeys = true }). The
+    // SerializableEntry mirror persists this; the ReportGenerator renders the
+    // brief at TOP of body BEFORE summary cards (design ADR-7).
+    val devActionBrief: com.gameperf.desktop.core.devactions.DevActionBrief? = null,
 )
 
 /**
@@ -1692,6 +1701,11 @@ class AppViewModel(
             // using the same union of padded event ranges Phase 3 applied.
             // This lets trend rules (MemoryGrowthRule, etc.) operate on the
             // same "kept" sample set the dashboard shows.
+            // v4.5.0 Sprint 3 — capture the ConclusionInput so the
+            // DevActionEngine can reuse it AFTER ConclusionEngine.run.
+            // Null for the insufficient-data short-circuit (we never
+            // build an input for that path).
+            var conclusionInputForBrief: ConclusionInput? = null
             val conclusions: List<Conclusion> = if (
                 finalElapsed < 30 || filterResult.raw.sampleCount < 60
             ) {
@@ -1740,7 +1754,19 @@ class AppViewModel(
                     // fabricated "device has headroom" claim.
                     thermalAvailable = lastThermal.thermalAvailable,
                 )
+                conclusionInputForBrief = conclusionInput
                 ConclusionEngine.run(conclusionInput)
+            }
+
+            // v4.5.0 Sprint 3 — DevActionBrief computed AFTER conclusions, using
+            // the SAME ConclusionInput. Null on the insufficient-data path (no
+            // input was built) AND when the engine produces zero enriched
+            // items (DevActionEngine.run returns a brief with items.isEmpty();
+            // we map that to null so the renderer + persistence omit it,
+            // matching DAB-008 negative case).
+            val devActionBrief: DevActionBrief? = conclusionInputForBrief?.let { input ->
+                val brief = DevActionEngine.run(input)
+                brief.takeIf { it.items.isNotEmpty() }
             }
 
             // Generate HTML report (wrapped in try-catch to avoid crash on report failure)
@@ -1800,6 +1826,10 @@ class AppViewModel(
                     fpowerPeak = fpowerHistory.maxOrNull() ?: 0.0,
                     fpowerAvailable = lastFPower.fpowerAvailable,
                     fpowerDiagnostic = lastFPower.diagnostic,
+                    // v4.5.0 Sprint 3 — DevActionBrief rendered at TOP of body
+                    // BEFORE summary cards (ADR-7). Null when no rules fired
+                    // OR insufficient-data path → renderer omits section.
+                    devActionBrief = devActionBrief,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")
@@ -1841,6 +1871,10 @@ class AppViewModel(
                 fpowerTimed = fpowerTimed.toList(),
                 fpowerAvg = if (fpowerHistory.isNotEmpty()) fpowerHistory.average() else 0.0,
                 fpowerPeak = fpowerHistory.maxOrNull() ?: 0.0,
+                // v4.5.0 Sprint 3 — persist the brief on SessionResult so the
+                // HistoryEntry builder below carries it into history.json.
+                // Null when no rules fired (DAB-008 negative case).
+                devActionBrief = devActionBrief,
             )
 
             // P95 frame time
@@ -1916,6 +1950,11 @@ class AppViewModel(
                 fpowerTimed = _result.value.fpowerTimed,
                 fpowerAvg = _result.value.fpowerAvg,
                 fpowerPeak = _result.value.fpowerPeak,
+                // v4.5.0 Sprint 3 — DevActionBrief mirror. Null on SessionResult
+                // when no rules fired; we coerce to the empty-brief shape on
+                // the wire so the SerializableEntry roundtrip is symmetric
+                // (DAB-010 backward compat ↔ this writer).
+                devActionBrief = _result.value.devActionBrief ?: DevActionBrief(),
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {
