@@ -95,8 +95,22 @@ open class FakeAdbBridge(
     }
 
     override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? = null
-    override fun captureCpuPercent(deviceId: String): Int = 0
-    override fun captureCpuPercent(deviceId: String, pkg: String): Int = captureCpuPercent(deviceId)
+    open override fun captureCpuPercent(deviceId: String): Int = 0
+    open override fun captureCpuPercent(deviceId: String, pkg: String): Int = captureCpuPercent(deviceId)
+
+    /**
+     * v4.5.0 — Default impl delegates to the two existing `captureCpuPercent`
+     * overrides so subclasses that script the underlying readouts via
+     * `override fun captureCpuPercent(...)` get the right values composed
+     * into the dual snapshot for free. Tests for `cpu-total-vs-app-usage`
+     * follow this pattern (see `AdbBridgeCpuDualTest.ScriptedCpuBridge`).
+     */
+    open override fun captureCpuDual(deviceId: String, pkg: String): com.gameperf.desktop.core.CpuDualSnapshot =
+        com.gameperf.desktop.core.CpuDualSnapshot(
+            totalDeviceCpuPct = captureCpuPercent(deviceId),
+            appCpuPct = captureCpuPercent(deviceId, pkg),
+        )
+
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? = null
 
     /**

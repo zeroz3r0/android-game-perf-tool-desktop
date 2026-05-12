@@ -574,6 +574,31 @@ object AdbBridge {
         return captureProcessCpuPercent(deviceId, pkg)
     }
 
+    /**
+     * v4.5.0 — Capture BOTH the device-wide total CPU% AND the per-process app
+     * CPU% in a single composite snapshot. Adopted from GameBench's dual-line
+     * CPU chart UX (user feedback 2026-05-12): a dev distinguishing "device
+     * saturated by OS/other apps" vs "my app saturating the device" in one glance.
+     *
+     * Implementation is a thin composition of the two existing readers:
+     *  - [totalDeviceCpuPct] ← [captureCpuPercent(deviceId)] (device-wide /proc/stat).
+     *  - [appCpuPct]         ← [captureCpuPercent(deviceId, pkg)] (per-process
+     *    /proc/<pid>/stat, scoped to the game's PID).
+     *
+     * Sentinel preservation: either field MAY be -1 ("first tick of session,
+     * no delta yet" or "parse failure"). We do NOT coerce sentinels to 0;
+     * callers (AppViewModel) already gate on `> 0` before recording history.
+     * See sdd/cpu-total-vs-app-usage/design ADR-2.
+     *
+     * Cost: ~1 extra `cat /proc/stat` shell vs the legacy single-call path
+     * (~5-10ms). Stays comfortably under the 500ms fast-tier budget.
+     */
+    fun captureCpuDual(deviceId: String, pkg: String): CpuDualSnapshot =
+        CpuDualSnapshot(
+            totalDeviceCpuPct = captureCpuPercent(deviceId),
+            appCpuPct = captureCpuPercent(deviceId, pkg),
+        )
+
     fun captureCpuPercent(deviceId: String): Int {
         val output = shell(deviceId, "cat /proc/stat")
         val line = output.lines().firstOrNull { it.startsWith("cpu ") } ?: return -1
@@ -1352,6 +1377,27 @@ object AdbBridge {
 // the frozen region (lines 64-88: Device data class + switchToWifi legacy)
 // stays untouched byte-for-byte. Every type here is a pure value carrier —
 // no state, no methods beyond `compareTo` on AdbVersion.
+
+/**
+ * v4.5.0 — Composite snapshot of the two CPU readings that the GameBench-
+ * inspired dual-line chart needs:
+ *  - [totalDeviceCpuPct]: device-wide CPU% summing across ALL processes
+ *    (what `/proc/stat` `cpu ` line yields). Drives the "total dispositivo"
+ *    line; helps the dev see when other processes / OS are saturating the
+ *    device independently of their game.
+ *  - [appCpuPct]: per-process CPU% scoped to the game's PID (what
+ *    `/proc/<pid>/stat` utime+stime yields, normalised against system jiffies).
+ *    Drives the "app" line; the value the user grades against.
+ *
+ * Either field MAY be -1 (the legacy first-tick / parse-error sentinel from
+ * the underlying [AdbBridge.captureCpuPercent] methods). The dual snapshot
+ * preserves sentinels verbatim — caller is expected to gate on `> 0` before
+ * recording history. See `sdd/cpu-total-vs-app-usage/design` ADR-2.
+ */
+data class CpuDualSnapshot(
+    val totalDeviceCpuPct: Int,
+    val appCpuPct: Int,
+)
 
 /**
  * Result of an `adb pair ip:port` invocation. Never thrown — errors are

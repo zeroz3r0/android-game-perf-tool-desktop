@@ -503,6 +503,61 @@ class SessionHistoryRoundTripTest {
         assertEquals(DevActionBrief.DEFAULT_TOP_N, loaded.devActionBrief.topN)
     }
 
+    // ===== v4.5.0 — cpu-total-vs-app-usage cpuTotalHistory round-trip (CDU-004) =====
+
+    @Test
+    fun `CDU-004 round-trip preserves cpuTotalHistory populated`() {
+        val totals = listOf(55, 65, 75, 85)
+        val entry = fullEntry().copy(id = "cpu-total-rt", cpuTotalHistory = totals)
+        SessionHistory.addEntry(entry)
+
+        val loaded = SessionHistory.load().firstOrNull { it.id == "cpu-total-rt" }
+        assertNotNull(loaded)
+        assertEquals(
+            totals,
+            loaded.cpuTotalHistory,
+            "cpuTotalHistory must round-trip element-equal through SerializableEntry",
+        )
+    }
+
+    @Test
+    fun `CDU-004 legacy v4_5_x JSON without cpuTotalHistory defaults to empty list`() {
+        // Hand-rolled v4.5.x-pre-cpu-dual payload — has all the v4.5.0 fields up to
+        // devActionBrief but lacks cpuTotalHistory. Default empty preserves the
+        // pre-cpu-dual semantics: report renders the legacy single CPU line.
+        val legacyJson = """
+            [
+              {
+                "id": "legacy-pre-cpu-dual",
+                "name": "legacy session",
+                "gamePackage": "com.legacy.game",
+                "deviceModel": "Pixel 6",
+                "grade": "B",
+                "deviceGrade": "B",
+                "avgFps": 55,
+                "duration": 300,
+                "date": "01/01/2026 00:00",
+                "reportPath": "",
+                "videoPath": "",
+                "tag": "OUR_GAME",
+                "competitorName": "",
+                "isFavorite": false,
+                "thermalAvailable": true,
+                "fpowerAvailable": true
+              }
+            ]
+        """.trimIndent()
+        tempFile.parentFile?.mkdirs()
+        tempFile.writeText(legacyJson)
+
+        val loaded = SessionHistory.load()
+        assertEquals(1, loaded.size)
+        assertTrue(
+            loaded.first().cpuTotalHistory.isEmpty(),
+            "missing cpuTotalHistory field defaults to empty list for v4.5.x-pre-cpu-dual compat",
+        )
+    }
+
     @Test
     fun `unknown detectionMode string decodes to null`() {
         // Hand-rolled payload with a detectionMode string we don't recognize

@@ -50,6 +50,18 @@ interface AdbBridgeApi {
      *  user wants. New code should always pass [pkg]. */
     fun captureCpuPercent(deviceId: String, pkg: String): Int
 
+    /**
+     * v4.5.0 — Composite of BOTH [captureCpuPercent(deviceId)] AND
+     * [captureCpuPercent(deviceId, pkg)] in a single call. Used by the
+     * GameBench-inspired dual-CPU-line chart so the dev distinguishes
+     * "device saturated by OS/other apps" from "my app saturating the device".
+     * Sentinels (-1 from either underlying method) are preserved verbatim;
+     * the caller gates on `> 0` before recording history.
+     *
+     * @since v4.5.0 (`cpu-total-vs-app-usage` change)
+     */
+    fun captureCpuDual(deviceId: String, pkg: String): CpuDualSnapshot
+
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot?
     fun captureTemperature(deviceId: String): ThermalSnapshot
 
@@ -163,6 +175,9 @@ class RealAdbBridge : AdbBridgeApi {
     override fun captureCpuPercent(deviceId: String): Int = AdbBridge.captureCpuPercent(deviceId)
     override fun captureCpuPercent(deviceId: String, pkg: String): Int =
         AdbBridge.captureCpuPercent(deviceId, pkg)
+
+    override fun captureCpuDual(deviceId: String, pkg: String): CpuDualSnapshot =
+        AdbBridge.captureCpuDual(deviceId, pkg)
 
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? =
         AdbBridge.captureMemory(deviceId, pkg)

@@ -110,6 +110,15 @@ data class LiveMetrics(
     val nativeHistory: List<Long> = emptyList(),
     val javaHistory: List<Long> = emptyList(),
     val cpuHistory: List<Int> = emptyList(),
+    // v4.5.0 — GameBench-inspired dual CPU line (`cpu-total-vs-app-usage`).
+    // [cpuHistory] above carries the APP CPU% (per-process /proc/<pid>/stat).
+    // [cpuTotalHistory] carries the TOTAL DEVICE CPU% (sum across all
+    // processes from /proc/stat). Both populated by the same tick via
+    // [AdbBridgeApi.captureCpuDual]. The graph and HUD render them as two
+    // distinct lines so the dev distinguishes "device saturated by OS/other
+    // apps" from "my app saturating the device". Defaulted empty for
+    // backward compat with pre-cpu-dual LiveMetrics construction sites.
+    val cpuTotalHistory: List<Int> = emptyList(),
     val tempCpuHistory: List<Double> = emptyList(),
     val tempGpuHistory: List<Double> = emptyList(),
     val tempSkinHistory: List<Double> = emptyList(),
@@ -161,6 +170,13 @@ data class SessionResult(
     val peakMemMb: Long = 0,
     val avgCpu: Int = 0,
     val maxCpu: Int = 0,
+    // v4.5.0 — GameBench-inspired dual CPU line (`cpu-total-vs-app-usage`,
+    // spec CDU-003). [avgCpu] / [maxCpu] above still aggregate the APP CPU
+    // (the value the user grades against). [cpuTotalHistory] persists the
+    // raw per-tick total-device CPU samples for the dual-line chart in the
+    // report. Mirrors the v4.5.0 `fpowerHistory` defaulted-empty backward
+    // compat precedent. Empty list ⇒ legacy single-line CPU chart renders.
+    val cpuTotalHistory: List<Int> = emptyList(),
     val maxTempCpu: Double = 0.0,
     val maxTempGpu: Double = 0.0,
     val batteryStart: Int = 0,
@@ -1083,6 +1099,15 @@ class AppViewModel(
             val nativeHistory = mutableListOf<Long>()
             val javaHistory = mutableListOf<Long>()
             val cpuHistory = mutableListOf<Int>()
+            // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-005). Parallel
+            // accumulator for the total-device CPU% samples captured via
+            // [AdbBridgeApi.captureCpuDual]. Populated only on Android (iOS
+            // sidecar doesn't expose device-wide CPU separately today, see
+            // exploration §"Out of scope"). Appended whenever the dual snapshot
+            // total channel is > 0 (the legacy `cpu > 0` gate for the app
+            // channel is mirrored 1:1 — both channels honour the -1 sentinel
+            // from the underlying [AdbBridge.captureCpuPercent] paths).
+            val cpuTotalHistory = mutableListOf<Int>()
             val tempCpuHistory = mutableListOf<Double>()
             val tempGpuHistory = mutableListOf<Double>()
             val tempSkinHistory = mutableListOf<Double>()
@@ -1141,6 +1166,14 @@ class AppViewModel(
             var iterCount = 0
             var lastMem: com.gameperf.desktop.core.model.MemSnapshot? = null
             var lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
+            // v4.5.0 — `cpu-total-vs-app-usage`. Most-recent total-device CPU%
+            // captured by the Android branch's [AdbBridgeApi.captureCpuDual]
+            // call. -1 is the legacy sentinel for "first tick or parse error"
+            // (preserved verbatim from the underlying captureCpuPercent call);
+            // the history-append guard below filters sentinels via `> 0`. iOS
+            // path leaves this at -1 ⇒ no total samples persisted ⇒ the dual
+            // chart falls back to the legacy single-line view (CDU-007).
+            var lastCpuTotalPct: Int = -1
             // v4.5.0 — FPower live cache (design §9a). The default snapshot has all
             // numeric fields = -1.0 with `fpowerAvailable=true` (the v4.4.x-compatible
             // sentinel from FPowerSnapshot in Metrics.kt:93). The per-tick capture
@@ -1208,11 +1241,18 @@ class AppViewModel(
                     // FAST TIER (every 500ms): FPS, CPU, battery
                     frame = adb.captureFrames(device.id, pkg)
                     if (shouldStop) break
-                    // v4.2.5: pass pkg so we measure the GAME's CPU%, not the
-                    // device-wide CPU% (which used to mislead users into thinking
-                    // a 30% reading meant the game was light when really it was
-                    // 30% across ALL processes including system + idle).
-                    cpu = adb.captureCpuPercent(device.id, pkg)
+                    // v4.5.0 — GameBench-inspired dual CPU capture
+                    // (`cpu-total-vs-app-usage`, spec CDU-005). [captureCpuDual]
+                    // is a thin convenience over the existing two
+                    // [captureCpuPercent] overloads — composes BOTH device-wide
+                    // total AND per-process app CPU in one call. The app channel
+                    // (`cpu`) keeps the v4.2.5 semantics (the value the user
+                    // grades against). The total channel feeds the new dual-line
+                    // chart so the dev can distinguish "device saturated by OS /
+                    // other apps" from "my app saturating the device".
+                    val cpuDual = adb.captureCpuDual(device.id, pkg)
+                    cpu = cpuDual.appCpuPct
+                    lastCpuTotalPct = cpuDual.totalDeviceCpuPct
                     if (shouldStop) break
                     battery = adb.getBatteryLevel(device.id)
                     if (shouldStop) break
@@ -1334,6 +1374,16 @@ class AppViewModel(
                     cpuTimed.add(TimedSample(sampleSecond, cpu.toDouble()))
                     if (cpuHistory.size > MAX_HISTORY_SIZE) cpuHistory.removeFirst()
                     if (cpuTimed.size > MAX_HISTORY_SIZE) cpuTimed.removeFirst()
+                }
+                // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-005). Append the
+                // total-device CPU% sample whenever the Android branch produced
+                // a non-sentinel value. The gate is independent of the app
+                // channel above — both channels share the same `> 0` filter
+                // but neither blocks the other (e.g. app process not running
+                // yet ⇒ app=-1 but total still valid).
+                if (lastCpuTotalPct > 0) {
+                    cpuTotalHistory.add(lastCpuTotalPct)
+                    if (cpuTotalHistory.size > MAX_HISTORY_SIZE) cpuTotalHistory.removeFirst()
                 }
                 val shouldRecordThermal = isIosDevice || (iterCount % 4 == 1) // align with runThermal above
                 // v4.1.0: thermal fields use NaN as sentinel. NaN > 0 is false in IEEE 754,
@@ -1458,6 +1508,10 @@ class AppViewModel(
                     nativeHistory = if (snapshotHistories) nativeHistory.toList() else prev.nativeHistory,
                     javaHistory = if (snapshotHistories) javaHistory.toList() else prev.javaHistory,
                     cpuHistory = if (snapshotHistories) cpuHistory.toList() else prev.cpuHistory,
+                    // v4.5.0 — `cpu-total-vs-app-usage` (CDU-002). Same 0.5 Hz
+                    // snapshot gate as the surrounding history fields so the
+                    // dual-line chart redraws at the same cadence as cpuHistory.
+                    cpuTotalHistory = if (snapshotHistories) cpuTotalHistory.toList() else prev.cpuTotalHistory,
                     tempCpuHistory = if (snapshotHistories) tempCpuHistory.toList() else prev.tempCpuHistory,
                     tempGpuHistory = if (snapshotHistories) tempGpuHistory.toList() else prev.tempGpuHistory,
                     tempSkinHistory = if (snapshotHistories) tempSkinHistory.toList() else prev.tempSkinHistory,
@@ -1844,6 +1898,11 @@ class AppViewModel(
                 avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
                 p99FrameTime = p99ft,
                 peakMemMb = peakMem, avgCpu = avgCpu, maxCpu = maxCpu,
+                // v4.5.0 — `cpu-total-vs-app-usage` (CDU-003). Persist the raw
+                // total-device CPU samples on SessionResult so the report
+                // renderer (CDU-007) and the HistoryEntry builder below
+                // (single source of truth via _result.value) both see them.
+                cpuTotalHistory = cpuTotalHistory.toList(),
                 maxTempCpu = maxTempCpu, maxTempGpu = maxTempGpu,
                 batteryStart = batteryStart, batteryEnd = batteryEnd,
                 batteryDrain = batteryStart - batteryEnd,
@@ -1955,6 +2014,12 @@ class AppViewModel(
                 // the wire so the SerializableEntry roundtrip is symmetric
                 // (DAB-010 backward compat ↔ this writer).
                 devActionBrief = _result.value.devActionBrief ?: DevActionBrief(),
+                // v4.5.0 — `cpu-total-vs-app-usage` (CDU-004). Read from
+                // _result.value so a future refactor that drops the field at
+                // the SessionResult build site gets caught by the round-trip
+                // test at the HistoryEntry boundary (same pattern as
+                // detectionMode / events / fpower fields above).
+                cpuTotalHistory = _result.value.cpuTotalHistory,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {

@@ -215,6 +215,12 @@ object SessionHistory {
         // ignoreUnknownKeys = true } AND this defaulted field to hydrate them
         // safely.
         val devActionBrief: DevActionBrief = DevActionBrief(),
+        // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-004). Per-tick total
+        // device CPU% samples that pair with the existing app-CPU averages
+        // (avgCpu/maxCpu) to drive the dual-line CPU chart in the report.
+        // Defaulted empty so pre-cpu-dual history.json rows hydrate as the
+        // legacy single-line CPU view via Json { ignoreUnknownKeys = true }.
+        val cpuTotalHistory: List<Int> = emptyList(),
     )
 
     data class HistoryEntry(
@@ -276,6 +282,12 @@ object SessionHistory {
         // every existing call site that constructs a HistoryEntry without
         // naming this argument stays byte-equivalent to pre-Sprint-3 behavior.
         val devActionBrief: DevActionBrief = DevActionBrief(),
+        // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-004). Domain mirror of
+        // [SerializableEntry.cpuTotalHistory]. Defaulted empty so legacy call
+        // sites that construct HistoryEntry without naming this argument stay
+        // byte-equivalent to pre-cpu-dual behavior. The report generator
+        // emits the dual chart only when this list is non-empty.
+        val cpuTotalHistory: List<Int> = emptyList(),
     )
 
     // ===== Conversion =====
@@ -312,6 +324,8 @@ object SessionHistory {
         fpowerPeak = fpowerPeak,
         // v4.5.0 Sprint 3 — DevActionBrief forward through the wire format.
         devActionBrief = devActionBrief,
+        // v4.5.0 — `cpu-total-vs-app-usage` forward through the wire format.
+        cpuTotalHistory = cpuTotalHistory,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -357,6 +371,11 @@ object SessionHistory {
         // as DevActionBrief() and rendering omits the section (DAB-008
         // negative case).
         devActionBrief = devActionBrief,
+        // v4.5.0 — `cpu-total-vs-app-usage` hydration. Defaulted empty on the
+        // SerializableEntry side so a pre-cpu-dual row decodes as empty list
+        // and the report falls back to the single-line CPU chart (CDU-007
+        // legacy branch).
+        cpuTotalHistory = cpuTotalHistory,
     )
 
     // ===== Public API (unchanged contract) =====
