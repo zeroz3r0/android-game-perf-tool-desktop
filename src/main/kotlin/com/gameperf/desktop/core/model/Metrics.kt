@@ -71,3 +71,30 @@ data class ThermalSnapshot(
     val thermalAvailable: Boolean = true,
     val diagnostic: ThermalDiagnostic? = null,
 )
+
+/**
+ * v4.5.0 -- Platform-agnostic FPower snapshot (battery power normalised by FPS).
+ *
+ * `fpowerMwPerFrame = abs(currentMicroA) * voltageMicroV / 1e12 * 1000 / fps`
+ *
+ * PerfDog-style color bands quoted in the report HTML: green < 50,
+ * amber 50-65, red > 65 mW/frame.
+ *
+ * Sentinel: all numeric fields -1.0 when the metric is unavailable.
+ * [fpowerAvailable] defaults to `true` so pre-v4.5.0 `.gameperf` JSON loads
+ * unchanged (mirrors ThermalSnapshot.thermalAvailable widening at line 71).
+ * [diagnostic] is `null` on the happy path; populated by
+ * [com.gameperf.desktop.core.FPowerParser] when the sysfs probe fails, so
+ * the report HTML can surface a banner instead of a misleading "0 mW".
+ *
+ * See `sdd/fpower-metric/design` §3 + spec FPW-004.
+ */
+@Serializable
+data class FPowerSnapshot(
+    val fpowerMwPerFrame: Double = -1.0,
+    val powerW: Double = -1.0,
+    val currentMicroA: Double = -1.0,
+    val voltageMicroV: Double = -1.0,
+    val fpowerAvailable: Boolean = true,
+    val diagnostic: FPowerDiagnostic? = null,
+)
