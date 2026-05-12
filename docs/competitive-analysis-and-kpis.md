@@ -38,7 +38,7 @@ Honesty notes preserved: console certs are NDA-bound, engine/vendor PDFs require
 | Tool | Mechanism | Vendor coverage | Price | Sampling rate | Segmentation | Overhead | Cloud required | Our gap vs them |
 |------|-----------|-----------------|-------|---------------|--------------|----------|----------------|-----------------|
 | **GameBench** | On-device native `.so` reads driver perfcounters + SDK/Injector | Mali + Adreno (~90% Android GPU market). PowerVR explicitly NOT supported. | Subscription (paid). Free Pro Android Lite for indie. | 1 Hz fixed | Programmatic Markers (SDK) + logcat protocol `gb_marker_start - <name>` / `gb_marker_stop - <name>` | 3.8% CPU full profiling Pixel 6 (per docs); 0.5% CPU SDK Subway Surfers S24U | Web Dashboard cloud default; self-hosted enterprise tier | GPU usage% (Sprint 1 in progress), network bandwidth, programmatic markers via SDK |
-| **PerfDog (Tencent/WeTest)** | Desktop USB client + PerfDogService daemon. Plug-and-play, no SDK/root | Cross-platform (Android/iOS/Win/Switch/VR), vendor-agnostic | Free for non-profit; commercial via sales (perfdog_net@tencent.com); RMB monthly subscription | Sub-second claimed | Per-session, no auto phase segmentation verified | <1% CPU claimed, "0 FPS impact" | YES — uploads to perfdog.qq.com or perfdog.wetest.net. Tencent account required. Closed-source methodology. | Lowest setup friction, methodology transparency missing on their side, no public sampling-rate spec sheet |
+| **PerfDog (Tencent/WeTest)** | PerfDog Service on-device daemon + adb host client. Plug-and-play, no SDK/root. Mandatory cloud sync. | 11 platforms: Android, iOS, Win, Switch, VR (Quest/Pico), Wear (cross-platform, vendor-agnostic) | Free for non-profit / research; commercial via sales contact (perfdog_net@tencent.com, NDA pricing); RMB monthly subscription | 1 Hz default, configurable | Custom Data Extension SDK (instrumented, 7 langs, ~20k calls/sec, 50 metrics max) + Tags + Scenes annotations | <1% CPU marketing-claimed (NOT independently audited) | **YES MANDATORY** — uploads to perfdog.qq.com (China) or perfdog.wetest.net (Int'l). Data silos separated by compliance, no exchange between them. Tencent account required. Closed methodology. | **Closeable** (planned): FPower (§9 #8), CPU% freq-normalized (§9 #9), Jank formula (§9 #10), CLI/headless (§9 #11). **Explicitly NOT closing**: GPU HW counters (vendor partnerships), cloud dashboard (anti-positioning), engine SDK metrics (anti-no-SDK), production RUM, touch latency, 200k-app benchmark library. Also unique to them: multi-device GUI ≤3 (we plan match + unlimited via CLI). |
 | **Snapdragon Profiler (Qualcomm)** | Desktop + adb + Qualcomm Adreno driver perfcounters | **SNAPDRAGON ONLY** (Adreno). Useless on Mali / PowerVR / Xclipse. | FREE (Qualcomm dev account) | HW-counter capable | Frame capture (GL/Vulkan), system trace | Negligible (HW counters) | NO (local) | Vendor-locked, dev-time deep-dive, not a QA harness. Needs `echo 1 > /sys/class/kgsl/kgsl-3d0/perfcounter` on Android 13+ |
 | **ARM Streamline (Arm Performance Studio)** | gatord agent inside APK wrapper, OR Perfetto data sources on unrooted Mali | **MALI ONLY**. ~50% market. | FREE (Arm dev account) | HW-counter capable | Source-code-level | Negligible | NO (local) | Vendor-locked mirror of Snapdragon Profiler. Mali per-generation sampler quirks |
 | **Unity Profiler + Profile Analyzer** | Built INTO Unity engine. Requires development build OR IL2CPP+development flag | **Unity games only**. Doesn't profile Unreal/native/Cocos/Godot. | FREE (Unity license) | Per-frame engine markers | ProfilerMarker (`Profiler.BeginSample`/`EndSample`) | Engine integration cost | NO | Engine-locked, requires dev build (NOT shippable APK), no device-level cost (temp, GPU clock, system mem, battery) |
@@ -263,6 +263,54 @@ Apple App Store Review Guideline 2.4.2: "Apps should not rapidly drain battery, 
 
 Reference observation: `research/market-kpis-official-sources` (#309).
 
+### 3.6 PerfDog-published metric formulas (industry references)
+
+> Source: WeTest blog post #1189 (founding dev Awen Cao interview by Sr. PM Baojian Shen, March 2026) + <https://perfdog.wetest.net/> product page. Verified in obs #312.
+
+#### Jank (PerfDog 2019)
+
+```
+FrameTime > 2 × avg(last 3 frames) AND FrameTime > 84 ms   (Single Jank)
+FrameTime > 2 × avg(last 3 frames) AND FrameTime > 125 ms  (Big Jank)
+```
+
+Stricter than Android Vitals slow-frame (>16 ms). Our scoring will EXPOSE BOTH as separate KPI columns — see §5.1.
+
+#### SmallJank (2020, 120 Hz+ displays)
+
+Thresholds NOT public. Defer adoption until our tool supports 120 Hz target users.
+
+#### Smooth Index
+
+```
+Smooth Index = 100 - weighted_jank_severity_score
+```
+
+Target >95 for AAA. Weighting NOT public.
+
+Our take: implement equivalent in our scoring framework with PUBLIC weighting (transparency advantage vs PerfDog's closed weighting).
+
+#### FPower (PerfDog industry-first)
+
+```
+FPower = Total Power (W) / FPS = mW per frame
+```
+
+Anchor thresholds (PerfDog case studies):
+- **< 50 mW/frame**: excellent (60 mW → 46.7 mW gave 22% battery life gain at unchanged FPS)
+- **50–65 mW/frame**: acceptable
+- **> 65 mW/frame**: investigate
+
+Implementation source for our tool: `/sys/class/power_supply/battery/current_now` + `voltage_now` via `adb shell cat`.
+
+#### CPU% freq-normalized
+
+```
+CPU%_normalized = raw_cpu_pct × (current_freq / max_freq)
+```
+
+PerfDog default. Removes throttling distortion: a throttled CPU at 60% raw is closer to saturation than a non-throttled CPU at 60%. Critical for thermal-aware scoring.
+
 ---
 
 ## 4. Event segmentation framework
@@ -374,6 +422,10 @@ Each KPI defined ONCE here, scored differently per phase in §5.2.
 | Slow session rate (FPS-target-aware) | % frames missing target by tier | % | derived | per-frame | ratio | §3.1 >25% = slow session |
 | Crash count | count of crashes during phase | int | logcat / tombstones | event | count | §3.1 user-perceived ≥1.09% DAU bad |
 | Slow UI thread frame | input >24ms OR UI thread >8ms OR GPU draw >12ms OR bitmap upload >3.2ms | bool | derived | per-frame | count | §3.1 sub-budgets |
+| **FPower** | mW per frame | mW/frame | `/sys/class/power_supply/battery/{current_now,voltage_now}` ÷ FPS | 1 Hz | mean / per-phase | §3.6 <50 / 50-65 / >65 |
+| **CPU% normalized** | freq-adjusted CPU | % | raw_cpu × current_freq/max_freq | 0.5 Hz | mean | §3.6 (PerfDog default) |
+| **PerfDog Jank count** | jank events per phase | int | FT > 2×avg(3) AND > 84 ms | per-frame | count | §3.6 |
+| **PerfDog Big Jank count** | severe jank events per phase | int | FT > 2×avg(3) AND > 125 ms | per-frame | count | §3.6 |
 
 **Differences from skeleton**:
 - Cold/warm/hot start split (Sentry §2.2 + Vitals §3.1 trichotomy).
@@ -388,14 +440,16 @@ Initial proposal — product can adjust weights in §8.
 
 | Phase | **Critical KPIs** | Important | Nice-to-have | Irrelevant |
 |-------|-------------------|-----------|--------------|------------|
-| **App startup / SDK init** | Cold start time, TTID, RAM at boot, slow frame count first 5s | CPU peak, ANR count, crash count | Network bytes during init | GPU (idle), thermal |
-| **Cinematics** | FPS stability, frame time p99, frozen frames | CPU avg, GPU avg, slow frames | RAM, temperature, battery | TTID, cold start, network |
-| **Tutorials** | FPS stability, slow frames, TTID per screen | CPU avg, RAM | GPU, network, frame time p99 | Cold start, throttling |
-| **Level / map loading** | Loading time, RAM peak, network total (loading bytes) | CPU peak, frame time p99 | GPU, temperature | FPS (loading screens often static), TTID |
-| **Screen navigation** | TTID per transition, frame time p99 | CPU peak, RAM delta, slow frames | GPU, network | Cold start, throttling |
-| **Interstitial ads** | RAM delta, network total during ad load, frame time on close, slow frames during ad | CPU avg | GPU, battery drain | FPS (ad video FPS != game FPS), TTID |
-| **Rewarded video** | Same as Interstitial + video FPS continuity | CPU, GPU avg | Temperature | Cold start, throttling |
-| **Gameplay (default)** | FPS avg, FPS p1, FPS stability, temperature avg/max, throttling events | GPU avg, CPU avg, RAM, slow session rate, battery drain | Network | Cold start, TTID |
+| **App startup / SDK init** | Cold start time, TTID, RAM at boot, slow frame count first 5s | CPU peak (normalized), ANR count, crash count | Network bytes during init | GPU (idle), thermal, FPower |
+| **Cinematics** | FPS stability, frame time p99, frozen frames | CPU avg (normalized), GPU avg, slow frames, FPower | RAM, temperature, battery | TTID, cold start, network |
+| **Tutorials** | FPS stability, slow frames, TTID per screen | CPU avg (normalized), RAM, FPower | GPU, network, frame time p99 | Cold start, throttling |
+| **Level / map loading** | Loading time, RAM peak, network total (loading bytes) | CPU peak (normalized), frame time p99 | GPU, temperature, FPower | FPS (loading screens often static), TTID |
+| **Screen navigation** | TTID per transition, frame time p99 | CPU peak (normalized), RAM delta, slow frames | GPU, network, FPower | Cold start, throttling |
+| **Interstitial ads** | RAM delta, network total during ad load, frame time on close, slow frames during ad | CPU avg (normalized) | GPU, battery drain | FPS (ad video FPS != game FPS), TTID, FPower |
+| **Rewarded video** | Same as Interstitial + video FPS continuity | CPU (normalized), GPU avg | Temperature | Cold start, throttling, FPower |
+| **Gameplay (default)** | FPS avg, FPS p1, FPS stability, temperature avg/max, throttling events, **FPower** | GPU avg, CPU avg (normalized), RAM, slow session rate, battery drain, PerfDog Jank count | Network | Cold start, TTID |
+
+> **NOTE on CPU% normalized**: this is the REPLACEMENT for raw CPU% wherever raw CPU% is currently listed. Raw CPU% can be deprecated once the normalized version is validated against thermal-throttled captures.
 
 Weights TBD per phase in §8 once product confirms which phases matter most for which game genres.
 
@@ -427,6 +481,19 @@ Weights TBD per phase in §8 once product confirms which phases matter most for 
 **Recommendation for v1**: **Model A (Linear) anchored on Android Vitals thresholds.**
 
 > **Note on threshold anchoring**: threshold anchor points come from §3.1 — they are NOT arbitrary, they're what Google penalizes apps on for Play Store discoverability. Using arbitrary thresholds would mean we're scoring something different from what Play ranks on. Evolve to Model B once ≥50 sessions are scored and we know which curves matter.
+
+### 6.2.1 Composite scoring alternatives
+
+Beyond Model A (Linear weighted), we evaluate two composites:
+
+**Smooth Index (PerfDog convention)**: `100 - weighted_jank_severity_score`
+- Pro: industry-recognizable, single number, comparable to PerfDog reports
+- Con: weighting NOT public from PerfDog; we'd define our own (transparency advantage)
+- Decision pending: §8 #10
+
+**Vitals-aligned ranking signal**: pct daily sessions exceeding Play "slow session" thresholds (>25% frames below 30 FPS / 20 FPS)
+- Pro: directly aligned with Play discoverability impact
+- Con: requires multi-session aggregation (Sprint 3+ trends work)
 
 ### 6.3 Weighting by device class
 
@@ -526,6 +593,8 @@ See §8 decision #6.
 | 7 | **GameBench paid trial account** | **YES** — for parity calibration. 1 month trial sufficient. |
 | 8 | **Score visibility** | **Internal-only initially.** Public-facing requires legal review. |
 | 9 | **Empirical ad SDK capture lab** (NEW) | **PROPOSE: YES — 1 day lab.** Capture default logcat tags from AdMob/IS/AppLovin/Meta/UnityAds/Vungle/Mintegral with real games. **IF YES** → unblocks Tier 3 auto-detection for ad events + validates existing 5-SDK catalog patterns. **IF NO** → ad event coverage stays at game-cooperation level (current state). |
+| 10 | **Smooth Index implementation** (§6.2.1) | Adopt PerfDog Smooth Index alongside Linear Model A? If YES, define our own weighting — recommend transparent published weights (transparency advantage vs PerfDog's closed weighting). |
+| 11 | **FPower anchor thresholds** (§3.6) | Confirm <50 / 50–65 / >65 mW/frame anchors from PerfDog case studies, or run our own baselines per game per device tier? Recommend running our own to ground anchors on Mali + Adreno + PowerVR independently. |
 
 ---
 
@@ -542,19 +611,53 @@ Ranked by ROI × effort (audit obs #308 + roadmap obs #289):
 | 5 | **`network-bandwidth`** | **~3d** | #2 scoring decides priority | Sprint 2 from `roadmap/gamebench-parity`. `dumpsys netstats detail --uid <uid>` total bytes RX/TX. NO per-connection (requires libc hooks, traitor to zero-touch). |
 | 6 | **`ad-sdk-empirical-capture-lab` (NEW)** | **1d research/lab** | §8 #9 = YES | Capture default logcat from 7 ad SDKs with real games + 2 devices (Mali + Adreno). Output: signature catalog updates + verification matrix per SDK. |
 | 7 | **`loading-event-signatures-quickfix` (NEW)** | **0.5d standalone** | None | Wire Unity/Unreal/Cocos2d signatures to existing `EventType.LOADING` type. High ROI, low cost. Fixes audit gap #4 — auto-detection currently dead. |
+| 8 | **`fpower-metric` (NEW, post-PerfDog)** | **2-3d HIGH ROI** | None | FPower (mW/frame) read from `/sys/class/power_supply/battery/{current_now,voltage_now}` ÷ FPS. Independent of KPI scoring framework, can ship first. Anchors §3.6 / §8 #11. |
+| 9 | **`cpu-freq-normalized` (NEW, post-PerfDog)** | **0.5d** | Bundle into #2 `kpi-scoring-framework` | `raw_cpu × current_freq/max_freq`. PerfDog default; removes throttling distortion. §3.6. |
+| 10 | **`perfdog-jank-formula` (NEW, post-PerfDog)** | **0.5d** | Bundle into #2 `kpi-scoring-framework` | Single Jank (>2×avg(3) AND >84 ms) + Big Jank (>125 ms) as separate KPI columns alongside Vitals slow-frame. §3.6. |
+| 11 | **`cli-headless-mode` (NEW, post-PerfDog)** | **3-4d** | None | Picocli/kotlinx-cli entry. Reuses capture pipeline. JSON output. Exit code on threshold breach. **Unlocks #12 and #13.** |
+| 12 | **`gh-action-wrapper` (NEW, post-PerfDog)** | **1-2d** | #11 | Wrap CLI in GitHub Action for CI. Direct counter to PerfDog Service enterprise pricing for CI/CD. |
+| 13 | **`multi-device-capture` (NEW, post-PerfDog)** | **3-5d** | None | Tabbed sessions ≤3 in GUI (match PerfDog limit) + unlimited via CLI (#11). Independent per-device viewmodels. |
+| 14 | **(DEFER) `engine-mode-perfetto-capture`** | **5-10d** | None | atrace capture via `adb shell perfetto`. Only on explicit user demand. Anti-no-SDK tension — defer until requested. |
 
 **Recommended order** (impact × dependency):
 1. #7 quick fix LOADING signatures (0.5d standalone, immediate ROI on existing dead code path)
-2. #1 event-segmentation-coverage (unblocks scoring with proper phase boundaries)
-3. #2 kpi-scoring-framework (anchors §3.1 Vitals thresholds)
-4. #3 shareable-html-report (the user-facing payoff)
-5. #4 gpu-usage-percent (retake Sprint 1 when GPU becomes scoring-critical)
-6. #6 ad-sdk-empirical-capture-lab (if §8 #9 = YES)
-7. #5 network-bandwidth (Sprint 2 from existing roadmap)
+2. #8 `fpower-metric` (2-3d, ships independently, closes top PerfDog gap)
+3. #1 event-segmentation-coverage (unblocks scoring with proper phase boundaries)
+4. #2 kpi-scoring-framework + bundled #9 + #10 (anchors §3.1 Vitals + §3.6 PerfDog formulas)
+5. #11 `cli-headless-mode` (unlocks CI/CD positioning vs PerfDog Service)
+6. #3 shareable-html-report (the user-facing payoff)
+7. #12 `gh-action-wrapper` (after #11)
+8. #13 `multi-device-capture` (after CLI baseline stable)
+9. #4 gpu-usage-percent (retake Sprint 1 when GPU becomes scoring-critical)
+10. #6 ad-sdk-empirical-capture-lab (if §8 #9 = YES)
+11. #5 network-bandwidth (Sprint 2 from existing roadmap)
+12. #14 DEFER `engine-mode-perfetto-capture` until requested
 
 ---
 
-## 10. References
+## 10. Positioning statement
+
+> **Local-first, open-methodology, free Android performance profiler for QA teams who need to profile release builds without uploading IP to third-party cloud, without engine integration, without vendor lock-in. Complements (not replaces) vendor deep-dive tools (Snapdragon Profiler / ARM Streamline / Unity Profiler).**
+
+Anchored on (refined post-PerfDog deep-dive, obs #312):
+- **Data sovereignty** — no cloud, ever. PerfDog requires mandatory upload to perfdog.qq.com or perfdog.wetest.net with hard compliance silos between China and Int'l (no user choice). We never leave the host.
+- **Open methodology** — every metric is sourced from public `/sys` / `dumpsys` / Perfetto endpoints and documented inline. PerfDog's Jank/Smooth Index/FPower formulas are partially public (§3.6) but weightings and SmallJank thresholds are closed.
+- **Free for commercial use** — PerfDog is free for non-profit / research only; commercial requires sales contact with NDA pricing.
+- **Release-APK profiling** — no `debuggable=true` required. Parity with PerfDog/GameBench, beats Unity Profiler + Android Studio Profiler.
+- **CI/CD-first** — planned `cli-headless-mode` (§9 #11) + `gh-action-wrapper` (§9 #12) target the indie/mid-tier market PerfDog Service prices out.
+- **Multi-device by design** — planned `multi-device-capture` (§9 #13) matches PerfDog GUI ≤3 limit + adds unlimited via CLI (parallel = OS-level, not adb-limited per Awen Cao Q&A).
+
+Explicitly **NOT** competing on:
+- GPU HW counters (vendor partnerships required, PerfDog moat — use Snapdragon Profiler / ARM Streamline as complements)
+- Cloud dashboards / team collaboration features (anti-positioning)
+- Engine SDK metrics (Unity Mono / UE stat / draw calls / texture memory — anti-no-SDK principle)
+- Production RUM (different product category — use Firebase Perf / Sentry / Embrace)
+- Touch input latency (needs UI automation or instrumented build)
+- 200k-app benchmark library at network-effect scale (PerfDog's moat, not ours)
+
+---
+
+## 11. References
 
 ### Engram observations
 
@@ -594,6 +697,7 @@ Ranked by ROI × effort (audit obs #308 + roadmap obs #289):
 - <https://developers.google.com/admob/android/interstitial> — AdMob (no stable logcat tags)
 - <https://docs.gamebench.net/> — GameBench docs root
 - <https://perfdog.qq.com/> / <https://perfdog.wetest.net/> — PerfDog landing pages
+- <https://www.wetest.net/blog/mobile-game-performance-testing-2026-perfdog-guide-1189.html> — WeTest blog #1189: PerfDog founding dev (Awen Cao) interview by Sr. PM Baojian Shen, March 2026. Single highest-information public source on PerfDog (Jank formula, FPower formula, SmallJank, Smooth Index, 11-platform list, CI/CD plugins, 3-device GUI limit, Custom Data API). Cited in §3.6.
 - <https://docs.unity3d.com/Manual/Profiler.html> — Unity Profiler manual
 - <https://developer.arm.com/Tools%20and%20Software/Streamline%20Performance%20Analyzer> — ARM Streamline
 
@@ -613,6 +717,7 @@ Ranked by ROI × effort (audit obs #308 + roadmap obs #289):
 
 ---
 
-## 11. Changelog
+## 12. Changelog
 
 - **2026-05-12** — Initial consolidation from 7 research observations + internal audit. Replaces skeleton (`docs/competitive-analysis-skeleton-2026-05-12` obs #307). All 22 `<!-- AWAITING -->` markers resolved; all 8 placeholder tables filled. Document status: research-complete, pending §8 product decisions before SDD changes #2/#3 can start. Honesty notes preserved on console certs (NDA), engine/vendor PDFs (manual download required), and ad SDK auto-detection (NOT verified beyond current 5-SDK catalog).
+- **2026-05-12 (PM)** — PerfDog deep-dive integration. Added §3.6 PerfDog formulas (Jank / SmallJank / Smooth Index / FPower / CPU% freq-normalized), §5.1 +4 KPIs (FPower + CPU normalized + PerfDog Jank count + PerfDog Big Jank count), §5.2 phase relevance updated (FPower + CPU normalized weighting), §6.2.1 composite scoring alternatives (Smooth Index + Vitals-aligned ranking signal), §8 +2 decisions (#10 Smooth Index, #11 FPower anchors), §9 +7 SDD changes (#8 fpower-metric, #9 cpu-freq-normalized, #10 perfdog-jank-formula, #11 cli-headless-mode, #12 gh-action-wrapper, #13 multi-device-capture, #14 DEFER engine-mode-perfetto-capture), updated PerfDog row §2.1 with deep-dive findings (mandatory cloud, 11 platforms, 1 Hz default, Custom Data Extension SDK, gaps closeable vs not closing). New §10 Positioning statement. Renumbered References → §11, Changelog → §12. Source: engram obs #312 (`research/perfdog-deep-dive-2026-05-12`).
