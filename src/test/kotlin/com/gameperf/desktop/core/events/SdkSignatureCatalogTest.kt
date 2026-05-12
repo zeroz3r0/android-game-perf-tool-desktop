@@ -34,11 +34,13 @@ class SdkSignatureCatalogTest {
     // ═══════ catalog-level invariants ═══════
 
     @Test
-    fun `catalog contains exactly the nine catalogued SDKs and engines`() {
+    fun `catalog contains exactly the sixteen catalogued SDKs and engines`() {
         // If anyone removes an SDK they MUST update this assertion deliberately.
         // v4.4.0 baseline: six ad/billing SDKs.
         // v4.4.1 quickfix (audit obs #308): added three engine LOADING signatures.
-        assertEquals(9, SdkSignatureCatalog.ALL.size, "expected 9 catalogued SDKs/engines")
+        // Sprint 1 (event-segmentation-coverage): added six SDK_INIT entries +
+        // System ANR — `9 + 7 = 16`.
+        assertEquals(16, SdkSignatureCatalog.ALL.size, "expected 16 catalogued SDKs/engines")
         val sdkNames = SdkSignatureCatalog.ALL.map { it.sdk }.toSet()
         val expected = setOf(
             "AdMob",
@@ -50,22 +52,47 @@ class SdkSignatureCatalogTest {
             "Unity Engine",
             "Unreal Engine",
             "Cocos2d",
+            // Sprint 1 — SDK_INIT signatures
+            "Firebase Init",
+            "AppMeasurement Init",
+            "AdMob Init",
+            "IronSource Init",
+            "Unity Ads Init",
+            "AppLovin Init",
+            // Sprint 1 — ANR
+            "System ANR",
         )
         assertEquals(expected, sdkNames, "catalog SDK set drifted from spec")
     }
 
     @Test
-    fun `every SDK has at least one open and one close pattern`() {
+    fun `every SDK has at least one open pattern with close patterns required for lifecycle entries`() {
         for (sig in SdkSignatureCatalog.ALL) {
             assertTrue(sig.openPatterns.isNotEmpty(), "${sig.sdk}: no open patterns")
-            assertTrue(sig.closePatterns.isNotEmpty(), "${sig.sdk}: no close patterns")
             assertTrue(sig.logcatTags.isNotEmpty(), "${sig.sdk}: no logcat tags")
+
+            // closePatterns invariant — required for entries that model a
+            // bracketed lifecycle (ad/IAP/loading: every show has a dismiss;
+            // ANR: am_anr eventually pairs with am_proc_died). SDK_INIT
+            // entries are instantaneous markers (no natural close on the
+            // logcat side; the report renders them as point events) so an
+            // empty closePatterns list is acceptable for them.
+            if (sig.defaultType != EventType.SDK_INIT) {
+                assertTrue(
+                    sig.closePatterns.isNotEmpty(),
+                    "${sig.sdk}: no close patterns (only SDK_INIT entries may have empty closePatterns)",
+                )
+            }
+
             // activityClasses MAY be empty for engine-level signatures (Unity
-            // Engine, Unreal Engine, Cocos2d) because scene loading runs in
-            // the game process without pushing a new Android Activity onto
-            // the back stack. For ad/billing SDKs (which DO push activities)
-            // the field must still be populated.
-            if (sig.defaultType != EventType.LOADING) {
+            // Engine, Unreal Engine, Cocos2d), SDK_INIT signatures, and the
+            // System ANR signature — none of these push their own Android
+            // Activity onto the back stack. For ad/billing SDKs (which DO
+            // push activities) the field must still be populated.
+            val noActivityRequired = sig.defaultType == EventType.LOADING ||
+                sig.defaultType == EventType.SDK_INIT ||
+                sig.defaultType == EventType.ANR
+            if (!noActivityRequired) {
                 assertTrue(sig.activityClasses.isNotEmpty(), "${sig.sdk}: no activity classes")
             }
         }
@@ -379,6 +406,107 @@ class SdkSignatureCatalogTest {
         // Sanity: defaultType is INTERSTITIAL, but a SDK_INIT pattern match
         // must NOT fall back to it.
         assertEquals(EventType.INTERSTITIAL, sig.defaultType)
+    }
+
+    // ═══════ Sprint 1 — SDK_INIT signatures (six SDKs) ═══════
+    //
+    // Six new catalog entries emit `EventType.SDK_INIT`. Patterns are
+    // best-effort from public SDK sample code; they may need empirical
+    // refinement post-PerfDog/Apptim Sprint 4 lab comparison. Tests assert
+    // each entry matches a canonical init line on at least one of its
+    // declared tags and resolves to `SDK_INIT`.
+    //
+    // Spec refs: ESC-INIT-001 (six signatures), ESC-CATALOG-001 (catalog
+    // size invariant).
+
+    @Test
+    fun `Firebase Init signature matches FirebaseApp initialize log`() {
+        val line = lineFor(tag = "FirebaseApp", msg = "FirebaseApp initialization successful for [DEFAULT]")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Firebase init log must match")
+        assertEquals("Firebase Init", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `AppMeasurement Init signature matches FA tag init log`() {
+        val line = lineFor(tag = "FA-SVC", msg = "AppMeasurement initialize, version=1.2.3")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AppMeasurement init log must match")
+        assertEquals("AppMeasurement Init", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `AdMob Init signature matches MobileAds initialize log`() {
+        val line = lineFor(tag = "Ads", msg = "MobileAds initialize complete")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AdMob init log must match")
+        assertEquals("AdMob Init", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `IronSource Init signature matches init success log`() {
+        val line = lineFor(tag = "IronSource", msg = "IronSource SDK init success")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "IronSource init log must match")
+        assertEquals("IronSource Init", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `Unity Ads Init signature matches Initialized successfully log`() {
+        val line = lineFor(tag = "UnityAds", msg = "UnityAds Initialized successfully")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Unity Ads init log must match")
+        assertEquals("Unity Ads Init", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `AppLovin Init signature matches AppLovin SDK initialized log`() {
+        val line = lineFor(tag = "AppLovinSdk", msg = "AppLovin SDK v11.0.0 initialized successfully")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AppLovin init log must match")
+        assertEquals("AppLovin Init", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    // ═══════ Sprint 1 — Regression: pre-existing ad/billing/loading SDKs still match ═══════
+    //
+    // After the catalog grew with seven Sprint 1 entries, the matchOpen
+    // first-match-wins linear scan must still resolve to the canonical
+    // entry for each pre-existing SDK. This guards against accidental
+    // ordering breakage where a new init entry intercepts a non-init line.
+
+    @Test
+    fun `existing nine SDK signatures still match after Sprint 1 catalog growth`() {
+        data class Fixture(val tag: String, val msg: String, val expectedSdk: String, val expectedType: EventType)
+        val fixtures = listOf(
+            Fixture("AdActivity", "Showing ad", "AdMob", EventType.INTERSTITIAL),
+            Fixture("UnityAds", "UnityAdsShowStart placement=rewarded", "Unity Ads", EventType.REWARDED_VIDEO),
+            Fixture("IronSource", "interstitialDidOpen instanceId=1", "IronSource", EventType.INTERSTITIAL),
+            Fixture("AppLovinSdk", "onAdDisplayed adUnitId=xxx", "AppLovin", EventType.INTERSTITIAL),
+            Fixture("FBAudienceNetworkLog", "Interstitial impression logged", "Meta Audience Network", EventType.INTERSTITIAL),
+            Fixture("BillingClient", "launchBillingFlow starting", "Google Play Billing", EventType.IAP),
+            Fixture("Unity", "Loading scene Foo", "Unity Engine", EventType.LOADING),
+            Fixture("UE4", "LogStreaming: Loading package /Game/Maps/X", "Unreal Engine", EventType.LOADING),
+            Fixture("cocos2d", "Director::replaceScene to GameScene", "Cocos2d", EventType.LOADING),
+        )
+        for (f in fixtures) {
+            val line = lineFor(tag = f.tag, msg = f.msg)
+            val result = SdkSignatureCatalog.matchOpen(line)
+            assertNotNull(result, "${f.expectedSdk}: '${f.msg}' on tag=${f.tag} stopped matching")
+            assertEquals(
+                f.expectedSdk, result.sig.sdk,
+                "${f.expectedSdk}: matched the wrong SDK (got ${result.sig.sdk}) — ordering broke after Sprint 1",
+            )
+            assertEquals(
+                f.expectedType, result.resolvedType,
+                "${f.expectedSdk}: resolved type drifted",
+            )
+        }
     }
 
     // ═══════ helpers ═══════

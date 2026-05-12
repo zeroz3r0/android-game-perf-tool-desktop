@@ -320,6 +320,219 @@ class EventDetectorImplTest {
         assertEquals(4_500L, events[0].endMs)
     }
 
+    // ──────────────────────── Sprint 1 — APP_STARTUP cold-start sensor ────────
+
+    /**
+     * Build a detector with an UN-seeded foreground timestamp so the cold-start
+     * sensor in [EventDetectorImpl.handleActivityStack] fires on the first
+     * dumpsys snapshot that contains the game package.
+     *
+     * Production code seeds `lastGameForegroundMs` from `start()` — these tests
+     * must avoid that path to exercise the `== -1L` precondition.
+     */
+    private fun newColdDetectorAtTime(nowMs: Long): EventDetectorImpl {
+        return EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { nowMs },
+        )
+        // intentionally NO setLastGameForegroundForTest() — keep -1L sentinel
+    }
+
+    /**
+     * ESC-START-001 scenario 1 — first dumpsys frame whose top component
+     * belongs to the game package MUST emit an APP_STARTUP event with the
+     * `dumpsys-firstforeground` source tag.
+     */
+    @Test
+    fun `first top-stack match of game package emits APP_STARTUP from dumpsys`() {
+        val det = newColdDetectorAtTime(1_000L)
+        det.setGamePackageForTest("com.example.game")
+
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+
+        val events = det.events.value
+        assertEquals(1, events.size, "first foreground must emit exactly one APP_STARTUP")
+        assertEquals(EventType.APP_STARTUP, events[0].type)
+        assertEquals(1_000L, events[0].startMs)
+        assertEquals(Confidence.MEDIUM, events[0].confidence)
+        val source = events[0].metadata["source"] ?: ""
+        assertTrue(
+            source.startsWith("dumpsys"),
+            "APP_STARTUP from dumpsys must carry source starting with 'dumpsys', got: $source",
+        )
+    }
+
+    /**
+     * ESC-START-001 scenario 2 — subsequent dumpsys frames with the game in
+     * foreground MUST NOT duplicate the APP_STARTUP event.
+     */
+    @Test
+    fun `subsequent foreground refreshes do not duplicate APP_STARTUP`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+        assertEquals(1, det.events.value.size, "first frame emits APP_STARTUP")
+
+        clock = 2_000L
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+        assertEquals(
+            1, det.events.value.size,
+            "second foreground frame must NOT add another APP_STARTUP",
+        )
+    }
+
+    /**
+     * ESC-START-001 extension — the `am_proc_start` atom on the `ActivityManager`
+     * tag emits APP_STARTUP via the logcat path BEFORE dumpsys catches up
+     * (1Hz polling lag can miss launches inside the first second).
+     */
+    @Test
+    fun `am_proc_start logcat line emits APP_STARTUP from logcat`() {
+        val det = newColdDetectorAtTime(500L)
+        det.setGamePackageForTest("com.example.game")
+
+        det.handleLogLine(
+            LogLine(
+                tsMs = 500L, pid = 1, tid = 1, level = 'I',
+                tag = "ActivityManager",
+                msg = "Start proc 12345:com.example.game/u0a123 for top-activity {com.example.game/.MainActivity}",
+            )
+        )
+
+        val events = det.events.value
+        assertEquals(1, events.size, "am_proc_start must emit one APP_STARTUP")
+        assertEquals(EventType.APP_STARTUP, events[0].type)
+        assertEquals("logcat", events[0].metadata["source"])
+    }
+
+    /**
+     * ESC-START-003 scenario 1 — PID restart outside the 10s debounce window
+     * MUST emit a new APP_STARTUP event with the `restart` marker.
+     */
+    @Test
+    fun `checkPidRestart with different PID after 10s emits APP_STARTUP restart`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        // Seed initial APP_STARTUP via dumpsys path.
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+        assertEquals(1, det.events.value.size, "initial APP_STARTUP emitted")
+
+        // First PID observation — establishes the baseline, no emission.
+        det.checkPidRestart(1234)
+        assertEquals(1, det.events.value.size, "first PID observation must not emit")
+
+        // Advance past the 10s debounce window and report a different PID.
+        clock = 15_000L
+        det.checkPidRestart(5678)
+
+        val events = det.events.value
+        assertEquals(2, events.size, "PID change after 10s must emit a second APP_STARTUP")
+        assertEquals(EventType.APP_STARTUP, events[1].type)
+        assertEquals("true", events[1].metadata["restart"])
+        assertEquals(15_000L, events[1].startMs)
+    }
+
+    /**
+     * ESC-START-003 scenario 2 — PID flicker inside the 10s debounce window
+     * MUST NOT emit a second APP_STARTUP.
+     */
+    @Test
+    fun `checkPidRestart with PID change within 10s does not re-emit APP_STARTUP`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+        assertEquals(1, det.events.value.size)
+        det.checkPidRestart(1234)
+
+        // PID change but still inside the 10s debounce window.
+        clock = 5_000L
+        det.checkPidRestart(5678)
+
+        assertEquals(
+            1, det.events.value.size,
+            "rapid PID flicker (under 10s) must be debounced",
+        )
+    }
+
+    // ──────────────────────── Sprint 1 — ANR ──────────────────────────────────
+
+    /**
+     * ESC-ANR-001 — `am_anr` on the `ActivityManager` tag emits an ANR event
+     * even when the foreground proximity guard would otherwise reject it
+     * (game appears backgrounded but is actually frozen).
+     */
+    @Test
+    fun `am_anr line emits ANR event regardless of foreground guard`() {
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { 10_000L },
+        )
+        // Game looks backgrounded 5s ago — well outside the 2s foreground guard.
+        det.setLastGameForegroundForTest(5_000L)
+        det.setGamePackageForTest("com.example.game")
+
+        det.handleLogLine(
+            LogLine(
+                tsMs = 10_000L, pid = 1, tid = 1, level = 'E',
+                tag = "ActivityManager",
+                msg = "am_anr [12345,com.example.game,...] Input dispatching timed out",
+            )
+        )
+
+        val events = det.events.value
+        assertEquals(1, events.size, "ANR must fire even when foreground guard would reject")
+        assertEquals(EventType.ANR, events[0].type)
+        assertEquals("System ANR", events[0].sdkSource)
+        assertEquals(Confidence.HIGH, events[0].confidence)
+    }
+
+    /**
+     * ESC-ANR-003 tag-allowlist — the `am_anr` substring on a foreign tag
+     * MUST NOT match the System ANR signature.
+     */
+    @Test
+    fun `am_anr substring on foreign tag does NOT emit ANR`() {
+        val det = newDetectorAtTime(1_000L)
+
+        det.handleLogLine(
+            LogLine(
+                tsMs = 1_000L, pid = 1, tid = 1, level = 'I',
+                tag = "Unrelated",
+                msg = "am_anr-like text in some other component",
+            )
+        )
+
+        assertEquals(
+            0, det.events.value.size,
+            "ANR tag-allowlist must reject am_anr text outside ActivityManager",
+        )
+    }
+
     // ──────────────────────── Lifecycle smoke test ────────────────────────
 
     @Test

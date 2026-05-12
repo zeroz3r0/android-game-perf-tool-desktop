@@ -18,6 +18,14 @@ package com.gameperf.desktop.core.events
  *  - Unreal Engine — package/level streaming (v4.4.1 quickfix, audit obs #308)
  *  - Cocos2d — scene transitions (v4.4.1 quickfix, audit obs #308)
  *
+ * Sprint 1 of event-segmentation-coverage added seven more entries:
+ *  - Firebase Init / AppMeasurement Init / AdMob Init / IronSource Init /
+ *    Unity Ads Init / AppLovin Init — all `EventType.SDK_INIT` markers.
+ *    Patterns are best-effort from public SDK sample code and may need
+ *    empirical refinement during Sprint 4 PerfDog/Apptim lab comparison.
+ *  - System ANR — `EventType.ANR` via the `am_anr` atom on the
+ *    `ActivityManager` tag. Closes on `am_proc_died`. HIGH confidence.
+ *
  * Patterns flagged "needs verification" should be confirmed against real device
  * recordings before relying on production. See `explore.md` "Risks" section
  * for known pattern caveats.
@@ -213,6 +221,129 @@ internal object SdkSignatureCatalog {
             ),
             closePatterns = listOf(
                 Regex("""\bonEnter\b"""),
+            ),
+        ),
+        // ────────────────────────────────────────────────────────────────
+        //  Sprint 1 — SDK_INIT signatures (six SDKs)
+        // ────────────────────────────────────────────────────────────────
+        //
+        // SDK_INIT entries are instantaneous markers — no natural close on
+        // the logcat side. `closePatterns = emptyList()` is intentional and
+        // permitted by the catalog invariant (`SdkSignatureCatalogTest.kt`
+        // relaxes the close-pattern rule for `EventType.SDK_INIT`).
+        //
+        // Patterns are best-effort from public SDK sample code and may need
+        // empirical refinement during Sprint 4 lab comparison (PerfDog /
+        // Apptim baselines). The intent here is broad enough to catch the
+        // canonical init line on a real device while staying narrow enough
+        // to avoid collision with the ad-show patterns in the parent SDK's
+        // entry (verified by `existing nine SDK signatures still match
+        // after Sprint 1 catalog growth`).
+
+        // ── Firebase Init ───────────────────────────────────────────────
+        SdkSignature(
+            sdk = "Firebase Init",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("FirebaseApp", "Firebase", "GoogleAnalytics"),
+            openPatterns = listOf(
+                Regex("""(?i)\bFirebaseApp\b.*\binitialization\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bFirebase\b.*\binitialize\b.*\bsuccess\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── AppMeasurement (Google Analytics for Firebase) Init ─────────
+        SdkSignature(
+            sdk = "AppMeasurement Init",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("FA-SVC", "FA", "FirebaseAnalytics"),
+            openPatterns = listOf(
+                Regex("""(?i)\bAppMeasurement\b.*\binitialize\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bTag Manager\b.*\binitialized\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── AdMob Init ──────────────────────────────────────────────────
+        //
+        // Distinct from the existing AdMob entry (which models ad-show
+        // lifecycle). Tag overlap (`Ads`, `MobileAds`) is fine because the
+        // init patterns do NOT collide with `Showing ad` / `onAdShown` /
+        // `Loaded ad` etc.
+        SdkSignature(
+            sdk = "AdMob Init",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("Ads", "MobileAds", "AdMob"),
+            openPatterns = listOf(
+                Regex("""(?i)\bMobileAds\b.*\binitialize\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bAdMob SDK\b.*\binitialized\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bInitializing AdMob SDK\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── IronSource Init ─────────────────────────────────────────────
+        SdkSignature(
+            sdk = "IronSource Init",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("IronSource", "IS_LOG", "ironSource"),
+            openPatterns = listOf(
+                Regex("""(?i)\bIronSource\b.*\binit\b.*\bsuccess\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bIronSource\b.*\binit\b.*\bcompleted\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\binitIronSource\b.*\bsucceed""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── Unity Ads Init ──────────────────────────────────────────────
+        SdkSignature(
+            sdk = "Unity Ads Init",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("UnityAds", "Unity"),
+            openPatterns = listOf(
+                Regex("""(?i)\bUnityAds\b.*\bInitialized successfully\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bUnityAdsInitializationListener\b.*\bonInitializationComplete\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── AppLovin / MAX Init ─────────────────────────────────────────
+        SdkSignature(
+            sdk = "AppLovin Init",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("AppLovinSdk", "AppLovin"),
+            openPatterns = listOf(
+                Regex("""(?i)\bAppLovin SDK\b.*\binitialized\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bMaxMediation\b.*\binitialized\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bMAX\b.*\bready\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ────────────────────────────────────────────────────────────────
+        //  Sprint 1 — ANR (Android system "Application Not Responding")
+        // ────────────────────────────────────────────────────────────────
+        //
+        // Uses the `am_anr` atom emitted by Android's ActivityManager
+        // service. Closes on the matching `am_proc_died` line that follows
+        // when the user "Wait" / "Close app" dialog resolves.
+        //
+        // ANR severity is HIGH (per spec ESC-ANR-001) and the EVT-008
+        // foreground proximity guard MUST NOT reject ANR events — the
+        // detector's `tryOpen` carries a conditional bypass for
+        // `resolvedType == EventType.ANR`. The EVT-007 logcat-gap-handler
+        // also leaves ANR confidence untouched (spec ESC-ANR-002).
+        SdkSignature(
+            sdk = "System ANR",
+            defaultType = EventType.ANR,
+            activityClasses = emptyList(),
+            logcatTags = listOf("ActivityManager"),
+            openPatterns = listOf(
+                Regex("""\bam_anr\b""") to EventType.ANR,
+                Regex("""\bANR in\b""") to EventType.ANR,
+            ),
+            closePatterns = listOf(
+                Regex("""\bam_proc_died\b"""),
             ),
         ),
     )
