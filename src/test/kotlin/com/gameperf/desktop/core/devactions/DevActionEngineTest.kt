@@ -235,6 +235,44 @@ class DevActionEngineTest {
         }
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // Sprint 2 — engine auto-detection wired into DevActionEngine.run
+    // (DAB-005, DAB-006)
+    // ────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `DAB-006 - Sprint 2 — Unity LOADING events drive UNITY-tagged codeAreaHints`() {
+        val brief = DevActionEngine.run(unityEngineInput())
+
+        // Every produced item must carry Unity-tagged hints — proves the
+        // detector → catalog lookup wiring (replaces the Sprint 0 GENERIC
+        // placeholder).
+        brief.items.forEach { item ->
+            assertTrue(
+                item.codeAreaHints.isNotEmpty(),
+                "Sprint 2 must yield hints for ${item.ruleId} under UNITY.",
+            )
+            assertTrue(
+                item.codeAreaHints.all { it.engine == GameEngine.UNITY },
+                "All hints for ${item.ruleId} must carry UNITY tag (got ${item.codeAreaHints.map { it.engine }}).",
+            )
+        }
+    }
+
+    @Test
+    fun `DAB-006 - Sprint 2 — input with no engine events falls back to GENERIC hints`() {
+        val brief = DevActionEngine.run(multiRuleInput())
+
+        // multiRuleInput() carries a single AdMob event — no Unity/Unreal/Cocos2d
+        // sdkSource — so the detector returns GENERIC and hints carry GENERIC tag.
+        brief.items.forEach { item ->
+            assertTrue(
+                item.codeAreaHints.all { it.engine == GameEngine.GENERIC },
+                "Without engine events, all hints must carry GENERIC tag for ${item.ruleId} (got ${item.codeAreaHints.map { it.engine }}).",
+            )
+        }
+    }
+
     @Test
     fun `DAB-001 - DevActionEngine populates Confidence from ConfidenceLookup baseline`() {
         val brief = DevActionEngine.run(multiRuleInput())
@@ -275,6 +313,39 @@ class DevActionEngineTest {
                 sdkSource = "AdMob",
                 startMs = 1_000L,
                 endMs = 6_000L,
+                confidence = com.gameperf.desktop.core.events.Confidence.HIGH,
+                signatureMatched = "test",
+            ),
+        ),
+        sessionDurationS = 60,
+    )
+
+    /**
+     * Same rule-firing aggregates as [multiRuleInput] but with Unity Engine
+     * LOADING events in `events` so `GameEngineDetector.detect` returns
+     * `GameEngine.UNITY`. Used by the Sprint 2 integration test.
+     */
+    private fun unityEngineInput(): ConclusionInput = ConclusionInput(
+        filtered = aggregates(avgFps = 58, avgCpu = 95, maxCpu = 99, totalJank = 60L),
+        raw = aggregates(avgFps = 48, avgCpu = 95, maxCpu = 99, totalJank = 60L),
+        targetFps = 60,
+        deviceTier = HardwareScoring.DeviceTier.MID,
+        events = listOf(
+            com.gameperf.desktop.core.events.DetectedEvent(
+                id = "dev-action-engine-test-unity-loading-1",
+                type = com.gameperf.desktop.core.events.EventType.LOADING,
+                sdkSource = "Unity Engine",
+                startMs = 1_000L,
+                endMs = 3_000L,
+                confidence = com.gameperf.desktop.core.events.Confidence.HIGH,
+                signatureMatched = "test",
+            ),
+            com.gameperf.desktop.core.events.DetectedEvent(
+                id = "dev-action-engine-test-unity-loading-2",
+                type = com.gameperf.desktop.core.events.EventType.LOADING,
+                sdkSource = "Unity Engine",
+                startMs = 10_000L,
+                endMs = 12_000L,
                 confidence = com.gameperf.desktop.core.events.Confidence.HIGH,
                 signatureMatched = "test",
             ),
