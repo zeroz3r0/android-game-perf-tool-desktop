@@ -136,7 +136,7 @@ class HelperLogWatcherTest {
             pollCount++
             when (pollCount) {
                 1 -> throw java.nio.file.AccessDeniedException("locked")
-                2 -> throw RuntimeException("transient")
+                2 -> throw java.io.IOException("transient")
                 else -> "ok\n$canaryLine\n"
             }
         }

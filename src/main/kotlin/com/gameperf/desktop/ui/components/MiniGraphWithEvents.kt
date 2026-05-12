@@ -19,7 +19,7 @@ private val AutoEventCyan = Color(0xFF22D3EE)
 /** Dash pattern for the auto-event vertical line. Slightly tighter than manual markers (6f, 4f). */
 private val AutoEventDash = floatArrayOf(4f, 4f)
 
-private const val AutoEventStrokeWidth = 2f
+private const val AUTO_EVENT_STROKE_WIDTH = 2f
 
 /**
  * v4.4.1 — wraps the existing [MiniGraph] FPS plot and overlays a vertical dashed cyan line
@@ -90,7 +90,7 @@ fun MiniGraphWithEvents(
                         color = AutoEventCyan,
                         start = Offset(x, 0f),
                         end = Offset(x, size.height),
-                        strokeWidth = AutoEventStrokeWidth,
+                        strokeWidth = AUTO_EVENT_STROKE_WIDTH,
                         pathEffect = PathEffect.dashPathEffect(AutoEventDash),
                     )
                 }
