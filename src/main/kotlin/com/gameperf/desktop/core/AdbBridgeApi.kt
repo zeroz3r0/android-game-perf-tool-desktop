@@ -2,6 +2,7 @@ package com.gameperf.desktop.core
 
 import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.FPowerSnapshot
 import com.gameperf.desktop.core.model.FrameSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
@@ -51,6 +52,24 @@ interface AdbBridgeApi {
 
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot?
     fun captureTemperature(deviceId: String): ThermalSnapshot
+
+    /**
+     * v4.5.0 — Capture an [FPowerSnapshot] (battery power normalised by FPS).
+     *
+     * The bridge probes the battery sysfs catalog in
+     * [FPowerVendorCatalog.ORDERED_PATHS]; the first tuple yielding non-empty
+     * current + voltage payloads is cached per-device for the rest of the
+     * session. On cache hit the call issues exactly 2 shell reads
+     * (current + voltage of the cached tuple). On cold all-fail the failure
+     * is cached so subsequent ticks return immediately with NO further shell
+     * calls. The cache is cleared by [resetSessionState].
+     *
+     * [currentFps] is the per-tick FPS reading from the same loop; it is the
+     * divisor in `mW per frame`. Pass <=0 to surface a `FPS_ZERO` diagnostic.
+     *
+     * @since v4.5.0
+     */
+    fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot
 
     fun startScreenRecord(
         deviceId: String,
@@ -150,6 +169,9 @@ class RealAdbBridge : AdbBridgeApi {
 
     override fun captureTemperature(deviceId: String): ThermalSnapshot =
         AdbBridge.captureTemperature(deviceId)
+
+    override fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot =
+        AdbBridge.captureFPower(deviceId, currentFps)
 
     override fun startScreenRecord(
         deviceId: String, sessionId: String, segment: Int,
