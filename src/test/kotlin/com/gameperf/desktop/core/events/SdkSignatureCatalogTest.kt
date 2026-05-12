@@ -509,6 +509,80 @@ class SdkSignatureCatalogTest {
         }
     }
 
+    // ═══════ Sprint 2b — Rewarded discriminator patterns ═══════
+    //
+    // Ad-SDK rows (AdMob, IronSource, AppLovin, Meta Audience Network) gain
+    // additional `openPatterns` entries that resolve to REWARDED_VIDEO. These
+    // patterns are listed BEFORE the existing INTERSTITIAL patterns so the
+    // first-match-wins linear scan in `matchOpen` classifies more-specific
+    // rewarded callbacks (`onUserEarnedReward` etc.) as REWARDED_VIDEO and
+    // leaves the generic show callbacks classifying as INTERSTITIAL. Patterns
+    // are best-effort from public SDK sample code.
+    //
+    // Spec refs: ESC-REW-001 (per-SDK rewarded openPatterns), ESC-REW-003
+    // (interstitial regression unaffected).
+
+    @Test
+    fun `AdMob rewarded line classifies as REWARDED_VIDEO`() {
+        val line = lineFor(tag = "Ads", msg = "onUserEarnedReward type=coins amount=10")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AdMob rewarded callback must match")
+        assertEquals("AdMob", result.sig.sdk)
+        assertEquals(
+            EventType.REWARDED_VIDEO, result.resolvedType,
+            "onUserEarnedReward must resolve to REWARDED_VIDEO (not INTERSTITIAL defaultType)",
+        )
+    }
+
+    @Test
+    fun `AdMob interstitial line still classifies as INTERSTITIAL after rewarded patterns added`() {
+        // Regression: the Sprint 2b additions must NOT intercept legacy
+        // interstitial show callbacks. `onAdShown` is one of AdMob's
+        // existing INTERSTITIAL patterns and must continue resolving to it.
+        val line = lineFor(tag = "Ads", msg = "onAdShown adUnit=foo")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AdMob interstitial callback must still match")
+        assertEquals("AdMob", result.sig.sdk)
+        assertEquals(EventType.INTERSTITIAL, result.resolvedType)
+    }
+
+    @Test
+    fun `IronSource rewarded line classifies as REWARDED_VIDEO`() {
+        val line = lineFor(tag = "IronSource", msg = "rewardedVideoDidOpen instanceId=7")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "IronSource rewarded callback must match")
+        assertEquals("IronSource", result.sig.sdk)
+        assertEquals(EventType.REWARDED_VIDEO, result.resolvedType)
+    }
+
+    @Test
+    fun `AppLovin rewarded line classifies as REWARDED_VIDEO`() {
+        val line = lineFor(tag = "AppLovinSdk", msg = "onRewardedVideoStarted adUnitId=ca-app-xxx")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AppLovin rewarded callback must match")
+        assertEquals("AppLovin", result.sig.sdk)
+        assertEquals(EventType.REWARDED_VIDEO, result.resolvedType)
+    }
+
+    @Test
+    fun `Meta Audience rewarded line classifies as REWARDED_VIDEO`() {
+        val line = lineFor(tag = "FBAudienceNetworkLog", msg = "onRewardedVideoCompleted placementId=1234")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Meta rewarded callback must match")
+        assertEquals("Meta Audience Network", result.sig.sdk)
+        assertEquals(EventType.REWARDED_VIDEO, result.resolvedType)
+    }
+
+    @Test
+    fun `Meta Audience interstitial line still classifies as INTERSTITIAL after rewarded patterns added`() {
+        // Regression: Meta's existing INTERSTITIAL show pattern stays.
+        val line = lineFor(tag = "FBAudienceNetworkLog", msg = "Interstitial impression logged")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result)
+        assertEquals("Meta Audience Network", result.sig.sdk)
+        assertEquals(EventType.INTERSTITIAL, result.resolvedType)
+    }
+
     // ═══════ helpers ═══════
 
     private fun assertFixtureProducesOpenAndClose(fixture: String, expectedSdk: String) {

@@ -44,6 +44,12 @@ internal object SdkSignatureCatalog {
 
     val ALL: List<SdkSignature> = listOf(
         // ── AdMob (Google Mobile Ads SDK) ───────────────────────────────
+        //
+        // Sprint 2b — REWARDED_VIDEO discriminator patterns precede the
+        // INTERSTITIAL patterns: `matchOpen` is first-match-wins, and
+        // `onUserEarnedReward` is the strongest rewarded signal AdMob
+        // emits. Patterns are best-effort from Google's official
+        // `RewardedAd` sample code.
         SdkSignature(
             sdk = "AdMob",
             defaultType = EventType.INTERSTITIAL,
@@ -53,6 +59,10 @@ internal object SdkSignatureCatalog {
             ),
             logcatTags = listOf("Ads", "AdActivity", "MobileAds"),
             openPatterns = listOf(
+                // Sprint 2b — REWARDED (more specific, ordered first)
+                Regex("""(?i)\bonUserEarnedReward\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bRewardItem\b""") to EventType.REWARDED_VIDEO,
+                // existing INTERSTITIAL patterns (unchanged)
                 Regex("""(?i)\bShowing ad\b""") to EventType.INTERSTITIAL,
                 Regex("""(?i)\bonAdShown\b""") to EventType.INTERSTITIAL,
                 Regex("""(?i)\bad opened\b""") to EventType.INTERSTITIAL,
@@ -85,6 +95,10 @@ internal object SdkSignatureCatalog {
             ),
         ),
         // ── IronSource (now LevelPlay) ──────────────────────────────────
+        //
+        // Sprint 2b — REWARDED_VIDEO discriminator patterns precede the
+        // INTERSTITIAL patterns. Patterns sourced from LevelPlay's
+        // `RewardedVideoListener` callback names; best-effort.
         SdkSignature(
             sdk = "IronSource",
             defaultType = EventType.INTERSTITIAL,
@@ -94,6 +108,11 @@ internal object SdkSignatureCatalog {
             ),
             logcatTags = listOf("IronSource", "ironSource"),
             openPatterns = listOf(
+                // Sprint 2b — REWARDED
+                Regex("""(?i)\brewardedVideoDidOpen\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bonRewardedVideoAdOpened\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bonRewardedVideoAdRewarded\b""") to EventType.REWARDED_VIDEO,
+                // existing INTERSTITIAL patterns (unchanged)
                 Regex("""(?i)\binterstitialDidOpen\b""") to EventType.INTERSTITIAL,
                 Regex("""(?i)\bonInterstitialAdShowSucceeded\b""") to EventType.INTERSTITIAL,
                 Regex("""(?i)\bonInterstitialAdShown\b""") to EventType.INTERSTITIAL,
@@ -104,6 +123,11 @@ internal object SdkSignatureCatalog {
             ),
         ),
         // ── AppLovin / MAX ──────────────────────────────────────────────
+        //
+        // Sprint 2b — REWARDED_VIDEO discriminator patterns precede the
+        // INTERSTITIAL patterns. Patterns sourced from AppLovin MAX
+        // `MaxRewardedAdListener` and classic AppLovin
+        // `AppLovinAdRewardListener` callback names; best-effort.
         SdkSignature(
             sdk = "AppLovin",
             defaultType = EventType.INTERSTITIAL,
@@ -113,6 +137,11 @@ internal object SdkSignatureCatalog {
             ),
             logcatTags = listOf("AppLovinSdk", "MaxAds", "AppLovin"),
             openPatterns = listOf(
+                // Sprint 2b — REWARDED
+                Regex("""(?i)\bonRewardedVideoStarted\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bonUserRewarded\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bonRewardedAdReceivedReward\b""") to EventType.REWARDED_VIDEO,
+                // existing INTERSTITIAL patterns (unchanged)
                 Regex("""(?i)\bappLovinAdViewDidDisplay\b""") to EventType.INTERSTITIAL,
                 Regex("""(?i)\bonAdDisplayed\b""") to EventType.INTERSTITIAL,
                 Regex("""(?i)\bAd displayed\b""") to EventType.INTERSTITIAL,
@@ -124,6 +153,11 @@ internal object SdkSignatureCatalog {
             ),
         ),
         // ── Meta Audience Network ───────────────────────────────────────
+        //
+        // Sprint 2b — REWARDED_VIDEO discriminator patterns precede the
+        // INTERSTITIAL patterns. Patterns sourced from Meta Audience
+        // Network `RewardedVideoAdListener` / `RewardedAdServerListener`
+        // callback names; best-effort.
         SdkSignature(
             sdk = "Meta Audience Network",
             defaultType = EventType.INTERSTITIAL,
@@ -132,6 +166,10 @@ internal object SdkSignatureCatalog {
             ),
             logcatTags = listOf("FBAudienceNetworkLog", "AudienceNetworkAds"),
             openPatterns = listOf(
+                // Sprint 2b — REWARDED
+                Regex("""(?i)\bonRewardedVideoCompleted\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bonRewardedAdServerSucceeded\b""") to EventType.REWARDED_VIDEO,
+                // existing INTERSTITIAL patterns (unchanged)
                 Regex("""(?i)\bonInterstitialDisplayed\b""") to EventType.INTERSTITIAL,
                 Regex("""(?i)\bInterstitial impression logged\b""") to EventType.INTERSTITIAL,
             ),

@@ -533,6 +533,257 @@ class EventDetectorImplTest {
         )
     }
 
+    // ──────────────────────── Sprint 2a — SCREEN_TRANSITION ───────────────────
+
+    /**
+     * ESC-SCRN-001 scenario 1 — first cmp change inside the game package emits
+     * a SCREEN_TRANSITION event with `from`/`to` metadata.
+     */
+    @Test
+    fun `cmp change inside game package emits SCREEN_TRANSITION with from-to metadata`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        // First frame seeds lastTopCmp (also emits APP_STARTUP cold-start).
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+        val startupCount = det.events.value.count { it.type == EventType.APP_STARTUP }
+        assertEquals(1, startupCount, "cold-start APP_STARTUP must fire on first frame")
+        assertEquals(
+            0, det.events.value.count { it.type == EventType.SCREEN_TRANSITION },
+            "first frame must NOT emit SCREEN_TRANSITION (no prior cmp to transition from)",
+        )
+
+        // Second frame inside game package, different activity → SCREEN_TRANSITION.
+        clock = 5_000L
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.SettingsActivity"))
+        )
+
+        val transitions = det.events.value.filter { it.type == EventType.SCREEN_TRANSITION }
+        assertEquals(1, transitions.size, "cmp change must emit one SCREEN_TRANSITION")
+        val st = transitions[0]
+        assertEquals("com.example.game/com.example.game.MainActivity", st.metadata["from"])
+        assertEquals("com.example.game/com.example.game.SettingsActivity", st.metadata["to"])
+        assertEquals("dumpsys-cmp-change", st.metadata["source"])
+        assertEquals(Confidence.MEDIUM, st.confidence)
+        assertEquals(5_000L, st.startMs)
+    }
+
+    /**
+     * ESC-SCRN-002 — Unity-style single-activity games (cmp never changes
+     * across many ticks) MUST NOT emit any SCREEN_TRANSITION events.
+     */
+    @Test
+    fun `no transitions emitted for single-activity Unity game`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        val unityCmp = "com.example.game/com.unity3d.player.UnityPlayerActivity"
+        // 5 dumpsys ticks with the SAME cmp — single-activity engine.
+        for (i in 0..4) {
+            clock = 1_000L + i * 1_000L
+            det.handleActivityStack(listOf(ActivityFrame(cmp = unityCmp)))
+        }
+
+        assertEquals(
+            0, det.events.value.count { it.type == EventType.SCREEN_TRANSITION },
+            "single-activity game must NOT emit any SCREEN_TRANSITION",
+        )
+    }
+
+    /**
+     * ESC-SCRN-001 scenario 2 — sequential transitions: the previous
+     * SCREEN_TRANSITION's endMs is closed at the moment the next one opens.
+     */
+    @Test
+    fun `sequential transitions close previous and open new`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+        clock = 5_000L
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.SettingsActivity"))
+        )
+        clock = 10_000L
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.LevelActivity"))
+        )
+
+        val transitions = det.events.value.filter { it.type == EventType.SCREEN_TRANSITION }
+        assertEquals(2, transitions.size, "two cmp changes must emit two SCREEN_TRANSITION events")
+        // First transition closed at the moment the second opened.
+        assertEquals(10_000L, transitions[0].endMs, "first transition closes when second opens")
+        assertNull(transitions[1].endMs, "second transition is still open")
+    }
+
+    /**
+     * ESC-SCRN-001 condition — SCREEN_TRANSITION MUST NOT fire when the new
+     * top component matches an SDK activity class (SDK precedence preserved).
+     */
+    @Test
+    fun `SCREEN_TRANSITION does not fire when cmp matches SDK activity`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        // First frame: normal game activity.
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.MainActivity"))
+        )
+
+        // Second frame: AdMob's AdActivity hosted in game process → SDK path,
+        // NOT a SCREEN_TRANSITION.
+        clock = 5_000L
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.google.android.gms.ads.AdActivity"))
+        )
+
+        val transitions = det.events.value.filter { it.type == EventType.SCREEN_TRANSITION }
+        assertEquals(
+            0, transitions.size,
+            "SDK activity match must take precedence over SCREEN_TRANSITION",
+        )
+        // SDK path fired instead.
+        assertTrue(
+            det.events.value.any { it.sdkSource == "AdMob" },
+            "AdMob activity-path event must fire",
+        )
+    }
+
+    /**
+     * ESC-SCRN-003 — after MAX_SCREEN_TRANSITIONS (100) transitions emit a
+     * cap warning and further cmp changes do NOT add more events.
+     */
+    @Test
+    fun `100 transitions emit cap warning and further changes are dropped`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+
+        // First frame seeds lastTopCmp (also emits APP_STARTUP).
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.example.game.Activity0"))
+        )
+
+        // Drive 101 cmp changes — each toggles between two activities so the
+        // `lastTopCmp != top.cmp` guard fires every call.
+        for (i in 1..101) {
+            clock = 1_000L + i * 1_000L
+            val cmp = "com.example.game/com.example.game.Activity${i % 2 + 1}"
+            det.handleActivityStack(listOf(ActivityFrame(cmp = cmp)))
+        }
+
+        val transitions = det.events.value.filter { it.type == EventType.SCREEN_TRANSITION }
+        assertEquals(
+            EventDetectorImpl.MAX_SCREEN_TRANSITIONS, transitions.size,
+            "SCREEN_TRANSITION must be capped at MAX_SCREEN_TRANSITIONS",
+        )
+        assertTrue(
+            det.warnings.value.any { it.contains("cambios de pantalla") },
+            "cap warning must be surfaced in Spanish",
+        )
+    }
+
+    // ──────────────────────── Sprint 2b — INTERSTITIAL → REWARDED upgrade ─────
+
+    /**
+     * ESC-REW-002 — when an event opens via the activity-class path as
+     * INTERSTITIAL (e.g. AdMob's AdActivity) and a REWARDED openPattern of
+     * the SAME SDK fires within its open lifetime, the event upgrades to
+     * REWARDED_VIDEO with `upgradedFrom=INTERSTITIAL, upgradedAtMs=<ts>`
+     * metadata.
+     */
+    @Test
+    fun `AdActivity opens as INTERSTITIAL then upgrades on rewarded pattern`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+        det.setLastGameForegroundForTest(1_000L)
+
+        // OPEN via dumpsys — AdMob AdActivity hosted in game process.
+        det.handleActivityStack(
+            listOf(ActivityFrame(cmp = "com.example.game/com.google.android.gms.ads.AdActivity"))
+        )
+        var ev = det.events.value.first { it.sdkSource == "AdMob" }
+        assertEquals(EventType.INTERSTITIAL, ev.type, "AdActivity opens as INTERSTITIAL")
+
+        // Rewarded pattern on AdMob tag → upgrade in-place.
+        clock = 3_000L
+        det.handleLogLine(LogLine(tsMs = 3_000L, pid = 1, tid = 1, level = 'I',
+            tag = "Ads", msg = "onUserEarnedReward type=coins amount=10"))
+
+        ev = det.events.value.first { it.sdkSource == "AdMob" }
+        assertEquals(
+            EventType.REWARDED_VIDEO, ev.type,
+            "REWARDED openPattern of same SDK must upgrade the event",
+        )
+        assertEquals("INTERSTITIAL", ev.metadata["upgradedFrom"])
+        assertEquals("3000", ev.metadata["upgradedAtMs"])
+        // The same single event — no duplicate emitted.
+        assertEquals(1, det.events.value.count { it.sdkSource == "AdMob" })
+    }
+
+    /**
+     * ESC-REW-002 — once an event is REWARDED_VIDEO it MUST NOT downgrade
+     * back to INTERSTITIAL when a subsequent INTERSTITIAL pattern fires.
+     */
+    @Test
+    fun `already-REWARDED event does not downgrade on later INTERSTITIAL pattern`() {
+        var clock = 1_000L
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock },
+        )
+        det.setGamePackageForTest("com.example.game")
+        det.setLastGameForegroundForTest(1_000L)
+
+        // Open Unity Ads (defaultType=REWARDED_VIDEO) via UnityAdsShowStart.
+        det.handleLogLine(LogLine(tsMs = 1_000L, pid = 1, tid = 1, level = 'I',
+            tag = "UnityAds", msg = "UnityAdsShowStart placement=rewarded"))
+        val opened = det.events.value.firstOrNull { it.sdkSource == "Unity Ads" }
+        assertNotNull(opened, "Unity Ads open must fire")
+        assertEquals(EventType.REWARDED_VIDEO, opened.type)
+
+        // Send an INTERSTITIAL-style line on the same SDK's tag — must NOT
+        // mutate the type. (Synthesized line; the test asserts directionality.)
+        clock = 2_000L
+        det.handleLogLine(LogLine(tsMs = 2_000L, pid = 1, tid = 1, level = 'I',
+            tag = "UnityAds", msg = "Show begin secondary"))
+
+        val ev = det.events.value.first { it.sdkSource == "Unity Ads" }
+        assertEquals(
+            EventType.REWARDED_VIDEO, ev.type,
+            "REWARDED→INTERSTITIAL downgrade is NOT supported",
+        )
+        assertNull(ev.metadata["upgradedFrom"], "no upgrade metadata for unchanged event")
+    }
+
     // ──────────────────────── Lifecycle smoke test ────────────────────────
 
     @Test

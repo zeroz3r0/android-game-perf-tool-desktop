@@ -65,6 +65,13 @@ internal class EventDetectorImpl(
          *  PID flicker (spec ESC-START-003 scenario 2). */
         const val APP_STARTUP_DEBOUNCE_MS = 10_000L
 
+        /** Sprint 2a — per-session cap on SCREEN_TRANSITION events. In
+         *  addition to the global EVT-009 [MAX_EVENTS] ceiling, screen
+         *  transitions are sub-capped because chatty multi-Activity games
+         *  can otherwise saturate the report with navigation noise. Spec
+         *  ESC-SCRN-003. */
+        const val MAX_SCREEN_TRANSITIONS = 100
+
         /** Logcat atom emitted by Android's `ActivityManager` when a new
          *  process is started. Pattern is intentionally narrow so foreign
          *  components mentioning "Start proc" elsewhere are rejected by
@@ -95,6 +102,21 @@ internal class EventDetectorImpl(
     private var lastAppStartupMs: Long = -1L
     private var lastGamePid: Int? = null
 
+    // ───────────────────────── Sprint 2a state ────────────────────────
+    //
+    // SCREEN_TRANSITION tracking:
+    //  - `lastTopCmp` is the most recent dumpsys top-component observed
+    //    inside the game package. `null` until the first in-package frame
+    //    fires the cold-start sensor; from then on every cmp change
+    //    against this value emits a SCREEN_TRANSITION until the per-type
+    //    cap is hit.
+    //  - `openScreenTransitionId` carries the `id` of the currently-open
+    //    SCREEN_TRANSITION (if any). Each new transition closes the
+    //    previous one's `endMs` at the moment the new one opens, so the
+    //    report timeline shows back-to-back screens without holes.
+    private var lastTopCmp: String? = null
+    private var openScreenTransitionId: String? = null
+
     /**
      * Open events keyed by a stable per-source signature key:
      *  - logcat opens use `"<sdk>:<tag>:<openPattern>"`
@@ -111,6 +133,8 @@ internal class EventDetectorImpl(
         openEvents.clear()
         lastAppStartupMs = -1L
         lastGamePid = null
+        lastTopCmp = null
+        openScreenTransitionId = null
         // Game is presumed on top at capture start; seed the guard so early
         // opens within the first 2s are not all rejected as "background".
         lastGameForegroundMs = timeProvider()
@@ -190,6 +214,23 @@ internal class EventDetectorImpl(
         // Try OPEN first.
         val openMatch = SdkSignatureCatalog.matchOpen(line)
         if (openMatch != null) {
+            // Sprint 2b — INTERSTITIAL → REWARDED_VIDEO upgrade-before-open
+            // (spec ESC-REW-002). If the new match resolves to REWARDED and
+            // an open event of the SAME SDK is currently INTERSTITIAL, we
+            // upgrade it in-place instead of opening a parallel rewarded
+            // event. Without this short-circuit the activity-class path
+            // (which opens AdMob/IS/AppLovin/Meta as INTERSTITIAL via
+            // `defaultType`) would coexist with a duplicate logcat-keyed
+            // REWARDED event, polluting the report.
+            if (openMatch.resolvedType == EventType.REWARDED_VIDEO) {
+                val openInterstitial = openEvents.values.firstOrNull {
+                    it.sdkSource == openMatch.sig.sdk && it.type == EventType.INTERSTITIAL
+                }
+                if (openInterstitial != null) {
+                    upgradeEventType(openInterstitial, EventType.REWARDED_VIDEO, line.tsMs)
+                    return
+                }
+            }
             tryOpen(
                 sig = openMatch.sig,
                 resolvedType = openMatch.resolvedType,
@@ -200,13 +241,69 @@ internal class EventDetectorImpl(
             )
             return
         }
-        // Otherwise check if this line CLOSES any currently-open event.
+        // Otherwise check if this line CLOSES any currently-open event,
+        // or — Sprint 2b — UPGRADES an INTERSTITIAL to REWARDED_VIDEO.
         for (entry in openEvents.values.toList()) {
             val sig = SdkSignatureCatalog.ALL.firstOrNull { it.sdk == entry.sdkSource } ?: continue
             val closePattern = SdkSignatureCatalog.matchClose(line, sig)
             if (closePattern != null) {
                 tryClose(entry, line.tsMs, closePattern.pattern)
+                continue
             }
+            // Sprint 2b — INTERSTITIAL → REWARDED upgrade (spec ESC-REW-002).
+            //
+            // Activity-class path opens as `sig.defaultType` (typically
+            // INTERSTITIAL for AdMob/IS/AppLovin/Meta). If a rewarded
+            // callback for the SAME SDK fires while the event is still
+            // open, the event is upgraded in-place — same id, same key,
+            // only `type` and metadata change. The downgrade direction
+            // (REWARDED → INTERSTITIAL) is deliberately NOT supported
+            // because once a rewarded callback has fired the event is
+            // definitively a rewarded ad, even if generic interstitial
+            // callbacks fire afterwards on the same tag.
+            if (entry.type == EventType.INTERSTITIAL &&
+                sig.logcatTags.any { it.equals(line.tag, ignoreCase = true) }
+            ) {
+                val rewardedMatch = sig.openPatterns.firstOrNull { (pattern, type) ->
+                    type == EventType.REWARDED_VIDEO && pattern.containsMatchIn(line.msg)
+                }
+                if (rewardedMatch != null) {
+                    upgradeEventType(entry, EventType.REWARDED_VIDEO, line.tsMs)
+                }
+            }
+        }
+    }
+
+    /**
+     * Sprint 2b — upgrade an open event's [DetectedEvent.type] in-place,
+     * preserving the same id (so consumers tracking by id see a mutation,
+     * not a delete+insert) and the same key in [openEvents]. Adds
+     * `upgradedFrom`/`upgradedAtMs` to metadata so the report can disclose
+     * the reclassification.
+     *
+     * Spec ESC-REW-002 — directional: only used for INTERSTITIAL →
+     * REWARDED_VIDEO. Downgrade is not supported.
+     */
+    private fun upgradeEventType(open: DetectedEvent, newType: EventType, atMs: Long) {
+        val updated = open.copy(
+            type = newType,
+            metadata = open.metadata + mapOf(
+                "upgradedFrom" to open.type.name,
+                "upgradedAtMs" to atMs.toString(),
+            ),
+        )
+        // Replace in the published events list by id.
+        val current = _events.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == open.id }
+        if (idx >= 0) {
+            current[idx] = updated
+            _events.value = current
+        }
+        // Update the openEvents map entry that points at this id (key stays
+        // the same — it's not type-derived).
+        val keyToUpdate = openEvents.entries.firstOrNull { it.value.id == open.id }?.key
+        if (keyToUpdate != null) {
+            openEvents[keyToUpdate] = updated
         }
     }
 
@@ -252,6 +349,40 @@ internal class EventDetectorImpl(
             // foreground timestamp so logcat-driven opens (which fire from
             // INSIDE the game process, e.g. AdMob preload) pass the guard.
             lastGameForegroundMs = now
+
+            // Sprint 2a — SCREEN_TRANSITION (spec ESC-SCRN-001).
+            //
+            // The branch precondition guarantees the new top component
+            // belongs to the game AND is NOT an SDK-owned activity (the
+            // earlier `matchActivity != null` arm short-circuits those).
+            // A change against `lastTopCmp` therefore represents in-game
+            // navigation. The previous SCREEN_TRANSITION (if any) is
+            // closed at `now` so the report renders contiguous bands; the
+            // new one then opens with `endMs=null`.
+            //
+            // ESC-SCRN-002 (single-activity Unity games) is handled by
+            // the `lastTopCmp != top.cmp` guard: if the cmp never changes
+            // we never enter this block.
+            //
+            // ESC-SCRN-003 (per-type cap): once
+            // [MAX_SCREEN_TRANSITIONS] transitions have been emitted, we
+            // close the in-flight one but skip emitting a new one and
+            // surface a Spanish warning. `lastTopCmp` still updates so
+            // we never re-emit the same transition over and over.
+            val prev = lastTopCmp
+            if (prev != null && prev != top.cmp) {
+                if (screenTransitionCount() >= MAX_SCREEN_TRANSITIONS) {
+                    ensureWarning(
+                        "Se alcanzó el tope de $MAX_SCREEN_TRANSITIONS cambios de " +
+                            "pantalla — los siguientes se omiten para no inundar el reporte."
+                    )
+                    closeOpenScreenTransition(now)
+                } else {
+                    closeOpenScreenTransition(now)
+                    emitScreenTransition(prev, top.cmp, now)
+                }
+            }
+            lastTopCmp = top.cmp
         }
 
         // Step 3 — close any activity-keyed open event whose tracked
@@ -414,6 +545,69 @@ internal class EventDetectorImpl(
         // tracked in openEvents because there is no close pattern to fire.
         appendEvent(event)
         lastAppStartupMs = now
+    }
+
+    // ───────────────────────── Sprint 2a helpers ─────────────────────────
+
+    /**
+     * Sprint 2a — count of SCREEN_TRANSITION events currently published.
+     * Used by [handleActivityStack] to enforce [MAX_SCREEN_TRANSITIONS]
+     * (spec ESC-SCRN-003).
+     */
+    private fun screenTransitionCount(): Int =
+        _events.value.count { it.type == EventType.SCREEN_TRANSITION }
+
+    /**
+     * Sprint 2a — close the in-flight SCREEN_TRANSITION (if any) by
+     * stamping `endMs=now`. The published events list is mutated in
+     * place via the replace-by-id pattern used elsewhere in this file.
+     * Idempotent: a no-op when no transition is open.
+     */
+    private fun closeOpenScreenTransition(now: Long) {
+        val id = openScreenTransitionId ?: return
+        val current = _events.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == id }
+        if (idx >= 0) {
+            current[idx] = current[idx].copy(endMs = now)
+            _events.value = current
+        }
+        openScreenTransitionId = null
+    }
+
+    /**
+     * Sprint 2a — emit a new SCREEN_TRANSITION event. The transition is
+     * left open (`endMs=null`) until the NEXT cmp change closes it via
+     * [closeOpenScreenTransition], or until `stop()` synthesises a close
+     * with `endInferred=true`.
+     *
+     * @param fromCmp the previous top component (preserved verbatim in
+     *   metadata `from` — including package prefix, useful for debugging).
+     * @param toCmp   the new top component (metadata `to`).
+     * @param now     wall-clock timestamp used as `startMs`.
+     */
+    private fun emitScreenTransition(fromCmp: String, toCmp: String, now: Long) {
+        if (totalEventCount() >= MAX_EVENTS) {
+            ensureWarning(
+                "Se alcanzó el tope de $MAX_EVENTS eventos detectados; el reporte " +
+                    "usará un histograma agregado."
+            )
+            return
+        }
+        val event = DetectedEvent(
+            type = EventType.SCREEN_TRANSITION,
+            sdkSource = "Game Navigation",
+            startMs = now,
+            endMs = null,
+            confidence = Confidence.MEDIUM,
+            signatureMatched = "dumpsys-cmp-change",
+            metadata = mapOf(
+                "source" to "dumpsys-cmp-change",
+                "from" to fromCmp,
+                "to" to toCmp,
+            ),
+        )
+        openScreenTransitionId = event.id
+        appendEvent(event)
     }
 
     /**
