@@ -105,6 +105,16 @@ object ReportGenerator {
         // and pre-Sprint-3 history re-renders skip the new section
         // entirely (backward compat DAB-010 negative case).
         devActionBrief: DevActionBrief? = null,
+        // SDD cpu-total-vs-app-usage Sprint 2 — total-device CPU history
+        // (parallel to [cpuHistory] which carries the app-specific %).
+        // Defaulted-empty so legacy fixtures (ReportRenderingTest) and
+        // pre-v4.5.x `.gameperf` re-renders skip the second Chart.js
+        // dataset entirely and stay byte-equivalent (design ADR-3 mirrors
+        // the v4.5.0 fpower backward-compat playbook). When non-empty the
+        // CPU chart switches to the 2-dataset form per ADR-5 and the CPU
+        // section gains a Spanish-tuteo-formal caveat about device
+        // saturation (CPUDUAL-003).
+        cpuTotalHistory: List<Int> = emptyList(),
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -159,6 +169,12 @@ object ReportGenerator {
         val javD = javaHistory.joinToString(",")
         val memL = memHistory.indices.joinToString(",") { "\"${it + 1}s\"" }
         val cpuD = cpuHistory.joinToString(",")
+        // SDD cpu-total-vs-app-usage Sprint 2 — total-device CPU series for
+        // the optional second Chart.js dataset (design ADR-5). Empty string
+        // when [cpuTotalHistory] is empty so the JS branch below stays
+        // identical to the legacy single-dataset form.
+        val cpuTotalD = cpuTotalHistory.joinToString(",")
+        val cpuDualView = cpuTotalHistory.isNotEmpty()
         val tcD = tempCpuHistory.joinToString(",") { fmtUS("%.1f", it) }
         val tgD = tempGpuHistory.joinToString(",") { fmtUS("%.1f", it) }
         val tsD = tempSkinHistory.joinToString(",") { fmtUS("%.1f", it) }
@@ -503,7 +519,28 @@ $excessiveCalloutHtml
     <div class="stats-row">
         <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value ${cls(avgCpu, 85, 70)}">${avgCpu}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Maximo</span><span class="stat-pill-value">${maxCpu}%</span></div>
+        ${
+            // SDD cpu-total-vs-app-usage Sprint 2 — optional "Total prom"
+            // pill when dual view is active (design ADR-5 + design §wiring
+            // map). Average computed inline because we only need it here
+            // and the existing maxCpu/avgCpu fields stay app-specific so
+            // grading semantics are unchanged (ADR-7).
+            if (cpuDualView) {
+                val avgTotal = cpuTotalHistory.average().toInt()
+                """<div class="stat-pill"><span class="stat-pill-label">Total prom</span><span class="stat-pill-value">${avgTotal}%</span></div>"""
+            } else ""
+        }
     </div>
+    ${
+        // CPUDUAL-003 — Spanish-tuteo-formal caveat copy. Rendered ONLY
+        // when the dual view is active so legacy fixtures
+        // (ReportRenderingTest) stay byte-equivalent (CPUDUAL-004). Voice
+        // register matches the existing thermal die/skin copy at line 521
+        // (tuteo-formal: "tu juego", "tu dispositivo").
+        if (cpuDualView) {
+            """<p class="hint">&#8505; <strong>Total dispositivo</strong> incluye el SO y otros procesos del telefono. Si el total esta alto pero la app esta baja, el dispositivo esta saturado por otros procesos &mdash; no necesariamente por tu juego.</p>"""
+        } else ""
+    }
     <div class="chart-container"><canvas id="cpuChart"></canvas></div>
 </section>
 
@@ -765,7 +802,36 @@ var C = IS_PRINT ? COLORS_PRINT : COLORS_DARK;
 })();
 """)
             // CPU Chart — same color treatment as FPS
-            if (cpuD.isNotEmpty()) append("""
+            // SDD cpu-total-vs-app-usage Sprint 2 (ADR-5): when
+            // `cpuTotalHistory` is non-empty we emit a 2-dataset chart with
+            // 'CPU total dispositivo' (amber, informational) layered first
+            // and 'CPU app' (cyan + segment-color gradient) layered second.
+            // When empty we emit the legacy single 'CPU %' dataset so
+            // `ReportRenderingTest` + pre-v4.5.x re-renders stay
+            // byte-equivalent.
+            if (cpuD.isNotEmpty() && cpuDualView) append("""
+(function(){
+  var c=document.getElementById('cpuChart').getContext('2d');
+  var g;
+  if (IS_PRINT) {
+    g = 'rgba(3,105,161,0.08)';
+  } else {
+    g = c.createLinearGradient(0,0,0,300);
+    g.addColorStop(0,'rgba(56,189,248,0.2)');
+    g.addColorStop(1,'rgba(56,189,248,0.01)');
+  }
+  new Chart(c,{
+    type:'line',
+    data:{labels:[$tL],datasets:[
+      {label:'CPU total dispositivo',data:[$cpuTotalD],borderColor:C.warn,tension:0.3,pointRadius:0,borderWidth:1.5,borderDash:[6,4]},
+      {label:'CPU app',data:[$cpuD],borderColor:C.primary,backgroundColor:g,fill:true,tension:0.3,pointRadius:0,borderWidth: IS_PRINT ? 2 : 2.5,segment:{borderColor:function(ctx){var v=ctx.p1.parsed.y;if(v>85)return C.bad;if(v>70)return C.warn;return C.primary}}}
+    ]},
+    options:{...B,scales:{...B.scales,y:{...B.scales.y,min:0,max:100}},plugins:{...B.plugins,annotation:{annotations:{
+      w:{type:'line',yMin:85,yMax:85,borderColor: IS_PRINT ? 'rgba(185,28,28,0.6)' : 'rgba(239,68,68,0.3)',borderWidth:1,borderDash:[6,4],label:{content:'85% Saturacion',display:true,color: C.bad,font:{size:9},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:3}}
+    }}}}
+  });
+})();
+""") else if (cpuD.isNotEmpty()) append("""
 (function(){
   var c=document.getElementById('cpuChart').getContext('2d');
   var g;

@@ -356,8 +356,15 @@ fun CaptureScreen(vm: AppViewModel) {
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
                 Spacer(Modifier.height(8.dp))
+                // SDD cpu-total-vs-app-usage Sprint 2 — dual-line CPU
+                // (GameBench-inspired). Primary = APP cpu (yellow), secondary
+                // = TOTAL device cpu (cyan dashed). The MiniGraph defaults
+                // secondaryValues to empty so this is the only call site
+                // that opts into the dual-line view today (HUD/HOME stay
+                // legacy single-line).
                 MiniGraph("CPU %", metrics.cpuHistory, Yellow, maxValue = 100f,
-                    modifier = Modifier.fillMaxWidth().weight(1f))
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    secondaryValues = metrics.cpuTotalHistory)
             }
             Column(Modifier.weight(1f)) {
                 MiniGraph("Memoria (MB)", metrics.memHistory, Purple,

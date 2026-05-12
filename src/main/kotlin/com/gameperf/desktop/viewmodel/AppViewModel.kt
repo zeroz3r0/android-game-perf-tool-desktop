@@ -1884,6 +1884,13 @@ class AppViewModel(
                     // BEFORE summary cards (ADR-7). Null when no rules fired
                     // OR insufficient-data path → renderer omits section.
                     devActionBrief = devActionBrief,
+                    // SDD cpu-total-vs-app-usage Sprint 2 (design ADR-5) —
+                    // total-device CPU history captured in parallel with
+                    // [cpuHistory] (app-specific) per the Bridge dual-capture
+                    // shipped in Sprint 0. Defaulted-empty on the generator
+                    // for backward compat (ADR-3) so legacy fixtures stay
+                    // byte-equivalent.
+                    cpuTotalHistory = cpuTotalHistory.toList(),
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")

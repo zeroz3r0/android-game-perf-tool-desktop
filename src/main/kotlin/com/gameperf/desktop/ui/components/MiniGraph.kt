@@ -24,7 +24,16 @@ fun MiniGraph(
     values: List<Number>,
     color: Color = Cyan,
     maxValue: Float? = null,
-    modifier: Modifier = Modifier.fillMaxWidth().height(100.dp)
+    modifier: Modifier = Modifier.fillMaxWidth().height(100.dp),
+    // SDD cpu-total-vs-app-usage Sprint 2 (design ADR-4) — optional
+    // secondary series rendered BENEATH the primary line. Defaulted-empty
+    // so all 6+ existing call sites (FPS, Memoria, Temperatura, etc.) stay
+    // byte-equivalent. The Y-axis scale is derived from the COMBINED max
+    // of both series so neither line gets clipped when one is consistently
+    // higher than the other (typical case: total > app).
+    secondaryValues: List<Number> = emptyList(),
+    secondaryColor: Color = Color(0xFF22D3EE),
+    secondaryDashed: Boolean = true,
 ) {
     Column(modifier = modifier) {
         Text(label, color = TextSecondary, fontSize = 11.sp)
@@ -38,12 +47,34 @@ fun MiniGraph(
         ) {
             if (values.size < 2) return@Canvas
             val floats = values.map { it.toFloat() }
-            val max = maxValue ?: (floats.maxOrNull() ?: 1f) * 1.1f
+            val secondaryFloats = secondaryValues.map { it.toFloat() }
+            // ADR-4: combined max so primary AND secondary fit in the
+            // viewport. When the secondary is empty this collapses to the
+            // legacy `floats.maxOrNull()` behavior.
+            val combinedMax = (floats + secondaryFloats).maxOrNull() ?: 1f
+            val max = maxValue ?: (combinedMax * 1.1f)
             val min = 0f
             val range = if (max - min > 0) max - min else 1f
             val w = size.width
             val h = size.height
             val step = w / (floats.size - 1).coerceAtLeast(1)
+
+            // Draw secondary path FIRST (under primary) per ADR-4.
+            if (secondaryFloats.size >= 2) {
+                val secondaryStep = w / (secondaryFloats.size - 1).coerceAtLeast(1)
+                val secondaryPath = Path()
+                secondaryFloats.forEachIndexed { i, v ->
+                    val x = i * secondaryStep
+                    val y = h - ((v - min) / range * h)
+                    if (i == 0) secondaryPath.moveTo(x, y) else secondaryPath.lineTo(x, y)
+                }
+                val secondaryStroke = if (secondaryDashed) {
+                    Stroke(width = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f)))
+                } else {
+                    Stroke(width = 2f)
+                }
+                drawPath(secondaryPath, secondaryColor, style = secondaryStroke)
+            }
 
             val path = Path()
             floats.forEachIndexed { i, v ->
