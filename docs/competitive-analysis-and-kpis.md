@@ -639,6 +639,9 @@ Ranked by ROI × effort (audit obs #308 + roadmap obs #289):
 
 > **Local-first, open-methodology, free Android performance profiler for QA teams who need to profile release builds without uploading IP to third-party cloud, without engine integration, without vendor lock-in. Complements (not replaces) vendor deep-dive tools (Snapdragon Profiler / ARM Streamline / Unity Profiler).**
 
+Concrete differentiators reinforced by competitive analysis (2026-05-12):
+- **Methodology transparency** — every formula and threshold our scoring uses is published in this doc and in the openspec specs. PerfDog Help Center confirmed gated 2026-05-12 (engram `research/perfdog-help-center-2026-05-12`, obs #328) — their measurement methodology requires login to access. Our advantage: reproducibility, auditability, no black-box scoring; any QA engineer can re-derive our numbers from the documented `/sys` / `dumpsys` / Perfetto endpoints without vendor onboarding.
+
 Anchored on (refined post-PerfDog deep-dive, obs #312):
 - **Data sovereignty** — no cloud, ever. PerfDog requires mandatory upload to perfdog.qq.com or perfdog.wetest.net with hard compliance silos between China and Int'l (no user choice). We never leave the host.
 - **Open methodology** — every metric is sourced from public `/sys` / `dumpsys` / Perfetto endpoints and documented inline. PerfDog's Jank/Smooth Index/FPower formulas are partially public (§3.6) but weightings and SmallJank thresholds are closed.
@@ -697,6 +700,7 @@ Explicitly **NOT** competing on:
 - <https://developers.google.com/admob/android/interstitial> — AdMob (no stable logcat tags)
 - <https://docs.gamebench.net/> — GameBench docs root
 - <https://perfdog.qq.com/> / <https://perfdog.wetest.net/> — PerfDog landing pages
+- <https://perfdog.wetest.net/helpCenter> — PerfDog Help Center (verified gated 2026-05-12, engram obs #328: JS-SPA + likely auth wall, 12 fetches confirmed identical shell, zero new features extractable)
 - <https://www.wetest.net/blog/mobile-game-performance-testing-2026-perfdog-guide-1189.html> — WeTest blog #1189: PerfDog founding dev (Awen Cao) interview by Sr. PM Baojian Shen, March 2026. Single highest-information public source on PerfDog (Jank formula, FPower formula, SmallJank, Smooth Index, 11-platform list, CI/CD plugins, 3-device GUI limit, Custom Data API). Cited in §3.6.
 - <https://docs.unity3d.com/Manual/Profiler.html> — Unity Profiler manual
 - <https://developer.arm.com/Tools%20and%20Software/Streamline%20Performance%20Analyzer> — ARM Streamline
@@ -721,3 +725,4 @@ Explicitly **NOT** competing on:
 
 - **2026-05-12** — Initial consolidation from 7 research observations + internal audit. Replaces skeleton (`docs/competitive-analysis-skeleton-2026-05-12` obs #307). All 22 `<!-- AWAITING -->` markers resolved; all 8 placeholder tables filled. Document status: research-complete, pending §8 product decisions before SDD changes #2/#3 can start. Honesty notes preserved on console certs (NDA), engine/vendor PDFs (manual download required), and ad SDK auto-detection (NOT verified beyond current 5-SDK catalog).
 - **2026-05-12 (PM)** — PerfDog deep-dive integration. Added §3.6 PerfDog formulas (Jank / SmallJank / Smooth Index / FPower / CPU% freq-normalized), §5.1 +4 KPIs (FPower + CPU normalized + PerfDog Jank count + PerfDog Big Jank count), §5.2 phase relevance updated (FPower + CPU normalized weighting), §6.2.1 composite scoring alternatives (Smooth Index + Vitals-aligned ranking signal), §8 +2 decisions (#10 Smooth Index, #11 FPower anchors), §9 +7 SDD changes (#8 fpower-metric, #9 cpu-freq-normalized, #10 perfdog-jank-formula, #11 cli-headless-mode, #12 gh-action-wrapper, #13 multi-device-capture, #14 DEFER engine-mode-perfetto-capture), updated PerfDog row §2.1 with deep-dive findings (mandatory cloud, 11 platforms, 1 Hz default, Custom Data Extension SDK, gaps closeable vs not closing). New §10 Positioning statement. Renumbered References → §11, Changelog → §12. Source: engram obs #312 (`research/perfdog-deep-dive-2026-05-12`).
+- **2026-05-12 (PM 2)** — PerfDog Help Center deep-dive (engram obs #328). Site confirmed gated; zero new features extractable. Methodology-transparency angle added to §10 positioning.
