@@ -1791,6 +1791,15 @@ class AppViewModel(
                     // history re-loads where lastThermal.diagnostic is null.
                     thermalAvailable = lastThermal.thermalAvailable,
                     thermalDiagnostic = lastThermal.diagnostic,
+                    // v4.5.0 (fpower-metric, Batch 5 wire): propagate the per-
+                    // session FPower payload to the report. Defaults on the
+                    // generator preserve legacy rendering for pre-v4.5.0 history
+                    // re-loads where fpowerAvailable=true / history empty.
+                    fpowerHistory = fpowerHistory.toList(),
+                    fpowerAvg = if (fpowerHistory.isNotEmpty()) fpowerHistory.average() else 0.0,
+                    fpowerPeak = fpowerHistory.maxOrNull() ?: 0.0,
+                    fpowerAvailable = lastFPower.fpowerAvailable,
+                    fpowerDiagnostic = lastFPower.diagnostic,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")

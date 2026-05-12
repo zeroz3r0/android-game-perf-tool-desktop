@@ -10,6 +10,8 @@ import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventType
 import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.FPowerDiagnostic
+import com.gameperf.desktop.core.model.FPowerUnavailableReason
 import com.gameperf.desktop.core.model.ThermalDiagnostic
 import com.gameperf.desktop.core.model.ThermalUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
@@ -83,6 +85,17 @@ object ReportGenerator {
         // sessions reloaded from `.gameperf` history files.
         thermalAvailable: Boolean = true,
         thermalDiagnostic: ThermalDiagnostic? = null,
+        // v4.5.0 -- FPower (mW/frame) pipeline payload. All defaulted so
+        // legacy fixtures (ReportRenderingTest, ReportGradingTest) and pre-
+        // v4.5.0 history re-renders skip the FPower section entirely. The
+        // card is rendered only when (fpowerAvailable && fpowerHistory.isNotEmpty())
+        // OR (!fpowerAvailable && fpowerDiagnostic != null) per spec FPW-009.
+        // See design §10 + ADR-5 for the Spanish-tuteo-formal banner copy.
+        fpowerHistory: List<Double> = emptyList(),
+        fpowerAvg: Double = 0.0,
+        fpowerPeak: Double = 0.0,
+        fpowerAvailable: Boolean = true,
+        fpowerDiagnostic: FPowerDiagnostic? = null,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -187,6 +200,17 @@ object ReportGenerator {
             filteredAggregates != null -> sectionConclusionsEmpty()
             else -> ""
         }
+
+        // v4.5.0 — FPower section (spec FPW-009). Empty string when there's
+        // nothing to render (legacy callers, ultra-short captures, defaulted
+        // args). Injected after the temperature section in the template.
+        val fpowerSectionHtml = fpowerSection(
+            history = fpowerHistory,
+            avg = fpowerAvg,
+            peak = fpowerPeak,
+            available = fpowerAvailable,
+            diagnostic = fpowerDiagnostic,
+        )
 
         // Problems HTML
         val problemsHtml = if (problems.isEmpty()) {
@@ -490,6 +514,8 @@ $excessiveCalloutHtml
     </div>
     <div class="chart-container"><canvas id="tempChart"></canvas></div>
 </section>
+
+$fpowerSectionHtml
 
 <section class="card">
     <div class="card-header"><h2>&#128267; Bateria</h2></div>
@@ -1400,6 +1426,119 @@ $cards
     }
 
     /**
+     * v4.5.0 -- FPower color band classifier per spec FPW-009. PerfDog
+     * anchors: green `< 50 mW/frame`, amber `50 <= x < 65`, red `>= 65`.
+     * Boundaries are inclusive-lower / exclusive-upper for the amber band
+     * (same shape as the thermal `cls` helper at this file).
+     *
+     * Negative input is treated as "no data" and bucketed as the same neutral
+     * gray class the unavailable card uses. The renderer guards against
+     * negative avg upstream; this is a defensive fallback.
+     */
+    private fun fpowerBand(value: Double): String = when {
+        value < 0 -> "fpower-unknown"
+        value < 50.0 -> "fpower-green"
+        value < 65.0 -> "fpower-amber"
+        else -> "fpower-red"
+    }
+
+    /**
+     * v4.5.0 -- Spanish-tuteo-formal diagnostic banner for the FPower card.
+     * Mirrors [thermalDiagnosticBanner] exactly (design ADR-1, ADR-5).
+     *
+     * Each [FPowerUnavailableReason] maps to a distinct one-sentence reason
+     * copy. Raw `rawPathsTried` strings are listed as a `<code>`-wrapped
+     * list so users (or devs) can file an issue identifying the missing
+     * vendor tuple for [com.gameperf.desktop.core.FPowerVendorCatalog].
+     *
+     * Path strings are escaped via [esc] defensively in case a vendor ever
+     * exposes HTML-special chars in a sysfs node name; [rawPathsTried] is
+     * already capped at the source by [com.gameperf.desktop.core.FPowerParser].
+     */
+    private fun fpowerDiagnosticBanner(diagnostic: FPowerDiagnostic): String {
+        val reasonText = when (diagnostic.reason) {
+            FPowerUnavailableReason.BATTERY_PATH_MISSING ->
+                "No pudimos leer el consumo de batería en este dispositivo. Probamos los siguientes paths sysfs sin éxito; probablemente el vendor todavía no está en nuestro catálogo."
+            FPowerUnavailableReason.FPS_ZERO ->
+                "No hay FPS válidos en esta sesión, por lo que no se puede calcular mW/frame. Capturá una sesión con gameplay activo."
+            FPowerUnavailableReason.IMPLAUSIBLE_VALUE ->
+                "Los valores leídos del sensor de batería están fuera del rango plausible (probable bug del kernel del dispositivo). Reportá la marca, el modelo y la versión de Android."
+            FPowerUnavailableReason.OEM_LOCKED ->
+                "Este OEM (Huawei Knox, Xiaomi GameTurbo o equivalente) bloquea el acceso al sensor de batería. No hay workaround sin root."
+            FPowerUnavailableReason.PERMISSION_DENIED ->
+                "El sistema operativo negó los permisos necesarios para leer el sensor de batería. Probá habilitar adb root si tu dispositivo lo permite."
+            FPowerUnavailableReason.UNKNOWN ->
+                "El motivo exacto es desconocido. Reportá este caso adjuntando los paths listados debajo para que podamos extender el catálogo."
+        }
+        val pathItems = diagnostic.rawPathsTried.take(10).joinToString("") { p ->
+            "<li><code>${esc(p)}</code></li>"
+        }
+        val pathsBlock = if (pathItems.isEmpty()) """
+        <p class="fpower-diag-paths-label">Paths probados: <code>ninguno</code></p>""" else """
+        <p class="fpower-diag-paths-label">Paths probados:</p>
+        <ul class="fpower-diag-paths">$pathItems</ul>"""
+        return """
+    <div class="callout callout-warning fpower-diag-banner">
+        <strong>&#9888; Datos de FPower no disponibles.</strong>
+        <p>$reasonText</p>$pathsBlock
+    </div>"""
+    }
+
+    /**
+     * v4.5.0 -- Build the FPower `<section>` HTML conditionally per spec
+     * FPW-009. Returns the empty string when there's nothing to render so
+     * the caller can splat it unconditionally into the template.
+     *
+     * Render matrix:
+     *  - `!available && diagnostic != null` → N/D card + diagnostic banner.
+     *  - `available && history.isNotEmpty()` → numeric card with avg/peak/
+     *    band CSS class.
+     *  - everything else (legacy callers, ultra-short captures, etc.) →
+     *    empty string (no card). Matches the v4.4.1 thermal precedent of
+     *    `thermalAvailable=true + empty history` → legacy rendering.
+     */
+    private fun fpowerSection(
+        history: List<Double>,
+        avg: Double,
+        peak: Double,
+        available: Boolean,
+        diagnostic: FPowerDiagnostic?,
+    ): String {
+        if (!available && diagnostic != null) {
+            return """
+<section id="sec-fpower" class="card fpower-card fpower-unavailable">
+    <div class="card-header">
+        <h2>&#9889; FPower (mW/frame)</h2>
+    </div>
+    <p class="card-desc">Energía consumida por frame renderizado. Útil para comparar eficiencia entre builds.</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Pico</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">0</span></div>
+    </div>
+    ${fpowerDiagnosticBanner(diagnostic)}
+</section>"""
+        }
+        if (available && history.isNotEmpty()) {
+            val avgBand = fpowerBand(avg)
+            val peakBand = fpowerBand(peak)
+            return """
+<section id="sec-fpower" class="card fpower-card $avgBand">
+    <div class="card-header">
+        <h2>&#9889; FPower (mW/frame)</h2>
+    </div>
+    <p class="card-desc">Energía consumida por frame renderizado (PerfDog anchors: &lt;50 verde, 50-65 amber, &gt;=65 rojo).</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value $avgBand">${fmtUS("%.1f", avg)} mW/frame</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Pico</span><span class="stat-pill-value $peakBand">${fmtUS("%.1f", peak)} mW/frame</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">${history.size}</span></div>
+    </div>
+</section>"""
+        }
+        return ""
+    }
+
+    /**
      * Detect whether the FLT-005 excessive-filter fallback was triggered. Tries the
      * authoritative signal first (a warning string seeded by [com.gameperf.desktop.core.metrics.FilteredMetricsCalculator]),
      * then falls back to recomputing the kept-ratio from the dual aggregates so
@@ -1587,6 +1726,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .callout{max-width:960px;margin:0 auto 20px;padding:14px 18px;border-radius:12px;font-size:13px;line-height:1.6}
 .callout-warning{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);color:#fcd34d}
 .callout-warning strong{color:#fbbf24}
+.fpower-card{border-left:4px solid #475569}
+.fpower-card.fpower-green{border-left-color:#22c55e}
+.fpower-card.fpower-amber{border-left-color:#f59e0b}
+.fpower-card.fpower-red{border-left-color:#ef4444}
+.fpower-card.fpower-unavailable{border-left-color:#6b7280;opacity:0.85}
+.stat-pill-value.fpower-green{color:#22c55e}
+.stat-pill-value.fpower-amber{color:#f59e0b}
+.stat-pill-value.fpower-red{color:#ef4444}
+.fpower-diag-banner{margin-top:12px}
+.fpower-diag-paths-label{color:#cbd5e1;font-size:12px;margin-top:8px;margin-bottom:4px;font-weight:600}
+.fpower-diag-paths{margin:6px 0 2px 20px;color:#94a3b8;line-height:1.6;font-size:12px}
+.fpower-diag-paths code{font-size:0.9em;opacity:0.85}
 .metric-raw{color:#64748b;font-size:0.85em;margin-top:4px;opacity:0.75;font-weight:500}
 .conclusions-list{display:flex;flex-direction:column;gap:12px}
 .conclusion-card{background:rgba(15,23,42,0.5);border:1px solid rgba(148,163,184,0.1);border-left:4px solid #64748b;border-radius:10px;padding:14px 16px}

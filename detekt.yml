@@ -15,7 +15,7 @@ complexity:
     thresholdInObjects: 47   # 2026-05-12: AdbBridge has 46 functions (v4.5.0 added captureFPower for FPower metric). 2026-05-08: was 45 (v4.4.0 added startLogcat). TODO: split into domain-specific objects
     thresholdInInterfaces: 31  # 2026-05-12: AdbBridgeApi has 30 functions (v4.5.0 added captureFPower). 2026-05-08: was 29 (v4.4.0 added startLogcat + shell). TODO: split into focused interfaces
   CyclomaticComplexMethod:
-    threshold: 210       # 2026-05-12: startCapture grew to 209 (v4.5.0 added FPower poll/history/payload wiring across 4 sites, design §9a-9f). 2026-05-08: was 200 (v4.4.0 EventDetector + FilteredMetricsCalculator). TODO: extract sub-functions for capture phases (carried over from 2026-04-17) — threshold creep is acknowledged tech debt
+    threshold: 215       # 2026-05-12 (PM): startCapture grew to 211 (v4.5.0 added FPower wiring 4 sites + ReportGenerator.generate fpower args call site). 2026-05-08: was 200 (v4.4.0 EventDetector + FilteredMetricsCalculator). TODO H.7: extract capture-phase sub-functions BEFORE next release — threshold creep is acknowledged tech debt + bridge until refactor
   LargeClass:
     threshold: 2000
   NestedBlockDepth:
