@@ -33,12 +33,12 @@ class LoadingSignaturesTest {
         val open = lineFor(tag = "Unity", msg = "Loading scene transition")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched, "Unity 'Loading scene' must open a LOADING event")
-        assertEquals("Unity Engine", matched.first.sdk)
-        assertEquals(EventType.LOADING, matched.first.type)
+        assertEquals("Unity Engine", matched.sig.sdk)
+        assertEquals(EventType.LOADING, matched.resolvedType)
 
         val close = lineFor(tag = "Unity", msg = "Scene loaded successfully name=Level3")
         assertNotNull(
-            SdkSignatureCatalog.matchClose(close, matched.first),
+            SdkSignatureCatalog.matchClose(close, matched.sig),
             "Unity 'Scene loaded' must close the LOADING event",
         )
     }
@@ -48,7 +48,7 @@ class LoadingSignaturesTest {
         val open = lineFor(tag = "UnityEngine", msg = "AsyncOperation started for SceneManager.LoadSceneAsync")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("Unity Engine", matched.first.sdk)
+        assertEquals("Unity Engine", matched.sig.sdk)
     }
 
     @Test
@@ -69,7 +69,7 @@ class LoadingSignaturesTest {
         val rogue = lineFor(tag = "ActivityManager", msg = "Loading scene transition for system overlay")
         val matched = SdkSignatureCatalog.matchOpen(rogue)
         // Either no match at all, or a match for some OTHER SDK — never Unity Engine.
-        assertTrue(matched == null || matched.first.sdk != "Unity Engine")
+        assertTrue(matched == null || matched.sig.sdk != "Unity Engine")
     }
 
     // ═══════ Unreal Engine ═══════
@@ -79,11 +79,11 @@ class LoadingSignaturesTest {
         val open = lineFor(tag = "UE4", msg = "LogStreaming: Loading package /Game/Maps/Arena")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched, "Unreal 'LogStreaming: Loading' must open a LOADING event")
-        assertEquals("Unreal Engine", matched.first.sdk)
-        assertEquals(EventType.LOADING, matched.first.type)
+        assertEquals("Unreal Engine", matched.sig.sdk)
+        assertEquals(EventType.LOADING, matched.resolvedType)
 
         val close = lineFor(tag = "UE4", msg = "LogStreaming: Flushing async loaders")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
     }
 
     @Test
@@ -91,10 +91,10 @@ class LoadingSignaturesTest {
         val open = lineFor(tag = "LoadingScreen", msg = "LoadingScreen Shown")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("Unreal Engine", matched.first.sdk)
+        assertEquals("Unreal Engine", matched.sig.sdk)
 
         val close = lineFor(tag = "LoadingScreen", msg = "LoadingScreen Hidden")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
     }
 
     @Test
@@ -111,8 +111,8 @@ class LoadingSignaturesTest {
         val open = lineFor(tag = "cocos2d", msg = "Director::replaceScene to GameScene")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched, "Cocos2d 'Director::replaceScene' must open a LOADING event")
-        assertEquals("Cocos2d", matched.first.sdk)
-        assertEquals(EventType.LOADING, matched.first.type)
+        assertEquals("Cocos2d", matched.sig.sdk)
+        assertEquals(EventType.LOADING, matched.resolvedType)
     }
 
     @Test
@@ -120,7 +120,7 @@ class LoadingSignaturesTest {
         val open = lineFor(tag = "Cocos2dx", msg = "CCDirector.replaceScene transitioning")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("Cocos2d", matched.first.sdk)
+        assertEquals("Cocos2d", matched.sig.sdk)
     }
 
     @Test
@@ -166,8 +166,8 @@ class LoadingSignaturesTest {
         val open = lineFor(tag = "Unity", msg = "Loading scene transition")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("Unity Engine", matched.first.sdk)
-        assertEquals(EventType.LOADING, matched.first.type)
+        assertEquals("Unity Engine", matched.sig.sdk)
+        assertEquals(EventType.LOADING, matched.resolvedType)
     }
 
     // ═══════ existing Unity Ads fixture must still classify correctly ═══════
@@ -183,7 +183,7 @@ class LoadingSignaturesTest {
         val openHit = lines.any { raw ->
             val parsed = LogcatLineParser.parse(raw) ?: return@any false
             val match = SdkSignatureCatalog.matchOpen(parsed) ?: return@any false
-            match.first.sdk == sig.sdk
+            match.sig.sdk == sig.sdk
         }
         assertTrue(openHit, "unity-ads.log: must still have a Unity Ads open match after LOADING signatures added")
     }
@@ -196,7 +196,7 @@ class LoadingSignaturesTest {
         val loadingHit = lines.any { raw ->
             val parsed = LogcatLineParser.parse(raw) ?: return@any false
             val match = SdkSignatureCatalog.matchOpen(parsed) ?: return@any false
-            match.first.sdk == "Unity Engine" && match.first.type == EventType.LOADING
+            match.sig.sdk == "Unity Engine" && match.resolvedType == EventType.LOADING
         }
         assertTrue(loadingHit, "unity-ads.log: line 5 'Loading scene transition' must classify as Unity Engine LOADING")
     }
@@ -238,7 +238,7 @@ class LoadingSignaturesTest {
             val parsed = LogcatLineParser.parse(raw) ?: continue
             if (!openHit) {
                 val open = SdkSignatureCatalog.matchOpen(parsed)
-                if (open != null && open.first.sdk == expectedSdk) {
+                if (open != null && open.sig.sdk == expectedSdk) {
                     openHit = true
                     continue
                 }

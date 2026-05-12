@@ -1253,6 +1253,14 @@ $cards
                 EventType.IAP -> "Compra (IAP)"
                 EventType.LOADING -> "Carga"
                 EventType.FOREGROUND_LOSS -> "Pérdida de foreground"
+                EventType.APP_STARTUP -> "Arranque"
+                EventType.SDK_INIT -> "Init SDK"
+                EventType.ANR -> "ANR"
+                EventType.SCREEN_TRANSITION -> "Navegación"
+                EventType.INSTRUMENTED -> "Instrumentado"
+                EventType.VR_SESSION -> "VR"
+                EventType.VR_RETURN_TRANSITION -> "Retorno VR"
+                EventType.RATE_US -> "Rate-us"
                 EventType.UNKNOWN -> "Desconocido"
             }
             val typeColor = when (e.type) {
@@ -1260,6 +1268,14 @@ $cards
                 EventType.IAP -> "#38bdf8"
                 EventType.LOADING -> "#f59e0b"
                 EventType.FOREGROUND_LOSS -> "#a855f7"
+                EventType.APP_STARTUP -> "#3b82f6"
+                EventType.SDK_INIT -> "#60a5fa"
+                EventType.ANR -> "#ef4444"
+                EventType.SCREEN_TRANSITION -> "#94a3b8"
+                EventType.INSTRUMENTED -> "#a855f7"
+                EventType.VR_SESSION -> "#06b6d4"
+                EventType.VR_RETURN_TRANSITION -> "#f59e0b"
+                EventType.RATE_US -> "#22c55e"
                 EventType.UNKNOWN -> "#94a3b8"
             }
             val confidenceTag = when (e.confidence) {

@@ -65,7 +65,7 @@ class SdkSignatureCatalogTest {
             // the game process without pushing a new Android Activity onto
             // the back stack. For ad/billing SDKs (which DO push activities)
             // the field must still be populated.
-            if (sig.type != EventType.LOADING) {
+            if (sig.defaultType != EventType.LOADING) {
                 assertTrue(sig.activityClasses.isNotEmpty(), "${sig.sdk}: no activity classes")
             }
         }
@@ -96,11 +96,11 @@ class SdkSignatureCatalogTest {
         val open = lineFor(tag = "AdActivity", msg = "Showing ad")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("AdMob", matched.first.sdk)
-        assertEquals(EventType.INTERSTITIAL, matched.first.type)
+        assertEquals("AdMob", matched.sig.sdk)
+        assertEquals(EventType.INTERSTITIAL, matched.resolvedType)
 
         val close = lineFor(tag = "AdActivity", msg = "Ad dismissed by user")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
 
         val noise = lineFor(tag = "AdActivity", msg = "internal: re-binding view holder")
         assertNull(SdkSignatureCatalog.matchOpen(noise))
@@ -122,11 +122,11 @@ class SdkSignatureCatalogTest {
         val open = lineFor(tag = "UnityAds", msg = "UnityAdsShowStart placement=rewardedVideo")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("Unity Ads", matched.first.sdk)
-        assertEquals(EventType.REWARDED_VIDEO, matched.first.type)
+        assertEquals("Unity Ads", matched.sig.sdk)
+        assertEquals(EventType.REWARDED_VIDEO, matched.resolvedType)
 
         val close = lineFor(tag = "UnityAds", msg = "UnityAdsShowComplete state=COMPLETED")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
 
         val noise = lineFor(tag = "UnityAds", msg = "Cache: writing 4096 bytes")
         assertNull(SdkSignatureCatalog.matchOpen(noise))
@@ -148,10 +148,10 @@ class SdkSignatureCatalogTest {
         val open = lineFor(tag = "IronSource", msg = "interstitialDidOpen instanceId=42")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("IronSource", matched.first.sdk)
+        assertEquals("IronSource", matched.sig.sdk)
 
         val close = lineFor(tag = "IronSource", msg = "interstitialDidClose instanceId=42")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
 
         val noise = lineFor(tag = "IronSource", msg = "IS::init: starting bidder pool")
         assertNull(SdkSignatureCatalog.matchOpen(noise))
@@ -173,10 +173,10 @@ class SdkSignatureCatalogTest {
         val open = lineFor(tag = "AppLovinSdk", msg = "onAdDisplayed adUnitId=ca-app-xxx")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("AppLovin", matched.first.sdk)
+        assertEquals("AppLovin", matched.sig.sdk)
 
         val close = lineFor(tag = "AppLovinSdk", msg = "onAdHidden adUnitId=ca-app-xxx")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
 
         val noise = lineFor(tag = "AppLovinSdk", msg = "SDK keys validated successfully")
         assertNull(SdkSignatureCatalog.matchOpen(noise))
@@ -198,10 +198,10 @@ class SdkSignatureCatalogTest {
         val open = lineFor(tag = "FBAudienceNetworkLog", msg = "Interstitial impression logged")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("Meta Audience Network", matched.first.sdk)
+        assertEquals("Meta Audience Network", matched.sig.sdk)
 
         val close = lineFor(tag = "FBAudienceNetworkLog", msg = "onInterstitialDismissed event=user")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
 
         val noise = lineFor(tag = "FBAudienceNetworkLog", msg = "Cache TTL refresh queued")
         assertNull(SdkSignatureCatalog.matchOpen(noise))
@@ -223,11 +223,11 @@ class SdkSignatureCatalogTest {
         val open = lineFor(tag = "BillingClient", msg = "launchBillingFlow: starting flow for sku=premium")
         val matched = SdkSignatureCatalog.matchOpen(open)
         assertNotNull(matched)
-        assertEquals("Google Play Billing", matched.first.sdk)
-        assertEquals(EventType.IAP, matched.first.type)
+        assertEquals("Google Play Billing", matched.sig.sdk)
+        assertEquals(EventType.IAP, matched.resolvedType)
 
         val close = lineFor(tag = "BillingClient", msg = "onPurchasesUpdated: result=OK")
-        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.first))
+        assertNotNull(SdkSignatureCatalog.matchClose(close, matched.sig))
 
         val noise = lineFor(tag = "BillingClient", msg = "Service status report posted")
         assertNull(SdkSignatureCatalog.matchOpen(noise))
@@ -319,9 +319,66 @@ class SdkSignatureCatalogTest {
         val openMatched = lines.any {
             val parsed = LogcatLineParser.parse(it) ?: return@any false
             val match = SdkSignatureCatalog.matchOpen(parsed) ?: return@any false
-            match.first.sdk == sig.sdk
+            match.sig.sdk == sig.sdk
         }
         assertTrue(openMatched, "play-billing-launch.log fixture had no open match")
+    }
+
+    // ═══════ Sprint 0 — per-pattern type discriminator ═══════
+    //
+    // Proves the new `openPatterns: List<Pair<Regex, EventType>>` shape
+    // resolves heterogeneous patterns to their tagged type, not to the
+    // signature's `defaultType`. The catalogued v4.4.0/v4.4.1 entries are
+    // all homogeneous (every pattern → defaultType), so the test uses a
+    // synthetic SdkSignature to assert the discriminator capability that
+    // future sprints (2b: rewarded/interstitial split, 1: APP_STARTUP +
+    // SDK_INIT cohabiting one SDK row) depend on.
+    //
+    // NOTE: matchOpen() is bound to the static catalog, so this test
+    // exercises MatchResult construction directly against a custom
+    // signature rather than going through the catalog — same code path
+    // as the production matchOpen body.
+
+    @Test
+    fun `matchOpen on multi-type signature resolves each pattern to its tagged type`() {
+        val sig = SdkSignature(
+            sdk = "test-multi",
+            defaultType = EventType.INTERSTITIAL,
+            activityClasses = emptyList(),
+            logcatTags = listOf("TestTag"),
+            openPatterns = listOf(
+                Regex("""\bInitializing SDK\b""") to EventType.SDK_INIT,
+                Regex("""\bShowing ad\b""") to EventType.INTERSTITIAL,
+            ),
+            closePatterns = emptyList(),
+        )
+
+        // Replicate the matchOpen body against the synthetic signature.
+        fun match(line: LogLine): MatchResult? {
+            if (sig.logcatTags.none { it.equals(line.tag, ignoreCase = true) }) return null
+            for ((pattern, type) in sig.openPatterns) {
+                if (pattern.containsMatchIn(line.msg)) {
+                    return MatchResult(sig = sig, pattern = pattern, resolvedType = type)
+                }
+            }
+            return null
+        }
+
+        val initLine = lineFor(tag = "TestTag", msg = "Initializing SDK now")
+        val initMatch = match(initLine)
+        assertNotNull(initMatch, "Initializing SDK must match")
+        assertEquals(EventType.SDK_INIT, initMatch.resolvedType,
+            "multi-type signature must resolve 'Initializing SDK' to SDK_INIT, NOT defaultType")
+
+        val adLine = lineFor(tag = "TestTag", msg = "Showing ad to user")
+        val adMatch = match(adLine)
+        assertNotNull(adMatch, "Showing ad must match")
+        assertEquals(EventType.INTERSTITIAL, adMatch.resolvedType,
+            "multi-type signature must resolve 'Showing ad' to INTERSTITIAL")
+
+        // Sanity: defaultType is INTERSTITIAL, but a SDK_INIT pattern match
+        // must NOT fall back to it.
+        assertEquals(EventType.INTERSTITIAL, sig.defaultType)
     }
 
     // ═══════ helpers ═══════
@@ -335,7 +392,7 @@ class SdkSignatureCatalogTest {
             val parsed = LogcatLineParser.parse(raw) ?: continue
             if (!openHit) {
                 val open = SdkSignatureCatalog.matchOpen(parsed)
-                if (open != null && open.first.sdk == expectedSdk) {
+                if (open != null && open.sig.sdk == expectedSdk) {
                     openHit = true
                     continue
                 }

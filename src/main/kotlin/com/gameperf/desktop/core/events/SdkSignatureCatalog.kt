@@ -38,17 +38,17 @@ internal object SdkSignatureCatalog {
         // ── AdMob (Google Mobile Ads SDK) ───────────────────────────────
         SdkSignature(
             sdk = "AdMob",
-            type = EventType.INTERSTITIAL,
+            defaultType = EventType.INTERSTITIAL,
             activityClasses = listOf(
                 "com.google.android.gms.ads.AdActivity",
                 "com.google.android.gms.ads.OutOfContextTestingActivity",
             ),
             logcatTags = listOf("Ads", "AdActivity", "MobileAds"),
             openPatterns = listOf(
-                Regex("""(?i)\bShowing ad\b"""),
-                Regex("""(?i)\bonAdShown\b"""),
-                Regex("""(?i)\bad opened\b"""),
-                Regex("""(?i)\bLoaded ad\b"""),
+                Regex("""(?i)\bShowing ad\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bonAdShown\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bad opened\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bLoaded ad\b""") to EventType.INTERSTITIAL,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bAd dismissed\b"""),
@@ -59,16 +59,16 @@ internal object SdkSignatureCatalog {
         // ── Unity Ads ───────────────────────────────────────────────────
         SdkSignature(
             sdk = "Unity Ads",
-            type = EventType.REWARDED_VIDEO,
+            defaultType = EventType.REWARDED_VIDEO,
             activityClasses = listOf(
                 "com.unity3d.services.ads.adunit.AdUnitActivity",
                 "com.unity3d.services.ads.adunit.AdUnitTransparentActivity",
             ),
             logcatTags = listOf("UnityAds", "Unity"),
             openPatterns = listOf(
-                Regex("""(?i)\bUnityAdsShowStart\b"""),
-                Regex("""(?i)\bShow begin\b"""),
-                Regex("""(?i)\bonUnityAdsShowStart\b"""),
+                Regex("""(?i)\bUnityAdsShowStart\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bShow begin\b""") to EventType.REWARDED_VIDEO,
+                Regex("""(?i)\bonUnityAdsShowStart\b""") to EventType.REWARDED_VIDEO,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bUnityAdsShowComplete\b"""),
@@ -79,16 +79,16 @@ internal object SdkSignatureCatalog {
         // ── IronSource (now LevelPlay) ──────────────────────────────────
         SdkSignature(
             sdk = "IronSource",
-            type = EventType.INTERSTITIAL,
+            defaultType = EventType.INTERSTITIAL,
             activityClasses = listOf(
                 "com.ironsource.sdk.controller.ControllerActivity",
                 "com.ironsource.sdk.controller.InterstitialActivity",
             ),
             logcatTags = listOf("IronSource", "ironSource"),
             openPatterns = listOf(
-                Regex("""(?i)\binterstitialDidOpen\b"""),
-                Regex("""(?i)\bonInterstitialAdShowSucceeded\b"""),
-                Regex("""(?i)\bonInterstitialAdShown\b"""),
+                Regex("""(?i)\binterstitialDidOpen\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bonInterstitialAdShowSucceeded\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bonInterstitialAdShown\b""") to EventType.INTERSTITIAL,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\binterstitialDidClose\b"""),
@@ -98,16 +98,16 @@ internal object SdkSignatureCatalog {
         // ── AppLovin / MAX ──────────────────────────────────────────────
         SdkSignature(
             sdk = "AppLovin",
-            type = EventType.INTERSTITIAL,
+            defaultType = EventType.INTERSTITIAL,
             activityClasses = listOf(
                 "com.applovin.adview.AppLovinFullscreenActivity",
                 "com.applovin.adview.AppLovinInterstitialActivity",
             ),
             logcatTags = listOf("AppLovinSdk", "MaxAds", "AppLovin"),
             openPatterns = listOf(
-                Regex("""(?i)\bappLovinAdViewDidDisplay\b"""),
-                Regex("""(?i)\bonAdDisplayed\b"""),
-                Regex("""(?i)\bAd displayed\b"""),
+                Regex("""(?i)\bappLovinAdViewDidDisplay\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bonAdDisplayed\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bAd displayed\b""") to EventType.INTERSTITIAL,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bappLovinAdViewDidDismiss\b"""),
@@ -118,14 +118,14 @@ internal object SdkSignatureCatalog {
         // ── Meta Audience Network ───────────────────────────────────────
         SdkSignature(
             sdk = "Meta Audience Network",
-            type = EventType.INTERSTITIAL,
+            defaultType = EventType.INTERSTITIAL,
             activityClasses = listOf(
                 "com.facebook.ads.AudienceNetworkActivity",
             ),
             logcatTags = listOf("FBAudienceNetworkLog", "AudienceNetworkAds"),
             openPatterns = listOf(
-                Regex("""(?i)\bonInterstitialDisplayed\b"""),
-                Regex("""(?i)\bInterstitial impression logged\b"""),
+                Regex("""(?i)\bonInterstitialDisplayed\b""") to EventType.INTERSTITIAL,
+                Regex("""(?i)\bInterstitial impression logged\b""") to EventType.INTERSTITIAL,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bonInterstitialDismissed\b"""),
@@ -134,15 +134,15 @@ internal object SdkSignatureCatalog {
         // ── Google Play Billing (IAP) ───────────────────────────────────
         SdkSignature(
             sdk = "Google Play Billing",
-            type = EventType.IAP,
+            defaultType = EventType.IAP,
             activityClasses = listOf(
                 "com.android.billingclient.api.ProxyBillingActivity",
                 "com.android.vending",
             ),
             logcatTags = listOf("BillingClient", "Billing"),
             openPatterns = listOf(
-                Regex("""(?i)\blaunchBillingFlow\b"""),
-                Regex("""(?i)\bonBillingServiceConnected\b"""),
+                Regex("""(?i)\blaunchBillingFlow\b""") to EventType.IAP,
+                Regex("""(?i)\bonBillingServiceConnected\b""") to EventType.IAP,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bonPurchasesUpdated\b"""),
@@ -163,12 +163,12 @@ internal object SdkSignatureCatalog {
         // contributes here.
         SdkSignature(
             sdk = "Unity Engine",
-            type = EventType.LOADING,
+            defaultType = EventType.LOADING,
             activityClasses = emptyList(),
             logcatTags = listOf("Unity", "UnityEngine"),
             openPatterns = listOf(
-                Regex("""(?i)\bLoading scene\b"""),
-                Regex("""(?i)\bAsyncOperation\b"""),
+                Regex("""(?i)\bLoading scene\b""") to EventType.LOADING,
+                Regex("""(?i)\bAsyncOperation\b""") to EventType.LOADING,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bScene loaded\b"""),
@@ -183,12 +183,12 @@ internal object SdkSignatureCatalog {
         // it). Tag allowlist excludes generic `LogTemp` to avoid noise.
         SdkSignature(
             sdk = "Unreal Engine",
-            type = EventType.LOADING,
+            defaultType = EventType.LOADING,
             activityClasses = emptyList(),
             logcatTags = listOf("UE4", "Unreal", "LogStreaming", "LoadingScreen"),
             openPatterns = listOf(
-                Regex("""(?i)\bLogStreaming:\s*Loading\b"""),
-                Regex("""(?i)\bLoadingScreen\s+Shown\b"""),
+                Regex("""(?i)\bLogStreaming:\s*Loading\b""") to EventType.LOADING,
+                Regex("""(?i)\bLoadingScreen\s+Shown\b""") to EventType.LOADING,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bFlushing async loaders\b"""),
@@ -204,12 +204,12 @@ internal object SdkSignatureCatalog {
         // negative case `Cocos2d ignores onEnter on foreign tag`.
         SdkSignature(
             sdk = "Cocos2d",
-            type = EventType.LOADING,
+            defaultType = EventType.LOADING,
             activityClasses = emptyList(),
             logcatTags = listOf("cocos2d", "Cocos2d", "Cocos2dx", "CCDirector"),
             openPatterns = listOf(
-                Regex("""\bDirector::replaceScene\b"""),
-                Regex("""\bCCDirector\.replaceScene\b"""),
+                Regex("""\bDirector::replaceScene\b""") to EventType.LOADING,
+                Regex("""\bCCDirector\.replaceScene\b""") to EventType.LOADING,
             ),
             closePatterns = listOf(
                 Regex("""\bonEnter\b"""),
@@ -235,14 +235,24 @@ internal object SdkSignatureCatalog {
     /**
      * Try to match a [LogLine] against any catalog "open" pattern.
      *
-     * @return The matched [SdkSignature] and which open-pattern matched, or
-     *   `null` if no SDK in the catalog claims this line as an open signal.
+     * Sprint 0 shape change: returns [MatchResult] instead of
+     * `Pair<SdkSignature, Regex>`. The new struct carries the per-pattern
+     * [EventType] (`resolvedType`) so heterogeneous signatures — where
+     * different open patterns in the same row map to different event
+     * types — can be classified at match time.
+     *
+     * @return The matched [MatchResult] describing the signature, the
+     *   exact open pattern that matched, and the resolved [EventType],
+     *   or `null` if no SDK in the catalog claims this line as an open
+     *   signal.
      */
-    fun matchOpen(line: LogLine): Pair<SdkSignature, Regex>? {
+    fun matchOpen(line: LogLine): MatchResult? {
         for (sig in ALL) {
             if (sig.logcatTags.none { it.equals(line.tag, ignoreCase = true) }) continue
-            for (pattern in sig.openPatterns) {
-                if (pattern.containsMatchIn(line.msg)) return sig to pattern
+            for ((pattern, type) in sig.openPatterns) {
+                if (pattern.containsMatchIn(line.msg)) {
+                    return MatchResult(sig = sig, pattern = pattern, resolvedType = type)
+                }
             }
         }
         return null

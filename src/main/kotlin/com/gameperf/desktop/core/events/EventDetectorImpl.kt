@@ -141,8 +141,14 @@ internal class EventDetectorImpl(
         // Try OPEN first.
         val openMatch = SdkSignatureCatalog.matchOpen(line)
         if (openMatch != null) {
-            val (sig, pattern) = openMatch
-            tryOpen(sig, pattern.pattern, line.tsMs, line.tag, source = "logcat")
+            tryOpen(
+                sig = openMatch.sig,
+                resolvedType = openMatch.resolvedType,
+                signatureMatched = openMatch.pattern.pattern,
+                startMs = line.tsMs,
+                tag = line.tag,
+                source = "logcat",
+            )
             return
         }
         // Otherwise check if this line CLOSES any currently-open event.
@@ -217,6 +223,7 @@ internal class EventDetectorImpl(
 
     private fun tryOpen(
         sig: SdkSignature,
+        resolvedType: EventType,
         signatureMatched: String,
         startMs: Long,
         tag: String,
@@ -239,7 +246,7 @@ internal class EventDetectorImpl(
         if (openEvents.containsKey(key)) return  // already tracking same SDK+pattern
 
         val event = DetectedEvent(
-            type = sig.type,
+            type = resolvedType,
             sdkSource = sig.sdk,
             startMs = startMs,
             endMs = null,
@@ -260,7 +267,9 @@ internal class EventDetectorImpl(
             return
         }
         val event = DetectedEvent(
-            type = sig.type,
+            // Activity-level matches carry no per-pattern discriminator, so the
+            // signature's defaultType is the correct fallback (Sprint 0 shape).
+            type = sig.defaultType,
             sdkSource = sig.sdk,
             startMs = nowMs,
             endMs = null,
