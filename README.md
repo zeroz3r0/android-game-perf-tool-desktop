@@ -43,6 +43,7 @@ No hace falta saber ADB ni usar la terminal. Si alguna vez has conectado un tel�
 ### Captura en directo
 
 - **Métricas en tiempo real** durante la sesión: FPS, frame time (p1% / p50% / p99%), CPU, memoria (total / native / java), temperatura (CPU / GPU / batería / piel del dispositivo) y nivel de batería
+- **FPower (mW por frame, v4.5.0)**: métrica industria-first popularizada por PerfDog que mide el consumo de batería normalizado por FPS. Detecta regresiones de eficiencia energética que el FPS o el consumo total NO muestran. Sin root, lectura vía sysfs de batería
 - **Grabación de vídeo** del gameplay en paralelo, mediante el codificador de hardware del teléfono (no afecta al FPS del juego que estás midiendo)
 - **Marcadores durante la sesión**: pulsa un botón para marcar el instante exacto en el que ocurre algo (aparece un anuncio intersticial, cambia la escena, se carga algo pesado, etc.). Luego los puedes revisar en el informe
 
