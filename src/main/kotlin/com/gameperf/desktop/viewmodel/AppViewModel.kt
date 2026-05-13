@@ -749,6 +749,59 @@ class AppViewModel(
             "screenrecord (encoder, espacio en /sdcard o memoria insuficiente). " +
             "Las métricas posteriores siguen siendo válidas."
 
+    /**
+     * H.7 Phase 2.1 — extracted from [startCapture]. Owns the iOS-vs-Android branching
+     * for the *initial* screenrecord segment (segment 0). The caller supplies
+     * `deviceId`, `isIosDevice` and the timestamp-based `sessionId`; everything else
+     * (`recordSegment`, `recordProcess`, `_captureWarning`, `iosBridge`,
+     * `sidecarLifecycle`, `adb`, `_deviceInfo`) is read/written as a ViewModel field
+     * — same semantics as the inlined block. Returns the sidecar capture id when on
+     * iOS and the start succeeded, or null otherwise (Android always returns null;
+     * the Android process is tracked via the [recordProcess] field).
+     *
+     * Behaviour is byte-equivalent to the prior inlined block. Tested transitively
+     * via existing AppViewModel*Test suites.
+     */
+    private suspend fun bootstrapScreenRecording(
+        deviceId: String,
+        isIosDevice: Boolean,
+        sessionId: String
+    ): String? {
+        if (!isIosDevice) adb.cleanRecordings(deviceId)
+        recordSegment = 0
+        // v4.0.0: iOS screen recording goes through the sidecar
+        var iosScreenCaptureId: String? = null
+        if (isIosDevice) {
+            iosScreenCaptureId = iosBridge?.let { bridge ->
+                val client = (bridge as? IosBridge)?.let {
+                    sidecarLifecycle?.client
+                }
+                client?.startScreenRecord(deviceId, sessionId)
+            }
+            if (iosScreenCaptureId == null) {
+                _captureWarning.value = "No se pudo iniciar la grabación de pantalla en iOS. Las métricas sí se están registrando."
+            }
+        } else {
+            // Android: Pick screenrecord profile based on device tier
+            val recordProfile = run {
+                val gpu = _deviceInfo.value?.gpu ?: ""
+                val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
+                when (tier) {
+                    com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
+                    com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
+                        AdbBridge.ScreenRecordProfile.COMPACT
+                    else -> AdbBridge.ScreenRecordProfile.STANDARD
+                }
+            }
+            recordProcess = startSegmentWithRetry(deviceId, sessionId, recordSegment, recordProfile)
+            if (recordProcess == null) {
+                _captureWarning.value = "El video no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las metricas si se estan registrando."
+                System.err.println("AppViewModel: screenrecord failed for both COMPACT and STANDARD profiles on device $deviceId")
+            }
+        }
+        return iosScreenCaptureId
+    }
+
     fun init() {
         // Startup file-system cleanup runs on IO before the rest of init touches the
         // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
@@ -1072,38 +1125,7 @@ class AppViewModel(
             val videoDir = File(System.getProperty("user.home"), "GamePerf Reports")
             videoDir.mkdirs()
             val sessionId = java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(java.util.Date())
-            if (!isIosDevice) adb.cleanRecordings(device.id)
-            recordSegment = 0
-            // v4.0.0: iOS screen recording goes through the sidecar
-            var iosScreenCaptureId: String? = null
-            if (isIosDevice) {
-                iosScreenCaptureId = iosBridge?.let { bridge ->
-                    val client = (bridge as? IosBridge)?.let {
-                        sidecarLifecycle?.client
-                    }
-                    client?.startScreenRecord(device.id, sessionId)
-                }
-                if (iosScreenCaptureId == null) {
-                    _captureWarning.value = "No se pudo iniciar la grabación de pantalla en iOS. Las métricas sí se están registrando."
-                }
-            } else {
-                // Android: Pick screenrecord profile based on device tier
-                val recordProfile = run {
-                    val gpu = _deviceInfo.value?.gpu ?: ""
-                    val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
-                    when (tier) {
-                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
-                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
-                            AdbBridge.ScreenRecordProfile.COMPACT
-                        else -> AdbBridge.ScreenRecordProfile.STANDARD
-                    }
-                }
-                recordProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, recordProfile)
-                if (recordProcess == null) {
-                    _captureWarning.value = "El video no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las metricas si se estan registrando."
-                    System.err.println("AppViewModel: screenrecord failed for both COMPACT and STANDARD profiles on device ${device.id}")
-                }
-            }
+            val iosScreenCaptureId = bootstrapScreenRecording(device.id, isIosDevice, sessionId)
             // Note: startSegmentWithRetry already includes the 1500ms warm-up delay (and
             // a second one if the retry path is taken), no need to delay again here.
 
