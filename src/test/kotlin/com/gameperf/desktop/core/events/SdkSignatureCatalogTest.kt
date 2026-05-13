@@ -35,7 +35,7 @@ class SdkSignatureCatalogTest {
     // ═══════ catalog-level invariants ═══════
 
     @Test
-    fun `catalog contains exactly the eighteen catalogued SDKs and engines`() {
+    fun `catalog contains exactly the nineteen catalogued SDKs and engines`() {
         // If anyone removes an SDK they MUST update this assertion deliberately.
         // v4.4.0 baseline: six ad/billing SDKs.
         // v4.4.1 quickfix (audit obs #308): added three engine LOADING signatures.
@@ -45,7 +45,9 @@ class SdkSignatureCatalogTest {
         // Review — `16 + 1 = 17`.
         // instrumented-event-mode (Sprint 3): added GamePerf opt-in signature —
         // `17 + 1 = 18`.
-        assertEquals(18, SdkSignatureCatalog.ALL.size, "expected 18 catalogued SDKs/engines")
+        // Sprint 4 (vr-event-detection): added VRRuntime VR_SESSION signature —
+        // `18 + 1 = 19`.
+        assertEquals(19, SdkSignatureCatalog.ALL.size, "expected 19 catalogued SDKs/engines")
         val sdkNames = SdkSignatureCatalog.ALL.map { it.sdk }.toSet()
         val expected = setOf(
             "AdMob",
@@ -70,6 +72,8 @@ class SdkSignatureCatalogTest {
             "Google Play In-App Review",
             // instrumented-event-mode (Sprint 3) — INSTRUMENTED opt-in
             "GamePerf",
+            // Sprint 4 — VR_SESSION (vr-event-detection)
+            "VRRuntime",
         )
         assertEquals(expected, sdkNames, "catalog SDK set drifted from spec")
     }
@@ -97,14 +101,17 @@ class SdkSignatureCatalogTest {
 
             // activityClasses MAY be empty for engine-level signatures (Unity
             // Engine, Unreal Engine, Cocos2d), SDK_INIT signatures, the
-            // System ANR signature, and the instrumented-event-mode GamePerf
-            // signature — none of these push their own Android Activity onto
+            // System ANR signature, the instrumented-event-mode GamePerf
+            // signature, and VR_SESSION signatures (VR runtimes don't push
+            // their own Android Activity — they take over the active surface)
+            // — none of these push their own Android Activity onto
             // the back stack. For ad/billing SDKs (which DO push activities)
             // the field must still be populated.
             val noActivityRequired = sig.defaultType == EventType.LOADING ||
                 sig.defaultType == EventType.SDK_INIT ||
                 sig.defaultType == EventType.ANR ||
-                sig.defaultType == EventType.INSTRUMENTED
+                sig.defaultType == EventType.INSTRUMENTED ||
+                sig.defaultType == EventType.VR_SESSION
             if (!noActivityRequired) {
                 assertTrue(sig.activityClasses.isNotEmpty(), "${sig.sdk}: no activity classes")
             }
@@ -115,6 +122,37 @@ class SdkSignatureCatalogTest {
     fun `SDK names are unique`() {
         val names = SdkSignatureCatalog.ALL.map { it.sdk }
         assertEquals(names.size, names.toSet().size, "duplicate SDK names found")
+    }
+
+    @Test
+    fun `no VR regex literals leak outside SdkSignatureCatalog (single-source invariant)`() {
+        // Sprint 4 (vr-event-detection) — spec VR-001 anti-duplication
+        // invariant. The VR signatures live ONLY in
+        // `SdkSignatureCatalog.kt`. Any VR regex literal in another file
+        // under `core/events/` would split the single source of truth
+        // (the same trap CLAUDE.md documents for `ToolResolver` in
+        // v4.2.13). We scan the production source tree for any file that
+        // is NOT `SdkSignatureCatalog.kt` but contains canonical VR
+        // tokens (`vrapi_`, `xrBegin`, `xrEnd`, `HMDMounted`,
+        // `XR_SESSION_STATE_`). Any hit fails the test.
+        val coreEventsDir = java.io.File("src/main/kotlin/com/gameperf/desktop/core/events")
+        assertTrue(coreEventsDir.isDirectory, "core/events/ source dir not found at expected path")
+        val vrTokens = listOf("vrapi_", "xrBegin", "xrEnd", "HMDMounted", "XR_SESSION_STATE_")
+        val offenders = coreEventsDir.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .filter { it.name != "SdkSignatureCatalog.kt" }
+            .flatMap { file ->
+                val text = file.readText(StandardCharsets.UTF_8)
+                vrTokens.filter { token -> text.contains(token) }
+                    .map { token -> "${file.name}: contains '$token'" }
+            }
+            .toList()
+        assertTrue(
+            offenders.isEmpty(),
+            "VR regex literals leaked outside SdkSignatureCatalog.kt — single-source invariant " +
+                "broken (Sprint 4 vr-event-detection spec VR-001). Offenders:\n" +
+                offenders.joinToString("\n"),
+        )
     }
 
     @Test

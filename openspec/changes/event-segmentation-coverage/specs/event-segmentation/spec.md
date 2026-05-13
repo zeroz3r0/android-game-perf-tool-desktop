@@ -9,7 +9,7 @@ This spec defines the NEW capability `event-segmentation` and the EXTENDED behav
 - **Sprint 2a** — SCREEN_TRANSITION: `ESC-SCRN-*`.
 - **Sprint 2b** — Rewarded vs Interstitial split: `ESC-REW-*`.
 - **Sprint 3** — INSTRUMENTED opt-in protocol: `ESC-INSTR-*`.
-- **Sprint 4a** — VR_SESSION + VR_RETURN_TRANSITION (Quest): `ESC-VR-*`.
+- **Sprint 4a** — VR_SESSION + VR_RETURN_TRANSITION (Quest): `ESC-VR-*`. **SHIPPED & ARCHIVED 2026-05-13** as separate change `vr-event-detection` (`openspec/archive/2026-05-13-vr-event-detection/`). `ESC-VR-001..005` SUPERSEDED by `VR-001..VR-008` (multi-runtime: Oculus VrApi + OVRPlugin + OpenXR).
 - **Sprint 5** — RATE_US: `ESC-RATE-*`.
 - **Sprint 6** — LEVEL_LOADING already shipped: marked as `[x]` in tasks; covered by existing `LoadingSignaturesTest` (NO new requirement ID).
 
@@ -331,7 +331,11 @@ Each of the four rewarded-extended SDKs MUST have a dedicated `*-rewarded.log` f
 
 ## 8. VR_SESSION + VR_RETURN_TRANSITION (Sprint 4a — Quest only)
 
-### Requirement: ESC-VR-001 — Quest VrApi-tag-presence detection
+> **STATUS: SUPERSEDED & ARCHIVED 2026-05-13.** Sprint 4a was implemented as a separate change `vr-event-detection` (archived at `openspec/archive/2026-05-13-vr-event-detection/`). Its delta requirements `VR-001..VR-008` REPLACE the original `ESC-VR-001..005` stubs below — the implemented behaviour adopts a MULTI-RUNTIME Tier 1 approach (Oculus VrApi + OVRPlugin + OpenXR via a single combined "VRRuntime" `SdkSignature` row), an ADDITIVE catalog-level `dedupWindowMs` field (5s default for VRRuntime, null for everything else), POST-HOC `VR_RETURN_TRANSITION` synthesis on close (2s window with `confidence=LOW`, `endInferred=true`), and HINT confidence in KDoc until lab-verified. The original Quest-only `VrApi`-tag-presence + silent-gap-close design was DROPPED in favour of explicit open/close patterns per runtime. See the archive folder for proposal/spec/design/tasks/apply-progress/verify-report.
+>
+> The five stubs below are retained for historical traceability only — they are NOT active requirements. Do NOT add tests against them; tests live under `VR-001..VR-008` (see archive `spec.md`).
+
+### Requirement: ESC-VR-001 — Quest VrApi-tag-presence detection (SUPERSEDED by VR-001..VR-003)
 
 The catalog SHALL include `SdkSignature("Meta Quest VR", defaultType=VR_SESSION, logcatTags=["VrApi", "XrPerformanceManager"], activityClasses=emptyList(), openPatterns=listOf(Regex(".+") to VR_SESSION), closePatterns=emptyList())`. The open regex `".+"` matches any non-empty line on those tags — the VR session is identified by the PRESENCE of `VrApi` logcat traffic, not by any specific message content.
 
@@ -349,7 +353,9 @@ The catalog SHALL include `SdkSignature("Meta Quest VR", defaultType=VR_SESSION,
 - THEN NO new event MUST be emitted
 - AND the detector MUST update an internal `lastVrApiLineMs` to the most recent VrApi line timestamp
 
-### Requirement: ESC-VR-002 — Silent-gap close heuristic
+### Requirement: ESC-VR-002 — Silent-gap close heuristic (SUPERSEDED — DROPPED)
+
+(Silent-gap close was replaced by explicit close patterns per runtime — see VR-002/VR-003 in archive `spec.md`. The detector closes a VR_SESSION when a matching close-pattern fires, not via a silent gap. The original text is preserved below for historical traceability.)
 
 The system MUST close the open VR_SESSION when no VrApi-tagged line has arrived for a configurable silent-gap window (default `VR_SESSION_SILENT_GAP_MS = 5000`). The close MUST be invoked during the dumpsys tick (every 1Hz check) — the detector compares `now - lastVrApiLineMs` against the window.
 
@@ -365,7 +371,9 @@ The system MUST close the open VR_SESSION when no VrApi-tagged line has arrived 
 - WHEN the tick fires at t=15000
 - THEN the VR_SESSION MUST be closed (inclusive boundary)
 
-### Requirement: ESC-VR-003 — VR_RETURN_TRANSITION delayed emission
+### Requirement: ESC-VR-003 — VR_RETURN_TRANSITION delayed emission (SUPERSEDED by VR-005)
+
+(Replaced by VR-005 — same intent, different implementation: 2s synthesis window (not 5s), `confidence=LOW` + `endInferred=true` (not MEDIUM), invoked from BOTH `tryClose` and `stop()` force-close paths. See archive `spec.md`.)
 
 WHEN a VR_SESSION closes, the system MUST emit a separate `EventType.VR_RETURN_TRANSITION` event with `startMs = vrSessionCloseMs`, `endMs = vrSessionCloseMs + VR_RETURN_TRANSITION_WINDOW_MS` (default 5000), `confidence=MEDIUM`, `metadata=mapOf("source" to "vr-recovery-window")`. This event captures the post-VR thermal/RAM/GPU recovery window flagged by user as critical.
 
@@ -379,7 +387,9 @@ WHEN a VR_SESSION closes, the system MUST emit a separate `EventType.VR_RETURN_T
 - GIVEN VR_SESSION reaches its cap (rare; usually 1-2 per session) and is dropped per EVT-009
 - THEN VR_RETURN_TRANSITION SHALL NOT be emitted for the dropped session
 
-### Requirement: ESC-VR-004 — Tag allowlist includes VrApi and XrPerformanceManager
+### Requirement: ESC-VR-004 — Tag allowlist includes VrApi and XrPerformanceManager (SUPERSEDED — DROPPED `XrPerformanceManager`)
+
+(Replaced by VR-001/VR-003 which narrow the allowlist to `VrApi`, `OVRPlugin`, `OpenXR`, `xrInstance`. `XrPerformanceManager` was DROPPED — the VrApi-tag-presence path it backed is no longer the detection strategy. See archive `spec.md`.)
 
 The `logcatTagArgs()` MUST include `VrApi:D` AND `XrPerformanceManager:D`.
 
@@ -389,7 +399,9 @@ The `logcatTagArgs()` MUST include `VrApi:D` AND `XrPerformanceManager:D`.
 - WHEN `logcatTagArgs()` is invoked
 - THEN the returned list MUST include `"VrApi:D"` AND `"XrPerformanceManager:D"`
 
-### Requirement: ESC-VR-005 — Quest-only scope documentation
+### Requirement: ESC-VR-005 — Quest-only scope documentation (SUPERSEDED by VR-002/VR-003/VR-007)
+
+(Replaced by multi-runtime detection: the shipped change targets Meta Quest (VrApi + OVRPlugin) AND OpenXR-compatible runtimes (Pico v2.4+, Vive Focus 3, Samsung XR routing through OpenXR). HINT confidence in KDoc (VR-007) documents lab-verification status; the strict "Quest-only" caveat is no longer accurate. Pico proprietary PxrApi, HTC WaveVR proprietary, and Google Daydream remain explicitly out of scope. See archive `proposal.md` "Out of Scope".)
 
 The detection logic in Sprint 4a applies ONLY to Meta Quest devices running Horizon OS. The system MUST NOT claim to detect VR sessions on Android XR (non-Quest), generic OpenXR runtimes, Google Cardboard, or non-Quest Unreal XR. The report and README MUST document this scope.
 

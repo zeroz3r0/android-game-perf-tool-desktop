@@ -268,7 +268,11 @@ Sprints 1, 2a, 2b, 3, 4a, 5 are mutually independent after Sprint 0 lands. They 
 
 ## Sprint 4a — VR_SESSION + VR_RETURN_TRANSITION (Quest)
 
-**Estimated effort: 1.0d. Quest-only; generic OpenXR deferred to Sprint 4b.**
+> **STATUS: SHIPPED & ARCHIVED 2026-05-13** as separate change `vr-event-detection` — see `openspec/archive/2026-05-13-vr-event-detection/`. The 24 task batches below are SUPERSEDED by the 17 tasks in the archived `tasks.md`. The shipped approach is multi-runtime (Oculus VrApi + OVRPlugin + OpenXR via a single combined "VRRuntime" `SdkSignature` row) with additive `dedupWindowMs` field, post-hoc 2s `VR_RETURN_TRANSITION` synthesis from BOTH `tryClose` and `stop()` paths, and HINT confidence in KDoc. The original `XrPerformanceManager` tag + silent-gap-close design was DROPPED. `PostVrRecoveryRule` (Batch 4a.3) is NOT part of this archive — it remains a backlog follow-up under Sprint 4a closure. The Quest-only caveat (Batch 4a.4.6/4a.4.7) was REPLACED by multi-runtime support (no in-report caveat is rendered today).
+>
+> The batches below are retained for historical traceability only — they are NOT active work. Do NOT execute them. New work on VR detection should branch from the archived `vr-event-detection` change.
+
+**Estimated effort: 1.0d. Quest-only; generic OpenXR deferred to Sprint 4b.** *(Original estimate; superseded.)*
 
 ### Batch 4a.1 — Meta Quest VR signature + silent-gap close
 

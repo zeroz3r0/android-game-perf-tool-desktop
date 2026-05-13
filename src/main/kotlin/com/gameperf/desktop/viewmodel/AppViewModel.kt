@@ -134,6 +134,17 @@ data class LiveMetrics(
     val fpower: Double = 0.0,
     val fpowerHistory: List<Double> = emptyList(),
     val fpowerTimed: List<TimedSample> = emptyList(),
+    // v4.5.0 -- GPU usage (`gpu-usage-percent` Sprint 1). Mirrors the FPower
+    // live tile pattern at line 134-136 of this file. [gpuUsage] is the
+    // single scalar (0..100 when [gpuAvailable] is true; -1 sentinel
+    // otherwise, matching [GpuSnapshot.usagePct]). [gpuAvailable] is the
+    // truthful default `false` because pre-v4.5.0 sessions NEVER captured
+    // GPU (opposite of thermalAvailable which defaults true). [gpuUsageHistory]
+    // mirrors [cpuHistory] snapshot pattern at line 112 so the chart draws
+    // without extra plumbing. See `sdd/gpu-usage-percent/design` §6.
+    val gpuUsage: Int = -1,
+    val gpuAvailable: Boolean = false,
+    val gpuUsageHistory: List<Int> = emptyList(),
 )
 
 /**
@@ -217,6 +228,18 @@ data class SessionResult(
     // SerializableEntry mirror persists this; the ReportGenerator renders the
     // brief at TOP of body BEFORE summary cards (design ADR-7).
     val devActionBrief: com.gameperf.desktop.core.devactions.DevActionBrief? = null,
+    // v4.5.0 -- GPU usage (`gpu-usage-percent` Sprint 1, spec GPU-017). Persisted
+    // on the SessionResult so the report generator (Batch 5) and the
+    // HistoryEntry builder both see the same source-of-truth values. The
+    // [gpuAvailable] default is `false` (NOT `true` like thermal/fpower) because
+    // pre-v4.5.0 sessions never captured GPU. [maxGpuUsage] uses the -1
+    // sentinel matching [GpuSnapshot.usagePct] so an empty history round-trips
+    // cleanly through `.gameperf` JSON. See `sdd/gpu-usage-percent/design` §6.
+    val gpuAvailable: Boolean = false,
+    val gpuDiagnostic: com.gameperf.desktop.core.model.GpuDiagnostic? = null,
+    val gpuUsageHistory: List<Int> = emptyList(),
+    val gpuUsageTimed: List<TimedSample> = emptyList(),
+    val maxGpuUsage: Int = -1,
 )
 
 /**
@@ -1181,6 +1204,17 @@ class AppViewModel(
             // Pre-first-poll the history-append guard `fpowerMwPerFrame > 0` excludes
             // the sentinel so no -1.0 value contaminates [fpowerHistory].
             var lastFPower = com.gameperf.desktop.core.model.FPowerSnapshot()
+            // v4.5.0 — GPU usage live cache (`gpu-usage-percent` Sprint 1, design §6).
+            // Default snapshot is "unavailable" (`gpuAvailable=false`, usagePct=-1)
+            // because pre-first-poll AND pre-v4.5.0 sessions never captured GPU. The
+            // per-tick capture overwrites this on the medium-cadence tier
+            // (`iterCount % 4 == 0`). History-append guard below filters the sentinel
+            // via `gpuAvailable && usagePct >= 0` so no -1 contaminates [gpuUsageHistory].
+            // Parallels [lastFPower] above. iOS branch leaves this at default (iOS GPU
+            // is out of Sprint 1 scope) ⇒ persisted gpuAvailable=false always.
+            val gpuUsageHistory = mutableListOf<Int>()
+            val gpuUsageTimed = mutableListOf<TimedSample>()
+            var lastGpu = com.gameperf.desktop.core.model.GpuSnapshot()
 
             // v4.3.5 — FPS resume after ad / interstitial:
             // After an ad close the SurfaceFlinger layer cache (inside AdbBridge)
@@ -1288,6 +1322,15 @@ class AppViewModel(
                         val fpowerSnap = adb.captureFPower(device.id, currentFps = rawFpsForFpower)
                         if (shouldStop) break
                         lastFPower = fpowerSnap
+                        // v4.5.0 — GPU usage poll co-located with thermal at the medium tier
+                        // (`gpu-usage-percent` Sprint 1, design §6 wiring map). Cadence
+                        // `iterCount % 4 == 0` ≈ every 2 s (mirrors thermal/fpower). The
+                        // bridge owns vendor cache + perfcounter lifecycle so steady-state
+                        // cost is 1 cat per tick. iOS branch above does NOT call this —
+                        // iOS GPU is out of Sprint 1 scope. Result lands in lastGpu and is
+                        // appended to gpuUsageHistory by the record-cadence block below.
+                        lastGpu = adb.captureGpuUsage(device.id)
+                        if (shouldStop) break
                     }
 
                     // SLOW TIER (every ~5s): memory
@@ -1446,6 +1489,20 @@ class AppViewModel(
                         if (fpowerHistory.size > MAX_HISTORY_SIZE) fpowerHistory.removeFirst()
                         if (fpowerTimed.size > MAX_HISTORY_SIZE) fpowerTimed.removeFirst()
                     }
+                    // v4.5.0 — GPU usage history append (`gpu-usage-percent` Sprint 1,
+                    // spec GPU-015 / GPU-016 / design §6). Co-located with thermal +
+                    // fpower at the same `iterCount % 4 == 1` cadence so all three
+                    // medium-tier metrics land together. The gate enforces BOTH the
+                    // availability flag AND `usagePct >= 0` so neither the unavailable
+                    // sentinel (-1) NOR the Adreno gpubusy warm-up baseline tick
+                    // (returns gpuAvailable=false even when probe succeeded — see
+                    // design §4) contaminate the persisted timeline.
+                    if (lastGpu.gpuAvailable && lastGpu.usagePct >= 0) {
+                        gpuUsageHistory.add(lastGpu.usagePct)
+                        gpuUsageTimed.add(TimedSample(sampleSecond, lastGpu.usagePct.toDouble()))
+                        if (gpuUsageHistory.size > MAX_HISTORY_SIZE) gpuUsageHistory.removeFirst()
+                        if (gpuUsageTimed.size > MAX_HISTORY_SIZE) gpuUsageTimed.removeFirst()
+                    }
                 }
                 if (frame != null && frame.avgFrameTime > 0) {
                     frameTimeAvgHistory.add(frame.avgFrameTime)
@@ -1525,6 +1582,14 @@ class AppViewModel(
                     fpower = if (lastFPower.fpowerAvailable) lastFPower.fpowerMwPerFrame else 0.0,
                     fpowerHistory = if (snapshotHistories) fpowerHistory.toList() else prev.fpowerHistory,
                     fpowerTimed = if (snapshotHistories) fpowerTimed.toList() else prev.fpowerTimed,
+                    // v4.5.0 — GPU usage live tile (design §6). The HUD field uses the
+                    // -1 sentinel when unavailable (NOT 0.0 like fpower) so a real 0%
+                    // reading stays distinguishable from "no sensor" (a flat 0% Adreno
+                    // load is a legitimate idle frame, not a sensor failure). The HUD
+                    // renderer reads [gpuAvailable] to decide between "--" and "0%".
+                    gpuUsage = if (lastGpu.gpuAvailable) lastGpu.usagePct else -1,
+                    gpuAvailable = lastGpu.gpuAvailable,
+                    gpuUsageHistory = if (snapshotHistories) gpuUsageHistory.toList() else prev.gpuUsageHistory,
                 )
             }
 
@@ -1891,6 +1956,15 @@ class AppViewModel(
                     // for backward compat (ADR-3) so legacy fixtures stay
                     // byte-equivalent.
                     cpuTotalHistory = cpuTotalHistory.toList(),
+                    // v4.5.0 — `gpu-usage-percent` Sprint 1 (design §6 wiring map).
+                    // Thread the per-session GPU payload from lastGpu (most recent
+                    // diagnostic) + gpuUsageHistory (timeline). Defaults on the
+                    // generator preserve legacy rendering when these args are absent
+                    // (pre-v4.5.0 history re-renders, ReportRenderingTest fixtures).
+                    gpuAvailable = lastGpu.gpuAvailable,
+                    gpuDiagnostic = lastGpu.diagnostic,
+                    gpuUsageHistory = gpuUsageHistory.toList(),
+                    maxGpuUsage = if (gpuUsageHistory.isNotEmpty()) gpuUsageHistory.max() else -1,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")
@@ -1941,6 +2015,17 @@ class AppViewModel(
                 // HistoryEntry builder below carries it into history.json.
                 // Null when no rules fired (DAB-008 negative case).
                 devActionBrief = devActionBrief,
+                // v4.5.0 — `gpu-usage-percent` Sprint 1 (spec GPU-017 / design §6).
+                // Persist the per-session GPU payload on SessionResult so the
+                // HistoryEntry builder below carries it into history.json via a
+                // single source of truth (same pattern as fpower / cpuTotalHistory
+                // / detectionMode above). Empty history → maxGpuUsage = -1
+                // sentinel matching [GpuSnapshot.usagePct].
+                gpuAvailable = lastGpu.gpuAvailable,
+                gpuDiagnostic = lastGpu.diagnostic,
+                gpuUsageHistory = gpuUsageHistory.toList(),
+                gpuUsageTimed = gpuUsageTimed.toList(),
+                maxGpuUsage = if (gpuUsageHistory.isNotEmpty()) gpuUsageHistory.max() else -1,
             )
 
             // P95 frame time
@@ -2027,6 +2112,16 @@ class AppViewModel(
                 // test at the HistoryEntry boundary (same pattern as
                 // detectionMode / events / fpower fields above).
                 cpuTotalHistory = _result.value.cpuTotalHistory,
+                // v4.5.0 — `gpu-usage-percent` Sprint 1 (spec GPU-017).
+                // Mirror of [SessionResult.gpu*] fields. Same single-source-of-
+                // truth pattern via _result.value so a future refactor that
+                // drops a field at the SessionResult build site is caught by
+                // the .gameperf round-trip test at the HistoryEntry boundary.
+                gpuAvailable = _result.value.gpuAvailable,
+                maxGpuUsage = _result.value.maxGpuUsage,
+                gpuUsageHistory = _result.value.gpuUsageHistory,
+                gpuUsageTimed = _result.value.gpuUsageTimed,
+                gpuDiagnostic = _result.value.gpuDiagnostic,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {

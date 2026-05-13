@@ -77,6 +77,14 @@ internal class EventDetectorImpl(
          *  components mentioning "Start proc" elsewhere are rejected by
          *  the tag-allowlist check in [handleLogLine]. */
         private val AM_PROC_START_RE: Regex = Regex("""\bStart proc\b.*?:(\S+?)/""")
+
+        /** Sprint 4 (VR-005) — heuristic duration applied to synthesised
+         *  [EventType.VR_RETURN_TRANSITION] events. The 2s window is the
+         *  approximate time a player spends taking the headset off and
+         *  returning their attention to the 2D screen after a VR session;
+         *  combined with `endInferred = true` and `confidence = LOW` it
+         *  discloses the heuristic nature. Design D2. */
+        const val VR_RETURN_TRANSITION_WINDOW_MS = 2_000L
     }
 
     private val _events = MutableStateFlow<List<DetectedEvent>>(emptyList())
@@ -175,6 +183,15 @@ internal class EventDetectorImpl(
             }
             replaceEvents(closed)
             openEvents.clear()
+            // Sprint 4 (VR-005) — mirror the per-pattern close hook: any
+            // force-closed VR_SESSION must also produce a synthetic
+            // VR_RETURN_TRANSITION so the report keeps parity between the
+            // pattern-driven close path and the session-end force-close
+            // path. Both flag `endInferred=true` because the wall-clock
+            // boundary is heuristic in either case.
+            for (vrEv in closed) {
+                emitVrReturnTransition(vrEv)
+            }
         }
         logcatCapture = null
         dumpsysPoller = null
@@ -535,6 +552,22 @@ internal class EventDetectorImpl(
         ) {
             return
         }
+        // Sprint 4 (VR-004) — same-SDK dedup window. When the signature
+        // opts in via [SdkSignature.dedupWindowMs] (currently only the
+        // VRRuntime row, 5s), suppress a new open whose sdkSource already
+        // has an open event within the window. Meta's runtime layers
+        // OpenXR on top of VrApi so both fire opens on the same headset
+        // session; without dedup the report would show two parallel
+        // VR_SESSION events for one user action. Check runs BEFORE the
+        // existing same-key short-circuit because the keys differ across
+        // patterns (`VrApi:...` vs `OpenXR:...`) — that check alone is
+        // insufficient.
+        sig.dedupWindowMs?.let { window ->
+            val recentSameSdk = openEvents.values.firstOrNull {
+                it.sdkSource == sig.sdk && (startMs - it.startMs) <= window
+            }
+            if (recentSameSdk != null) return
+        }
         if (totalEventCount() >= MAX_EVENTS) {
             ensureWarning(
                 "Se alcanzó el tope de $MAX_EVENTS eventos detectados; el reporte " +
@@ -762,6 +795,55 @@ internal class EventDetectorImpl(
         // Drop from openEvents (any key whose value carries this id).
         val keyToRemove = openEvents.entries.firstOrNull { it.value.id == open.id }?.key
         if (keyToRemove != null) openEvents.remove(keyToRemove)
+
+        // Sprint 4 (VR-005) — when a VR_SESSION just closed, synthesise a
+        // VR_RETURN_TRANSITION so the report can distinguish the headset-on
+        // window from the post-VR return-to-2D window. The helper is a
+        // no-op for non-VR_SESSION events.
+        emitVrReturnTransition(updated)
+    }
+
+    /**
+     * Sprint 4 (VR-005) — emit a synthetic [EventType.VR_RETURN_TRANSITION]
+     * event immediately after a [EventType.VR_SESSION] closes.
+     *
+     * Marker shape per design D2:
+     *  - `startMs` = closed VR_SESSION's `endMs` (or `startMs` as a defensive
+     *    fallback if endMs is unexpectedly null — shouldn't happen for a
+     *    just-closed event, but the type system allows it).
+     *  - `endMs` = `startMs + 2_000L` (2s heuristic return window).
+     *  - `confidence` = LOW (heuristic, not pattern-matched).
+     *  - `signatureMatched` = `"synthesized:vr-return-transition"` so the
+     *    report can disclose the synthesis source.
+     *  - `endInferred` = true (the 2s end is a heuristic, not a real signal).
+     *  - `metadata.source` = `"synthesized"` and `metadata.fromEventId`
+     *    points at the closed VR_SESSION for cross-correlation.
+     *
+     * Guards: skipped for any non-VR_SESSION type (no-op for the 17 other
+     * event types) and respects the [MAX_EVENTS] cap so a runaway report
+     * cannot exceed the histogram-fallback threshold via synthesis alone.
+     */
+    private fun emitVrReturnTransition(closed: DetectedEvent) {
+        if (closed.type != EventType.VR_SESSION) return
+        if (totalEventCount() >= MAX_EVENTS) {
+            ensureWarning(
+                "Se alcanzó el tope de $MAX_EVENTS eventos detectados; el reporte " +
+                    "usará un histograma agregado."
+            )
+            return
+        }
+        val startMs = closed.endMs ?: closed.startMs
+        val transition = DetectedEvent(
+            type = EventType.VR_RETURN_TRANSITION,
+            sdkSource = closed.sdkSource,
+            startMs = startMs,
+            endMs = startMs + VR_RETURN_TRANSITION_WINDOW_MS,
+            confidence = Confidence.LOW,
+            signatureMatched = "synthesized:vr-return-transition",
+            metadata = mapOf("source" to "synthesized", "fromEventId" to closed.id),
+            endInferred = true,
+        )
+        appendEvent(transition)
     }
 
     private fun appendEvent(event: DetectedEvent) {
