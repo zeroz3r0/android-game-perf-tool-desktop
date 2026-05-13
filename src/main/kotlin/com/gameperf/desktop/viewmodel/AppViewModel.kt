@@ -145,6 +145,17 @@ data class LiveMetrics(
     val gpuUsage: Int = -1,
     val gpuAvailable: Boolean = false,
     val gpuUsageHistory: List<Int> = emptyList(),
+    // v4.6.x — Network bandwidth (total app, `network-bandwidth-total-app`
+    // change). [networkRxBytes] / [networkTxBytes] are cumulative byte
+    // counters for the game UID scoped via `service call netstats` (binder)
+    // or `dumpsys netstats detail --uid` (fallback). Sentinels are -1L when
+    // `networkAvailable=false` (mirrors [GpuSnapshot.usagePct] -1 sentinel
+    // precedent). HUD reads `networkAvailable` to decide between "--" and
+    // a KB/MB human-readable formatted value. See `sdd/network-bandwidth-
+    // total-app/spec` NET-001.
+    val networkRxBytes: Long = -1L,
+    val networkTxBytes: Long = -1L,
+    val networkAvailable: Boolean = false,
 )
 
 /**
@@ -240,6 +251,20 @@ data class SessionResult(
     val gpuUsageHistory: List<Int> = emptyList(),
     val gpuUsageTimed: List<TimedSample> = emptyList(),
     val maxGpuUsage: Int = -1,
+    // v4.6.x — Network bandwidth (`network-bandwidth-total-app`, spec NET-001).
+    // Persisted on the SessionResult so the report generator (Phase 6) and the
+    // HistoryEntry builder both see the same source-of-truth values. The
+    // [networkAvailable] default is `false` (NOT `true` like thermal/fpower)
+    // because pre-v4.6.x sessions never captured network (mirrors GPU
+    // precedent). [maxNetworkRxBytes] / [maxNetworkTxBytes] use the -1L
+    // sentinel matching [NetworkSnapshot.rxBytes] / [NetworkSnapshot.txBytes]
+    // so an empty history round-trips cleanly through `.gameperf` JSON.
+    val networkAvailable: Boolean = false,
+    val networkDiagnostic: com.gameperf.desktop.core.model.NetworkDiagnostic? = null,
+    val networkRxHistory: List<Long> = emptyList(),
+    val networkTxHistory: List<Long> = emptyList(),
+    val maxNetworkRxBytes: Long = -1L,
+    val maxNetworkTxBytes: Long = -1L,
 )
 
 /**
@@ -388,6 +413,21 @@ class AppViewModel(
         // Default = "unavailable" (gpuAvailable=false, usagePct=-1).
         var lastGpu: com.gameperf.desktop.core.model.GpuSnapshot =
             com.gameperf.desktop.core.model.GpuSnapshot()
+
+        // ===== Network bandwidth (v4.6.x, `network-bandwidth-total-app`) =====
+        // Cumulative byte counters per tick. Append-gate: snap.networkAvailable
+        // && snap.rxBytes >= 0 (mirrors gpu append-gate at runCaptureLoop).
+        // [resolvedUid] is the cached UID for the captured package; resolved
+        // once on the first medium-tier tick and reused for the rest of the
+        // session. -1 sentinel means "not yet resolved or lookup failed".
+        val networkRxHistory: MutableList<Long> = mutableListOf()
+        val networkTxHistory: MutableList<Long> = mutableListOf()
+        val networkRxTimed: MutableList<TimedSample> = mutableListOf()
+        val networkTxTimed: MutableList<TimedSample> = mutableListOf()
+        // Default = "unavailable" (networkAvailable=false, rxBytes=txBytes=-1L).
+        var lastNetwork: com.gameperf.desktop.core.model.NetworkSnapshot =
+            com.gameperf.desktop.core.model.NetworkSnapshot()
+        var resolvedUid: Int = -1
 
         // ===== Loop state =====
         var iterCount: Int = 0
@@ -916,6 +956,39 @@ class AppViewModel(
     }
 
     /**
+     * v4.6.x — Lazy UID resolver + network probe (`network-bandwidth-total-app`).
+     *
+     * Extracted as a helper to keep [runCaptureLoop] CCN flat. First call per
+     * session: resolves the package UID via [AdbBridgeApi.getUidForPackage]
+     * (single shell `cmd package list packages -U <pkg>`), caches the result
+     * on [CaptureAccumulators.resolvedUid]. Subsequent calls reuse the
+     * cached UID. On lookup failure the UID stays -1 forever and the network
+     * snapshot stays at its default unavailable state with zero shell calls.
+     *
+     * Returns the latest [com.gameperf.desktop.core.model.NetworkSnapshot] —
+     * either the freshly captured snapshot when UID is resolved OR the prior
+     * one on [acc] (which itself defaults to the "no data" sentinel state).
+     *
+     * Pure-side-effect-free with respect to outer ViewModel state — only
+     * mutates [acc.resolvedUid]. Tests cover this via the
+     * [AppViewModelNetworkTest] persistence boundary.
+     */
+    private fun resolveNetworkUid(
+        acc: CaptureAccumulators,
+        deviceId: String,
+        pkg: String,
+    ): com.gameperf.desktop.core.model.NetworkSnapshot {
+        if (acc.resolvedUid < 0) {
+            acc.resolvedUid = adb.getUidForPackage(deviceId, pkg) ?: -1
+        }
+        return if (acc.resolvedUid >= 0) {
+            adb.captureNetworkBandwidth(deviceId, pkg, acc.resolvedUid)
+        } else {
+            acc.lastNetwork
+        }
+    }
+
+    /**
      * v4.5.0 — Main capture sampling loop (H.7 Phase 3.1 extract).
      *
      * Runs the per-tick metrics sampling pipeline until [shouldStop] flips true or
@@ -1035,6 +1108,18 @@ class AppViewModel(
                     // iOS GPU is out of Sprint 1 scope. Result lands in acc.lastGpu and is
                     // appended to acc.gpuUsageHistory by the record-cadence block below.
                     acc.lastGpu = adb.captureGpuUsage(deviceId)
+                    if (shouldStop) break
+                    // v4.6.x — Network bandwidth poll (`network-bandwidth-
+                    // total-app`, spec NET-007). Co-located with thermal /
+                    // fpower / gpu at the medium tier. UID resolved lazily
+                    // ONCE per session via helper [resolveNetworkUid] (keeps
+                    // CCN cost of this block to a single conditional — D7
+                    // protection of runCaptureLoop ≤ 200). When the lookup
+                    // fails (package not installed, permission denied) the
+                    // helper returns -1 and the snapshot stays at the
+                    // default unavailable state — zero shell calls for the
+                    // rest of the session.
+                    acc.lastNetwork = resolveNetworkUid(acc, deviceId, pkg)
                     if (shouldStop) break
                 }
 
@@ -1208,6 +1293,23 @@ class AppViewModel(
                     if (acc.gpuUsageHistory.size > MAX_HISTORY_SIZE) acc.gpuUsageHistory.removeFirst()
                     if (acc.gpuUsageTimed.size > MAX_HISTORY_SIZE) acc.gpuUsageTimed.removeFirst()
                 }
+                // v4.6.x — Network bandwidth history append (`network-
+                // bandwidth-total-app`, spec NET-001). Same medium-tier
+                // cadence as gpu / fpower / thermal so all four lands in
+                // the same tick. Gate enforces BOTH the availability flag
+                // AND `rxBytes >= 0` so the -1L sentinel (pre-first-poll
+                // or IMPLAUSIBLE_VALUE / BINDER_UNAVAILABLE diagnostic
+                // paths) stays out of the persisted timeline.
+                if (acc.lastNetwork.networkAvailable && acc.lastNetwork.rxBytes >= 0) {
+                    acc.networkRxHistory.add(acc.lastNetwork.rxBytes)
+                    acc.networkTxHistory.add(acc.lastNetwork.txBytes)
+                    acc.networkRxTimed.add(TimedSample(sampleSecond, acc.lastNetwork.rxBytes.toDouble()))
+                    acc.networkTxTimed.add(TimedSample(sampleSecond, acc.lastNetwork.txBytes.toDouble()))
+                    if (acc.networkRxHistory.size > MAX_HISTORY_SIZE) acc.networkRxHistory.removeFirst()
+                    if (acc.networkTxHistory.size > MAX_HISTORY_SIZE) acc.networkTxHistory.removeFirst()
+                    if (acc.networkRxTimed.size > MAX_HISTORY_SIZE) acc.networkRxTimed.removeFirst()
+                    if (acc.networkTxTimed.size > MAX_HISTORY_SIZE) acc.networkTxTimed.removeFirst()
+                }
             }
             if (frame != null && frame.avgFrameTime > 0) {
                 acc.frameTimeAvgHistory.add(frame.avgFrameTime)
@@ -1295,6 +1397,15 @@ class AppViewModel(
                 gpuUsage = if (acc.lastGpu.gpuAvailable) acc.lastGpu.usagePct else -1,
                 gpuAvailable = acc.lastGpu.gpuAvailable,
                 gpuUsageHistory = if (snapshotHistories) acc.gpuUsageHistory.toList() else prev.gpuUsageHistory,
+                // v4.6.x — Network bandwidth live tile (`network-bandwidth-
+                // total-app`, spec NET-001). HUD reads `networkAvailable`
+                // to decide between "--" and KB/MB human-readable
+                // formatting. Sentinel -1L preserved when unavailable so the
+                // HUD distinguishes "never sampled" from a legitimate "0
+                // bytes" reading.
+                networkRxBytes = if (acc.lastNetwork.networkAvailable) acc.lastNetwork.rxBytes else -1L,
+                networkTxBytes = if (acc.lastNetwork.networkAvailable) acc.lastNetwork.txBytes else -1L,
+                networkAvailable = acc.lastNetwork.networkAvailable,
             )
         }
     }
@@ -2081,6 +2192,18 @@ class AppViewModel(
                 gpuUsageHistory = acc.gpuUsageHistory.toList(),
                 gpuUsageTimed = acc.gpuUsageTimed.toList(),
                 maxGpuUsage = if (acc.gpuUsageHistory.isNotEmpty()) acc.gpuUsageHistory.max() else -1,
+                // v4.6.x — Network bandwidth (`network-bandwidth-total-app`,
+                // spec NET-001). Persist the per-session network payload on
+                // SessionResult so the report generator (Phase 6) and the
+                // HistoryEntry builder both see the same source-of-truth
+                // values. Empty history → maxNetwork*Bytes = -1L sentinel
+                // matching [NetworkSnapshot.rxBytes] / [NetworkSnapshot.txBytes].
+                networkAvailable = acc.lastNetwork.networkAvailable,
+                networkDiagnostic = acc.lastNetwork.diagnostic,
+                networkRxHistory = acc.networkRxHistory.toList(),
+                networkTxHistory = acc.networkTxHistory.toList(),
+                maxNetworkRxBytes = if (acc.networkRxHistory.isNotEmpty()) acc.networkRxHistory.max() else -1L,
+                maxNetworkTxBytes = if (acc.networkTxHistory.isNotEmpty()) acc.networkTxHistory.max() else -1L,
             )
 
             // P95 frame time
@@ -2177,6 +2300,18 @@ class AppViewModel(
                 gpuUsageHistory = _result.value.gpuUsageHistory,
                 gpuUsageTimed = _result.value.gpuUsageTimed,
                 gpuDiagnostic = _result.value.gpuDiagnostic,
+                // v4.6.x — `network-bandwidth-total-app` (spec NET-001).
+                // Mirror of [SessionResult.network*] fields. Same single-
+                // source-of-truth pattern via _result.value so a future
+                // refactor that drops a field at the SessionResult build
+                // site is caught by the `.gameperf` round-trip test at the
+                // HistoryEntry boundary (mirrors the v4.5.0 GPU mirror).
+                networkAvailable = _result.value.networkAvailable,
+                maxNetworkRxBytes = _result.value.maxNetworkRxBytes,
+                maxNetworkTxBytes = _result.value.maxNetworkTxBytes,
+                networkRxHistory = _result.value.networkRxHistory,
+                networkTxHistory = _result.value.networkTxHistory,
+                networkDiagnostic = _result.value.networkDiagnostic,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {
