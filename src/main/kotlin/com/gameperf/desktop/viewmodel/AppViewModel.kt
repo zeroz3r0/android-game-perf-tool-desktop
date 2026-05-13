@@ -835,6 +835,71 @@ class AppViewModel(
         }
     }
 
+    /**
+     * H.7 Phase 2.3 — Chained screen-recording launcher (Android only).
+     *
+     * Chains 175-second segments via `recordJob`. iOS uses sidecar single-session, so
+     * this is a no-op on iOS (the `isIosDevice` gate is intentionally kept INSIDE the
+     * helper so callers don't have to duplicate it). See the in-line comment block in
+     * the body for the v3.1.10/11/12/13 regression history that drove the current
+     * stop→delay(3000)→start cadence and the retry-then-warn fallback.
+     */
+    private fun launchChainedRecording(deviceId: String, sessionId: String, isIosDevice: Boolean) {
+        // Chain recordings every ~175s (before the 180s screenrecord hard limit).
+        //
+        // v3.1.12 — moov atom corruption fix:
+        //   The previous version used `delay(1000)` between stop and next start.
+        //   That was insufficient: when `stopScreenRecord` calls `destroyForcibly()`,
+        //   the adb shell process dies but the `screenrecord` binary running on the
+        //   device needs time to flush the MP4 moov atom to /sdcard. 1 second was
+        //   not enough on the Pixel XL (Android 10) and similar devices — the
+        //   resulting `_0.mp4` ended up with no moov atom, was unplayable, and the
+        //   pull+concat path produced a broken videoPath that the player couldn't
+        //   read ("No se pudo leer la duración del video" error).
+        //   Increased to 3 seconds. The chain interval is still ~175s overall so
+        //   the extra 2 seconds per chain step is negligible (~2% overhead at 10 min).
+        //
+        // v3.1.11: only chain if the initial segment actually started.
+        // v3.1.13: chain segments now go through [startSegmentWithRetry] just like
+        // the first one. If a chain segment dies during warm-up we get the same
+        // stderr-capture + retry-with-STANDARD treatment, AND if it ultimately
+        // fails we surface an EXPLICIT warning to the user instead of breaking
+        // silently. This closes the v3.1.10/11/12 regression saga.
+        // v4.0.0: chain recording is Android-only (iOS uses sidecar single-session)
+        if (isIosDevice) return
+        val chainProfile = run {
+            val gpu = _deviceInfo.value?.gpu ?: ""
+            val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
+            when (tier) {
+                com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
+                com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
+                    AdbBridge.ScreenRecordProfile.COMPACT
+                else -> AdbBridge.ScreenRecordProfile.STANDARD
+            }
+        }
+        recordJob = scope.launch {
+            while (!shouldStop) {
+                delay(175_000)
+                if (shouldStop) break
+                adb.stopScreenRecord(recordProcess)
+                delay(3000)
+                recordSegment++
+                val nextProcess = startSegmentWithRetry(deviceId, sessionId, recordSegment, chainProfile)
+                if (nextProcess == null) {
+                    recordChainFailures++
+                    val msg = describeChainFailure(recordSegment)
+                    System.err.println("AppViewModel: chain segment $recordSegment failed after retry — $msg")
+                    if (_captureWarning.value == null) {
+                        _captureWarning.value = msg
+                    }
+                    recordProcess = null
+                    break
+                }
+                recordProcess = nextProcess
+            }
+        }
+    }
+
     fun init() {
         // Startup file-system cleanup runs on IO before the rest of init touches the
         // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
@@ -1171,60 +1236,7 @@ class AppViewModel(
 
             launchEventDetector(device.id, pkg, isIosDevice)
 
-            // Chain recordings every ~175s (before the 180s screenrecord hard limit).
-            //
-            // v3.1.12 — moov atom corruption fix:
-            //   The previous version used `delay(1000)` between stop and next start.
-            //   That was insufficient: when `stopScreenRecord` calls `destroyForcibly()`,
-            //   the adb shell process dies but the `screenrecord` binary running on the
-            //   device needs time to flush the MP4 moov atom to /sdcard. 1 second was
-            //   not enough on the Pixel XL (Android 10) and similar devices — the
-            //   resulting `_0.mp4` ended up with no moov atom, was unplayable, and the
-            //   pull+concat path produced a broken videoPath that the player couldn't
-            //   read ("No se pudo leer la duración del video" error).
-            //   Increased to 3 seconds. The chain interval is still ~175s overall so
-            //   the extra 2 seconds per chain step is negligible (~2% overhead at 10 min).
-            //
-            // v3.1.11: only chain if the initial segment actually started.
-            // v3.1.13: chain segments now go through [startSegmentWithRetry] just like
-            // the first one. If a chain segment dies during warm-up we get the same
-            // stderr-capture + retry-with-STANDARD treatment, AND if it ultimately
-            // fails we surface an EXPLICIT warning to the user instead of breaking
-            // silently. This closes the v3.1.10/11/12 regression saga.
-            // v4.0.0: chain recording is Android-only (iOS uses sidecar single-session)
-            if (!isIosDevice) {
-                val chainProfile = run {
-                    val gpu = _deviceInfo.value?.gpu ?: ""
-                    val tier = com.gameperf.desktop.core.HardwareScoring.detectTier(gpu)
-                    when (tier) {
-                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOW,
-                        com.gameperf.desktop.core.HardwareScoring.DeviceTier.LOWER_MID ->
-                            AdbBridge.ScreenRecordProfile.COMPACT
-                        else -> AdbBridge.ScreenRecordProfile.STANDARD
-                    }
-                }
-                recordJob = scope.launch {
-                    while (!shouldStop) {
-                        delay(175_000)
-                        if (shouldStop) break
-                        adb.stopScreenRecord(recordProcess)
-                        delay(3000)
-                        recordSegment++
-                        val nextProcess = startSegmentWithRetry(device.id, sessionId, recordSegment, chainProfile)
-                        if (nextProcess == null) {
-                            recordChainFailures++
-                            val msg = describeChainFailure(recordSegment)
-                            System.err.println("AppViewModel: chain segment $recordSegment failed after retry — $msg")
-                            if (_captureWarning.value == null) {
-                                _captureWarning.value = msg
-                            }
-                            recordProcess = null
-                            break
-                        }
-                        recordProcess = nextProcess
-                    }
-                }
-            }
+            launchChainedRecording(device.id, sessionId, isIosDevice)
 
             // Independent timer that updates elapsed every second (smooth UI counter)
             // This runs independently of ADB commands which can take 2-3s each
