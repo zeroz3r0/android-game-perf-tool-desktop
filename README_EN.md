@@ -68,6 +68,41 @@ You don't need to know ADB or touch a terminal. If you've ever plugged a phone i
 
 ---
 
+## Instrumented mode (opt-in)
+
+If you have access to the game's source code, you can label the segments you care about **yourself**. GamePerf listens to the `GamePerf` logcat tag and recognises four fixed phases with the syntax `<TAG>.Start` / `<TAG>.Stop`:
+
+- `CINEMATIC` — cinematic sequences or intros
+- `TUTORIAL` — guided tutorial screens
+- `GAMEPLAY_DENSE` — heavy combat, enemy waves, particle-heavy sections
+- `SPECIAL_EVENT` — bosses, one-shot events, critical moments
+
+From the game code, emit these lines when each phase starts and ends:
+
+```kotlin
+// On entering the cinematic
+Log.i("GamePerf", "CINEMATIC.Start")
+
+// On leaving
+Log.i("GamePerf", "CINEMATIC.Stop")
+```
+
+Or from a test terminal, to verify the integration before instrumenting your build:
+
+```bash
+adb shell log -t GamePerf -p i "CINEMATIC.Start"
+adb shell log -t GamePerf -p i "CINEMATIC.Stop"
+```
+
+Important notes:
+
+- Phase names are **strictly case-sensitive**: `CINEMATIC` is recognised, `Cinematic` or `cinematic` are silently ignored. This avoids false positives from non-instrumented log lines
+- Any other tag (e.g., `MENU.Start`) is silently dropped — the phase list is fixed by design so averages stay comparable across captures
+- This is an **opt-in** mode: if your game does NOT emit `GamePerf`-tagged lines, GamePerf works exactly as before (automatic SDK detection + manual markers). No build change required to keep using GamePerf
+- Instrumented phases show up in the HTML report as events badged `INSTRUMENTADO`, and their ranges are excluded from game FPS averages just like an ad or a loading screen — so you can ask the report for "just the dense-gameplay metrics" without the intro cinematic skewing the mean
+
+---
+
 ## Installation
 
 ### Mac (Intel or Apple Silicon)

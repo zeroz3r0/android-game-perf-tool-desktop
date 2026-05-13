@@ -68,6 +68,41 @@ No hace falta saber ADB ni usar la terminal. Si alguna vez has conectado un tel�
 
 ---
 
+## Modo instrumentado (opt-in)
+
+Si tienes acceso al código fuente del juego, puedes etiquetar **tú mismo** los tramos que te interesa medir. GamePerf escucha el tag `GamePerf` de logcat y reconoce cuatro fases fijas con sintaxis `<TAG>.Start` / `<TAG>.Stop`:
+
+- `CINEMATIC` — secuencias cinemáticas o intros
+- `TUTORIAL` — pantallas de tutorial guiado
+- `GAMEPLAY_DENSE` — combate denso, oleadas, sección con muchas partículas
+- `SPECIAL_EVENT` — jefes, eventos puntuales, momentos críticos
+
+Desde el código del juego, emite estas líneas cuando arranca y termina cada fase:
+
+```kotlin
+// Al entrar en la cinemática
+Log.i("GamePerf", "CINEMATIC.Start")
+
+// Al salir
+Log.i("GamePerf", "CINEMATIC.Stop")
+```
+
+O desde una terminal de prueba, para verificar la integración antes de instrumentar:
+
+```bash
+adb shell log -t GamePerf -p i "CINEMATIC.Start"
+adb shell log -t GamePerf -p i "CINEMATIC.Stop"
+```
+
+Notas importantes:
+
+- Los nombres de fase son **estrictamente sensibles a mayúsculas**: `CINEMATIC` se reconoce, `Cinematic` o `cinematic` se ignoran sin aviso. Esto evita falsos positivos con líneas de log no instrumentadas
+- Cualquier otro tag (por ejemplo `MENU.Start`) se descarta silenciosamente — la lista de fases es fija y deliberada para que las medias sean comparables entre capturas
+- Es un modo **opt-in**: si tu juego no emite líneas con el tag `GamePerf`, GamePerf sigue funcionando exactamente igual que antes (detección automática de SDKs + marcadores manuales). No tienes que cambiar nada en tu build para empezar a usar GamePerf
+- Las fases instrumentadas aparecen en el reporte HTML como eventos con badge `INSTRUMENTADO`, y sus rangos se excluyen de las medias de FPS del juego igual que un anuncio o una pantalla de carga — así puedes pedirle al reporte «quiero solo las métricas del combate denso» sin que la cinemática inicial contamine la media
+
+---
+
 ## Instalación
 
 ### Mac (Intel o Apple Silicon)

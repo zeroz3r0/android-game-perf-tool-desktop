@@ -34,7 +34,7 @@ class SdkSignatureCatalogTest {
     // ═══════ catalog-level invariants ═══════
 
     @Test
-    fun `catalog contains exactly the seventeen catalogued SDKs and engines`() {
+    fun `catalog contains exactly the eighteen catalogued SDKs and engines`() {
         // If anyone removes an SDK they MUST update this assertion deliberately.
         // v4.4.0 baseline: six ad/billing SDKs.
         // v4.4.1 quickfix (audit obs #308): added three engine LOADING signatures.
@@ -42,7 +42,9 @@ class SdkSignatureCatalogTest {
         // System ANR — `9 + 7 = 16`.
         // Sprint 5 (event-segmentation-coverage): added Google Play In-App
         // Review — `16 + 1 = 17`.
-        assertEquals(17, SdkSignatureCatalog.ALL.size, "expected 17 catalogued SDKs/engines")
+        // instrumented-event-mode (Sprint 3): added GamePerf opt-in signature —
+        // `17 + 1 = 18`.
+        assertEquals(18, SdkSignatureCatalog.ALL.size, "expected 18 catalogued SDKs/engines")
         val sdkNames = SdkSignatureCatalog.ALL.map { it.sdk }.toSet()
         val expected = setOf(
             "AdMob",
@@ -65,6 +67,8 @@ class SdkSignatureCatalogTest {
             "System ANR",
             // Sprint 5 — RATE_US
             "Google Play In-App Review",
+            // instrumented-event-mode (Sprint 3) — INSTRUMENTED opt-in
+            "GamePerf",
         )
         assertEquals(expected, sdkNames, "catalog SDK set drifted from spec")
     }
@@ -91,13 +95,15 @@ class SdkSignatureCatalogTest {
             }
 
             // activityClasses MAY be empty for engine-level signatures (Unity
-            // Engine, Unreal Engine, Cocos2d), SDK_INIT signatures, and the
-            // System ANR signature — none of these push their own Android
-            // Activity onto the back stack. For ad/billing SDKs (which DO
-            // push activities) the field must still be populated.
+            // Engine, Unreal Engine, Cocos2d), SDK_INIT signatures, the
+            // System ANR signature, and the instrumented-event-mode GamePerf
+            // signature — none of these push their own Android Activity onto
+            // the back stack. For ad/billing SDKs (which DO push activities)
+            // the field must still be populated.
             val noActivityRequired = sig.defaultType == EventType.LOADING ||
                 sig.defaultType == EventType.SDK_INIT ||
-                sig.defaultType == EventType.ANR
+                sig.defaultType == EventType.ANR ||
+                sig.defaultType == EventType.INSTRUMENTED
             if (!noActivityRequired) {
                 assertTrue(sig.activityClasses.isNotEmpty(), "${sig.sdk}: no activity classes")
             }
@@ -120,6 +126,19 @@ class SdkSignatureCatalogTest {
         }
         // Args length = unique tags + the trailing *:S
         assertEquals(expectedUniqueTags.size + 1, args.size)
+    }
+
+    @Test
+    fun `logcatTagArgs includes GamePerf colon D for instrumented opt-in mode`() {
+        // Spec IEM-007 — the instrumented opt-in protocol requires the
+        // `GamePerf` tag to flow through the adb logcat filter so the
+        // detector ever sees `<TAG>.Start` / `<TAG>.Stop` lines emitted
+        // from the game process. This test pins that contract explicitly.
+        val args = SdkSignatureCatalog.logcatTagArgs()
+        assertTrue(
+            args.contains("GamePerf:D"),
+            "logcatTagArgs() must include `GamePerf:D` so adb logcat passes instrumented opt-in lines",
+        )
     }
 
     // ═══════ AdMob ═══════

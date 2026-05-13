@@ -311,42 +311,21 @@ Each of the four rewarded-extended SDKs MUST have a dedicated `*-rewarded.log` f
 
 ## 7. INSTRUMENTED opt-in protocol (Sprint 3)
 
-### Requirement: ESC-INSTR-001 — GamePerf protocol tag
+> **STATUS: SUPERSEDED & ARCHIVED 2026-05-13.** Sprint 3 was implemented as a separate, stricter change `instrumented-event-mode` (archived at `openspec/archive/2026-05-13-instrumented-event-mode/`). Its delta requirements `IEM-001..IEM-008` REPLACE the original `ESC-INSTR-001..003` stubs below — the implemented behaviour adopts a FIXED 4-tag allowlist (`CINEMATIC`, `TUTORIAL`, `GAMEPLAY_DENSE`, `SPECIAL_EVENT`), CASE-SENSITIVE matching, and per-tag-keyed lifecycle (a `CINEMATIC.Stop` only closes its matching `CINEMATIC.Start`, never a sibling `TUTORIAL.Start`). The `name=` / `group=` parameter capture from `ESC-INSTR-002` was intentionally dropped in favour of the minimal protocol. See the archive folder for proposal/spec/design/tasks/apply-progress/verify-report.
+>
+> The three stubs below are retained for historical traceability only — they are NOT active requirements. Do NOT add tests against them; tests live under `IEM-001..IEM-008` (see archive `spec.md`).
 
-The catalog SHALL include `SdkSignature("GamePerf", defaultType=INSTRUMENTED, logcatTags=["GamePerf"], activityClasses=emptyList(), openPatterns=listOf(Regex("(?i)^\\s*([A-Z_]+)\\.Start(?:\\s+name=\"([^\"]+)\")?(?:\\s+group=\"([^\"]+)\")?") to INSTRUMENTED), closePatterns=listOf(Regex("(?i)^\\s*([A-Z_]+)\\.Stop(?:\\s+name=\"([^\"]+)\")?")))`.
+### Requirement: ESC-INSTR-001 — GamePerf protocol tag (SUPERSEDED by IEM-001)
 
-#### Scenario: GamePerf CINEMATIC.Start opens INSTRUMENTED event
+(Original wording archived. Replaced by IEM-001 — see `openspec/archive/2026-05-13-instrumented-event-mode/spec.md`.)
 
-- GIVEN the GamePerf catalog entry registered
-- WHEN `handleLogLine(LogLine(tag="GamePerf", msg="CINEMATIC.Start name=\"intro_cutscene\""))` is invoked at t=1000
-- THEN ONE event MUST be emitted with `type=INSTRUMENTED`, `sdkSource="GamePerf"`, `confidence=HIGH`, `startMs=1000`, `metadata["phase"]=="CINEMATIC"`, `metadata["name"]=="intro_cutscene"`
+### Requirement: ESC-INSTR-002 — Phase name and group capture (SUPERSEDED — DROPPED)
 
-#### Scenario: GamePerf CINEMATIC.Stop closes INSTRUMENTED event
+(`name=` / `group=` parameter capture intentionally NOT carried forward. The minimal protocol uses only `{Tag}.Start` / `{Tag}.Stop` with the tag itself as the only payload, surfaced via `metadata["tag"]`. If richer payloads are needed later, file a new change.)
 
-- GIVEN an INSTRUMENTED event with `phase=CINEMATIC, name="intro_cutscene"` open from t=1000
-- WHEN `handleLogLine(LogLine(tag="GamePerf", msg="CINEMATIC.Stop name=\"intro_cutscene\""))` is invoked at t=5000
-- THEN the event MUST be closed with `endMs=5000`
+### Requirement: ESC-INSTR-003 — Tag allowlist includes GamePerf (SUPERSEDED by IEM-007)
 
-### Requirement: ESC-INSTR-002 — Phase name and group capture
-
-The detector MUST extract the `phase` from the regex group 1 of the open pattern, AND `name` from group 2 (optional), AND `group` from group 3 (optional). These MUST appear in `DetectedEvent.metadata` keys `phase`, `name`, `group`. Missing `name` results in `metadata["name"]==""`.
-
-#### Scenario: Stop without matching Start is ignored
-
-- GIVEN no open INSTRUMENTED event
-- WHEN `handleLogLine(LogLine(tag="GamePerf", msg="TUTORIAL.Stop name=\"first_battle\""))` is invoked
-- THEN NO event MUST be emitted
-- AND NO warning MUST be added (lone Stops are tolerated silently)
-
-### Requirement: ESC-INSTR-003 — Tag allowlist includes GamePerf
-
-The `logcatTagArgs()` MUST include `GamePerf:D`.
-
-#### Scenario: logcatTagArgs includes GamePerf
-
-- GIVEN the migrated catalog with the GamePerf signature
-- WHEN `logcatTagArgs()` is invoked
-- THEN the returned list MUST include `"GamePerf:D"`
+(Replaced by IEM-007 — same behaviour, different ID for clean cross-reference with the archived change.)
 
 ---
 
