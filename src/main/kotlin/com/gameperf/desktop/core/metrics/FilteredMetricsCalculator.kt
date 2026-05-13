@@ -1,7 +1,24 @@
 package com.gameperf.desktop.core.metrics
 
 import com.gameperf.desktop.core.events.DetectedEvent
+import com.gameperf.desktop.core.events.EventType
 import com.gameperf.desktop.viewmodel.TimedSample
+
+/**
+ * v4.6.0 AUTO-007 — Event types that represent NORMAL gameplay and MUST NOT
+ * be excluded from filtered aggregates. These auto-phase events are emitted
+ * for QA visibility (drill-down by phase in the report) but their samples
+ * still count toward the average FPS / CPU / etc. of the gameplay session.
+ *
+ * Contrast with: AD_INTERSTITIAL / AD_REWARDED / IAP_FLOW / LOADING / ANR /
+ * VR_SESSION / INSTRUMENTED / CUTSCENE — all CONTAMINATING events whose
+ * samples ARE excluded from the gameplay aggregates.
+ */
+private val NON_FILTERING_EVENT_TYPES: Set<EventType> = setOf(
+    EventType.MENU_NAV,
+    EventType.COMBAT_PHASE,
+    EventType.TUTORIAL_PHASE,
+)
 
 /**
  * Computes [MetricsAggregates] with optional time-range exclusion.
@@ -68,6 +85,12 @@ object FilteredMetricsCalculator {
     ): List<TimeRange> {
         if (events.isEmpty()) return emptyList()
         val padded = events.mapNotNull { ev ->
+            // v4.6.0 AUTO-007: skip NON_FILTERING_EVENT_TYPES (MENU_NAV /
+            // COMBAT_PHASE / TUTORIAL_PHASE) — they represent normal gameplay
+            // and their samples must count toward the gameplay aggregates.
+            // CUTSCENE is intentionally NOT in the skip list: cinematic
+            // sections break FPS averages just like ads do.
+            if (ev.type in NON_FILTERING_EVENT_TYPES) return@mapNotNull null
             val end = ev.endMs ?: return@mapNotNull null
             // Guard against malformed events where endMs < startMs — TimeRange
             // would throw on construction. Skip them so the calculator stays

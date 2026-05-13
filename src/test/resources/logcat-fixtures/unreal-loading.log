@@ -2,10 +2,10 @@
 05-12 10:15:00.500  4521  5544 I UE4: LogTemp: tick complete frame=240
 05-12 10:15:01.000  4521  5544 I MyGame: Player triggered level transition
 05-12 10:15:01.050  4521  5544 I LoadingScreen: LoadingScreen Shown
-05-12 10:15:01.100  4521  5544 I UE4: LogStreaming: Loading package /Game/Maps/Arena
+05-12 10:15:01.100  4521  5544 I UE4: LogStreaming: Loading package /Game/Maps/Cinematic_Intro
 05-12 10:15:01.150  4521  5544 I UE4: LogStreaming: Loading package /Game/Characters/HeroBP
 05-12 10:15:01.200  4521  5544 D UE4: LogStreaming: Async loading 47 packages
-05-12 10:15:01.400  4521  5544 D UE4: LogStreaming: Package /Game/Maps/Arena loaded
+05-12 10:15:01.400  4521  5544 D UE4: LogStreaming: Package /Game/Maps/Cinematic_Intro loaded
 05-12 10:15:01.600  4521  5544 D UE4: LogStreaming: Package /Game/Characters/HeroBP loaded
 05-12 10:15:01.800  4521  5544 D UE4: LogStreaming: Loading textures
 05-12 10:15:02.000  4521  5544 D UE4: LogStreaming: Loading audio
@@ -15,7 +15,17 @@
 05-12 10:15:02.800  4521  5544 D UE4: LogStreaming: Finalizing load
 05-12 10:15:03.000  4521  5544 I UE4: LogStreaming: Flushing async loaders
 05-12 10:15:03.050  4521  5544 I LoadingScreen: LoadingScreen Hidden
-05-12 10:15:03.100  4521  5544 I MyGame: Map ready for play
-05-12 10:15:03.200  4521  5544 I MyGame: Frame rendered fps=58
-05-12 10:15:03.700  4521  5544 I UE4: LogTemp: tick complete frame=250
-05-12 10:15:04.000  4521  5544 I MyGame: Frame rendered fps=60
+05-12 10:15:03.100  4521  5544 I MyGame: Cinematic ready
+05-12 10:15:08.200  4521  5544 I MyGame: Cinematic finished, going to tutorial
+05-12 10:15:08.300  4521  5544 I LoadingScreen: LoadingScreen Shown
+05-12 10:15:08.400  4521  5544 I UE4: LogStreaming: Loading package /Game/Maps/Tutorial_Beach
+05-12 10:15:08.900  4521  5544 I UE4: LogStreaming: Flushing async loaders
+05-12 10:15:09.000  4521  5544 I LoadingScreen: LoadingScreen Hidden
+05-12 10:15:09.100  4521  5544 I MyGame: Tutorial ready for play
+05-12 10:15:14.000  4521  5544 I MyGame: Tutorial complete, into the arena
+05-12 10:15:14.100  4521  5544 I LoadingScreen: LoadingScreen Shown
+05-12 10:15:14.200  4521  5544 I UE4: LogStreaming: Loading package /Game/Maps/Boss_Arena_01
+05-12 10:15:14.800  4521  5544 I UE4: LogStreaming: Flushing async loaders
+05-12 10:15:14.900  4521  5544 I LoadingScreen: LoadingScreen Hidden
+05-12 10:15:15.000  4521  5544 I MyGame: Boss fight begins
+05-12 10:15:15.200  4521  5544 I MyGame: Frame rendered fps=58

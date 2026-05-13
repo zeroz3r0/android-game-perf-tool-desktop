@@ -85,6 +85,13 @@ internal class EventDetectorImpl(
          *  combined with `endInferred = true` and `confidence = LOW` it
          *  discloses the heuristic nature. Design D2. */
         const val VR_RETURN_TRANSITION_WINDOW_MS = 2_000L
+
+        /** auto-phase-detection-from-engine-logs Phase 4 (AUTO-008) — if an
+         *  INSTRUMENTED phase Start fires within this window of an AUTO
+         *  phase event of the SAME [EventType], the AUTO event is replaced
+         *  (HIGH supersedes MEDIUM). Mirror of Sprint 2b
+         *  INTERSTITIAL→REWARDED upgrade window semantics. */
+        const val AUTO_PHASE_UPGRADE_WINDOW_MS = 1_000L
     }
 
     private val _events = MutableStateFlow<List<DetectedEvent>>(emptyList())
@@ -274,8 +281,45 @@ internal class EventDetectorImpl(
                 tag = line.tag,
                 source = "logcat",
             )
+            // auto-phase-detection-from-engine-logs (Phase 3) — after a
+            // LOADING event was emitted from a signature that declares a
+            // scenePattern (Unity Engine / Unreal Engine), capture the
+            // scene name and run [EnginePhaseClassifier]. If a phase
+            // matches, emit a SECONDARY auto-phase event with
+            // [Confidence.MEDIUM] (per D3). Helper kept in its own
+            // method so handleLogLine's CCN stays under the D7 cap.
+            if (openMatch.resolvedType == EventType.LOADING) {
+                emitAutoPhaseIfApplicable(openMatch.sig, line)
+            }
             return
         }
+        // Otherwise check if this line CLOSES any currently-open event,
+        // or — Sprint 2b — UPGRADES an INTERSTITIAL to REWARDED_VIDEO.
+        handleCloseOrUpgrade(line)
+        // auto-phase-detection-from-engine-logs (Phase 3) — fall-through
+        // standalone scene capture. Some engines only log on completion
+        // (Unity "Scene loaded successfully name=") so neither matchOpen
+        // nor any existing open event reacts. Walk signatures with a
+        // scenePattern whose tag matches this line and emit any
+        // classified AUTO phase. Idempotent — re-emits the same line
+        // never produce duplicates because the helper short-circuits on
+        // empty scene name.
+        for (sig in SdkSignatureCatalog.ALL) {
+            if (sig.scenePattern == null) continue
+            if (sig.logcatTags.none { it.equals(line.tag, ignoreCase = true) }) continue
+            emitAutoPhaseIfApplicable(sig, line)
+        }
+    }
+
+    /**
+     * Phase 3 helper extraction — pulls the existing close-or-upgrade loop
+     * out of [handleLogLine] into a private fn. Behaviour preserved
+     * exactly; the only reason for the extraction is to keep
+     * [handleLogLine]'s cyclomatic complexity under the D7 cap once
+     * [emitAutoPhaseIfApplicable] and the fall-through scene-capture loop
+     * land.
+     */
+    private fun handleCloseOrUpgrade(line: LogLine) {
         // Otherwise check if this line CLOSES any currently-open event,
         // or — Sprint 2b — UPGRADES an INTERSTITIAL to REWARDED_VIDEO.
         for (entry in openEvents.values.toList()) {
@@ -283,6 +327,15 @@ internal class EventDetectorImpl(
             val closePattern = SdkSignatureCatalog.matchClose(line, sig)
             if (closePattern != null) {
                 tryClose(entry, line.tsMs, closePattern.pattern)
+                // auto-phase-detection-from-engine-logs (Phase 3) —
+                // the engine's CLOSE line (e.g. "Scene loaded
+                // successfully name=MainMenu") also carries a scene
+                // name per scenePattern. Run the classifier here so
+                // games that only log on close (no `Loading scene:`
+                // prefix) still get the AUTO phase event.
+                if (entry.type == EventType.LOADING) {
+                    emitAutoPhaseIfApplicable(sig, line)
+                }
                 continue
             }
             // Sprint 2b — INTERSTITIAL → REWARDED upgrade (spec ESC-REW-002).
@@ -500,6 +553,12 @@ internal class EventDetectorImpl(
             )
             return
         }
+        // auto-phase-detection-from-engine-logs (Phase 4, AUTO-008) —
+        // INSTRUMENTED replaces a recent AUTO phase of the SAME EventType
+        // if it fired within [AUTO_PHASE_UPGRADE_WINDOW_MS] (1000ms).
+        // HIGH (INSTRUMENTED) supersedes MEDIUM (AUTO). Mirror Sprint 2b
+        // INTERSTITIAL→REWARDED upgrade-before-open pattern.
+        replaceRecentAutoPhase(tag, tsMs)
         val event = DetectedEvent(
             type = EventType.INSTRUMENTED,
             sdkSource = "GamePerf",
@@ -525,6 +584,108 @@ internal class EventDetectorImpl(
         val key = "GamePerf:instrumented:$tag"
         val open = openEvents[key] ?: return // IEM-005: orphan Stop silent
         tryClose(open, tsMs, "instrumented-stop")
+    }
+
+    // ───────────────── Auto-phase detection (Phase 3 + 4) ─────────────────
+    //
+    // After [handleLogLine] emits a LOADING event from a signature row
+    // that declares a scene-name capture regex (Unity Engine / Unreal
+    // Engine), [emitAutoPhaseIfApplicable] runs the captured scene name
+    // through [EnginePhaseClassifier]. A non-null result becomes a
+    // SECONDARY event with [Confidence.MEDIUM] (per design D3) and a
+    // synthetic [sdkSource] like `"Unity auto-phase"` so the report can
+    // visually disambiguate AUTO bands from INSTRUMENTED bands.
+    //
+    // The helper is intentionally extracted from [handleLogLine] to keep
+    // the latter's cyclomatic complexity under the D7 cap (≤200 across
+    // the startCapture call graph). Same pattern as [emitVrReturnTransition].
+
+    /**
+     * Phase 4 (AUTO-008) — INSTRUMENTED-over-AUTO upgrade window. If an
+     * INSTRUMENTED Start fires within this many milliseconds of an AUTO
+     * phase event of the SAME [EventType], the AUTO event is replaced
+     * by the INSTRUMENTED one. Mirrors Sprint 2b
+     * `upgradeEventType` upgrade-before-open pattern.
+     */
+    private val autoPhaseUpgradeWindowMs: Long get() = AUTO_PHASE_UPGRADE_WINDOW_MS
+
+    /**
+     * Phase 3 — when [sig] declares a [SdkSignature.scenePattern], capture
+     * the scene name from [line]'s message and call
+     * [EnginePhaseClassifier]. If a phase matches AND the global event cap
+     * is not hit, emit a secondary auto-phase event keyed
+     * `"<sdk>:autophase:<scene>"`. The key includes the scene name so two
+     * back-to-back loads of different scenes both produce their own AUTO
+     * event.
+     */
+    private fun emitAutoPhaseIfApplicable(sig: SdkSignature, line: LogLine) {
+        val pattern = sig.scenePattern ?: return
+        val scene = pattern.find(line.msg)?.groupValues?.getOrNull(1).orEmpty()
+        if (scene.isEmpty()) return
+        val phase = EnginePhaseClassifier.classify(sig.sdk, scene) ?: return
+        if (totalEventCount() >= MAX_EVENTS) {
+            ensureWarning(
+                "Se alcanzó el tope de $MAX_EVENTS eventos detectados; el reporte " +
+                    "usará un histograma agregado."
+            )
+            return
+        }
+        val engineLabel = if (sig.sdk.contains("Unity", ignoreCase = true)) "Unity"
+        else if (sig.sdk.contains("Unreal", ignoreCase = true)) "Unreal"
+        else sig.sdk
+        val event = DetectedEvent(
+            type = phase,
+            sdkSource = "$engineLabel auto-phase",
+            startMs = line.tsMs,
+            // AUTO phases are point-in-time markers — no natural close on
+            // logcat side. Left open; session stop synthesises endMs.
+            endMs = null,
+            confidence = Confidence.MEDIUM,
+            signatureMatched = "auto-phase:$scene",
+            metadata = mapOf(
+                "source" to "logcat",
+                "tag" to line.tag,
+                "scene" to scene,
+            ),
+        )
+        appendEvent(event)
+    }
+
+    /**
+     * Phase 4 (AUTO-008) — replace any AUTO-phase event of the same type
+     * as the incoming INSTRUMENTED [tag] that was emitted within
+     * [autoPhaseUpgradeWindowMs] of [nowMs]. Removes the AUTO event from
+     * the published list. The replacement order is left to the caller (the
+     * INSTRUMENTED event is appended right after this helper returns,
+     * preserving chronological ordering).
+     *
+     * Tag mapping: the 4-tag instrumented allowlist (CINEMATIC / TUTORIAL
+     * / COMBAT / MENU) maps 1:1 to the 4 AUTO EventTypes.
+     */
+    private fun replaceRecentAutoPhase(tag: String, nowMs: Long) {
+        val targetType = instrumentedTagToAutoPhaseType(tag) ?: return
+        val current = _events.value
+        val recentAuto = current.lastOrNull { ev ->
+            ev.type == targetType &&
+                ev.confidence == Confidence.MEDIUM &&
+                ev.sdkSource.endsWith("auto-phase") &&
+                (nowMs - ev.startMs) <= autoPhaseUpgradeWindowMs
+        } ?: return
+        _events.value = current.filter { it.id != recentAuto.id }
+    }
+
+    /**
+     * Map an instrumented tag to the AUTO [EventType] it should supersede.
+     * Returns `null` for any unknown tag (defensive — the allowlist in
+     * [InstrumentedLineParser] is the single source of truth on which
+     * tags actually reach this code path).
+     */
+    private fun instrumentedTagToAutoPhaseType(tag: String): EventType? = when (tag) {
+        "CINEMATIC" -> EventType.CUTSCENE
+        "TUTORIAL" -> EventType.TUTORIAL_PHASE
+        "COMBAT" -> EventType.COMBAT_PHASE
+        "MENU" -> EventType.MENU_NAV
+        else -> null
     }
 
     // ───────────────────────── Internal helpers ─────────────────────────

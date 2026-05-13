@@ -41,12 +41,21 @@ package com.gameperf.desktop.core.events
  *           Sprint 4 (vr-event-detection) introduced this for the
  *           multi-runtime VR signature (VrApi + OpenXR fire on the same
  *           Quest headset session within ~1s) — see design D1.
+ * @property scenePattern Optional regex with ONE capture group that
+ *           extracts the engine scene name from a logcat message. When
+ *           non-null, the detector (Phase 3 wiring of
+ *           auto-phase-detection-from-engine-logs) MUST run the captured
+ *           scene name through [EnginePhaseClassifier] AFTER emitting the
+ *           primary LOADING event. Default `null` = no scene-name capture
+ *           (legacy 19-entry behavior preserved).
  *
  * @since v4.4.0 (Sprint 0 of event-segmentation-coverage rewrites the
  *        `type` and `openPatterns` shape; closePatterns and activityClasses
  *        are unchanged). [dedupWindowMs] added in Sprint 4
  *        (vr-event-detection) — additive, default null, zero behavior
- *        change for the existing 18 entries.
+ *        change for the existing 19 entries. [scenePattern] added in
+ *        auto-phase-detection-from-engine-logs (Phase 2) — additive,
+ *        default null.
  */
 internal data class SdkSignature(
     val sdk: String,
@@ -56,4 +65,5 @@ internal data class SdkSignature(
     val openPatterns: List<Pair<Regex, EventType>>,
     val closePatterns: List<Regex>,
     val dedupWindowMs: Long? = null,
+    val scenePattern: Regex? = null,
 )

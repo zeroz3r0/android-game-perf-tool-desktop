@@ -17,7 +17,7 @@
 05-13 09:00:05.500  4321  9876 I MyGame: Frame rendered fps=60
 05-13 09:00:05.750  4321  9876 I Unity: Behaviour update tick=22
 05-13 09:00:06.000  4321  9876 I MyGame: Tutorial scene loaded
-05-13 09:00:06.250  4321  9876 I GamePerf: MENU.Start
+05-13 09:00:06.250  4321  9876 I GamePerf: UNKNOWN_PHASE.Start
 05-13 09:00:06.500  4321  9876 I GamePerf: TUTORIAL.Start
 05-13 09:00:06.750  4321  9876 I MyGame: Tutorial step=1
 05-13 09:00:07.000  4321  9876 I MyGame: Tutorial step=2

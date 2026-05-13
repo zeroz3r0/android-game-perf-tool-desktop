@@ -245,6 +245,14 @@ internal object SdkSignatureCatalog {
                 Regex("""(?i)\bScene loaded\b"""),
                 Regex("""(?i)\bAsyncOperation done\b"""),
             ),
+            // auto-phase-detection-from-engine-logs (Phase 2):
+            // capture scene name for downstream classifier.
+            // Matches "Loading scene: Boss_Arena_01" and
+            // "Scene loaded successfully name=Tutorial_01" — both forms
+            // documented in spec AUTO-003.
+            scenePattern = Regex(
+                """(?i)(?:Loading scene[:= ]+|Scene loaded successfully name=)([\w\-]+)""",
+            ),
         ),
         // ── Unreal Engine (package/level streaming) — v4.4.1 quickfix ───
         //
@@ -264,6 +272,14 @@ internal object SdkSignatureCatalog {
             closePatterns = listOf(
                 Regex("""(?i)\bFlushing async loaders\b"""),
                 Regex("""(?i)\bLoadingScreen\s+Hidden\b"""),
+            ),
+            // auto-phase-detection-from-engine-logs (Phase 2):
+            // capture map/level name from Unreal package load lines.
+            // Matches "Loading package /Game/Maps/Boss_Arena_01" and
+            // "LogLevelSwitch: TravelTo Tutorial_01" — both forms in
+            // spec AUTO-004.
+            scenePattern = Regex(
+                """(?:/Game/Maps/|LogLevelSwitch:\s*TravelTo\s+)([\w\-]+)""",
             ),
         ),
         // ── Cocos2d (scene transitions) — v4.4.1 quickfix ───────────────

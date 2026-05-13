@@ -162,12 +162,15 @@ class EventDetectorImplInstrumentedTest {
     // ═══════ Phase 3.8.R — IEM-002 unknown tag silently rejected ═══════
 
     @Test
-    fun `unknown UPPER_SNAKE tag MENU dot Start emits nothing`() {
-        // Spec IEM-002: only the 4-tag allowlist is recognised. Anything
-        // else is silently rejected — no event, no warning.
+    fun `unknown UPPER_SNAKE tag UNKNOWN_PHASE dot Start emits nothing`() {
+        // Spec IEM-002: only allowlisted tags are recognised. Anything
+        // else is silently rejected — no event, no warning. (NOTE: MENU
+        // was added to the allowlist by auto-phase-detection Phase 4 to
+        // back the AUTO-008 INSTRUMENTED-over-AUTO upgrade rule; this
+        // test now uses an explicitly synthetic tag.)
         val det = newDetectorAtTime(nowMs = 1_000L)
 
-        det.handleLogLine(instrumentedLine(tsMs = 1_000L, msg = "MENU.Start"))
+        det.handleLogLine(instrumentedLine(tsMs = 1_000L, msg = "UNKNOWN_PHASE.Start"))
 
         assertEquals(0, det.events.value.size, "unknown tag emits no event")
         assertTrue(det.warnings.value.isEmpty(), "unknown tag emits no warning")
@@ -283,7 +286,7 @@ class EventDetectorImplInstrumentedTest {
         assertEquals(
             4, events.size,
             "fixture must produce exactly 4 INSTRUMENTED events " +
-                "(noise lines `cinematic.Start` + `MENU.Start` must be silently rejected)",
+                "(noise lines `cinematic.Start` + `UNKNOWN_PHASE.Start` must be silently rejected)",
         )
 
         // All four events MUST be INSTRUMENTED and sourced from GamePerf.
