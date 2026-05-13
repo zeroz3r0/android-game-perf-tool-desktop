@@ -21,6 +21,8 @@ import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.conclusions.ConclusionEngine
 import com.gameperf.desktop.core.conclusions.ConclusionInput
 import com.gameperf.desktop.core.conclusions.Severity
+import com.gameperf.desktop.core.devactions.DevActionBrief
+import com.gameperf.desktop.core.devactions.DevActionEngine
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventDetector
 import com.gameperf.desktop.core.events.EventDetectorImpl
@@ -108,11 +110,30 @@ data class LiveMetrics(
     val nativeHistory: List<Long> = emptyList(),
     val javaHistory: List<Long> = emptyList(),
     val cpuHistory: List<Int> = emptyList(),
+    // v4.5.0 — GameBench-inspired dual CPU line (`cpu-total-vs-app-usage`).
+    // [cpuHistory] above carries the APP CPU% (per-process /proc/<pid>/stat).
+    // [cpuTotalHistory] carries the TOTAL DEVICE CPU% (sum across all
+    // processes from /proc/stat). Both populated by the same tick via
+    // [AdbBridgeApi.captureCpuDual]. The graph and HUD render them as two
+    // distinct lines so the dev distinguishes "device saturated by OS/other
+    // apps" from "my app saturating the device". Defaulted empty for
+    // backward compat with pre-cpu-dual LiveMetrics construction sites.
+    val cpuTotalHistory: List<Int> = emptyList(),
     val tempCpuHistory: List<Double> = emptyList(),
     val tempGpuHistory: List<Double> = emptyList(),
     val tempSkinHistory: List<Double> = emptyList(),
     val frameTimeHistory: List<Double> = emptyList(),
-    val allFrameTimes: List<Double> = emptyList()
+    val allFrameTimes: List<Double> = emptyList(),
+    // v4.5.0 — FPower live tile (mW/frame). The HUD reads [fpower] for the
+    // single scalar. [fpowerHistory] / [fpowerTimed] mirror the thermal-history
+    // snapshot pattern at lines 111-113 so the graphs draw without extra plumbing.
+    // Default 0.0 is the "no reading yet" value; the loop emits the real value
+    // only when [com.gameperf.desktop.core.model.FPowerSnapshot.fpowerAvailable]
+    // is true (otherwise it stays 0 and the HUD reads as "--", same convention
+    // the legacy `tempCpu` tile uses).
+    val fpower: Double = 0.0,
+    val fpowerHistory: List<Double> = emptyList(),
+    val fpowerTimed: List<TimedSample> = emptyList(),
 )
 
 /**
@@ -149,6 +170,13 @@ data class SessionResult(
     val peakMemMb: Long = 0,
     val avgCpu: Int = 0,
     val maxCpu: Int = 0,
+    // v4.5.0 — GameBench-inspired dual CPU line (`cpu-total-vs-app-usage`,
+    // spec CDU-003). [avgCpu] / [maxCpu] above still aggregate the APP CPU
+    // (the value the user grades against). [cpuTotalHistory] persists the
+    // raw per-tick total-device CPU samples for the dual-line chart in the
+    // report. Mirrors the v4.5.0 `fpowerHistory` defaulted-empty backward
+    // compat precedent. Empty list ⇒ legacy single-line CPU chart renders.
+    val cpuTotalHistory: List<Int> = emptyList(),
     val maxTempCpu: Double = 0.0,
     val maxTempGpu: Double = 0.0,
     val batteryStart: Int = 0,
@@ -171,6 +199,24 @@ data class SessionResult(
     val filteredAggregates: com.gameperf.desktop.core.metrics.MetricsAggregates? = null,
     val conclusions: List<com.gameperf.desktop.core.conclusions.Conclusion> = emptyList(),
     val detectionMode: DetectionMode = DetectionMode.MANUAL_ONLY,
+    // v4.5.0 — FPower aggregates + history payload (spec FPW-008). Mirrors the
+    // [thermalAvailable] precedent: `fpowerAvailable=true` is the v4.4.x-compatible
+    // default so any caller that constructs a [SessionResult] without naming
+    // these args stays semantically unchanged. [fpowerAvg] / [fpowerPeak] are
+    // computed post-loop from [fpowerHistory] (empty → 0.0).
+    val fpowerAvailable: Boolean = true,
+    val fpowerDiagnostic: com.gameperf.desktop.core.model.FPowerDiagnostic? = null,
+    val fpowerHistory: List<Double> = emptyList(),
+    val fpowerTimed: List<TimedSample> = emptyList(),
+    val fpowerAvg: Double = 0.0,
+    val fpowerPeak: Double = 0.0,
+    // v4.5.0 Sprint 3 — DevActionBrief payload (spec DAB-007). Null when the
+    // capture had no firing rules OR pre-Sprint-3 entries that lack the field.
+    // Defaulted to null for backward compat with v4.5.0-pre-Sprint3 .gameperf
+    // history rows (parsed via Json { ignoreUnknownKeys = true }). The
+    // SerializableEntry mirror persists this; the ReportGenerator renders the
+    // brief at TOP of body BEFORE summary cards (design ADR-7).
+    val devActionBrief: com.gameperf.desktop.core.devactions.DevActionBrief? = null,
 )
 
 /**
@@ -314,6 +360,19 @@ class AppViewModel(
     /** Active detector for the current capture session, or null when idle. */
     private var eventDetector: EventDetector? = null
 
+    /**
+     * v4.4.1 — public mirror of the private [captureStartTime] field, exposed for the live
+     * UI overlay (`MiniGraphWithEvents` on `CaptureScreen`) so vertical event lines can be
+     * positioned relative to the capture's wall-clock origin without reading a private field.
+     *
+     * Updated alongside every write to [captureStartTime]: set to the current ms when capture
+     * begins (`startCapture` start-clock block), reset to `0L` when capture ends. The UI treats
+     * `0L` as "no capture running" and skips the overlay (see [MiniGraphWithEvents.totalMs]
+     * guard).
+     */
+    private val _captureStartMs = MutableStateFlow(0L)
+    val captureStartMs: StateFlow<Long> = _captureStartMs
+
     // ===== Video Playback (delegated v4.1.0) =====
     private val videoDelegate = VideoDelegate()
     val videoPosition: StateFlow<Long> = videoDelegate.videoPosition
@@ -355,10 +414,26 @@ class AppViewModel(
     val selectedForComparison: StateFlow<Set<String>> = _selectedForComparison
 
     // ===== Auto-Update (delegated v4.1.0) =====
-    private val updateDelegate = UpdateDelegate(scope) { msg -> _statusMessage.value = msg }
+    // v4.4.1: trailing-lambda style replaced with named arg because the constructor
+    // gained an injectable historyStore param after onStatusMessage.
+    private val updateDelegate = UpdateDelegate(
+        scope = scope,
+        onStatusMessage = { msg -> _statusMessage.value = msg },
+    )
     val updateAvailable: StateFlow<AutoUpdater.ReleaseInfo?> = updateDelegate.updateAvailable
     val updateProgress: StateFlow<Float?> = updateDelegate.updateProgress
     val updateError: StateFlow<String?> = updateDelegate.updateError
+
+    // v4.4.1: fallback panel state — non-null when the last update attempt
+    // failed terminally and HomeScreen should render `UpdateFallbackPanel`.
+    // Supersedes `updateError` for UAC / watchdog / helper failures (those
+    // used to be invisible). Spec REQ "Fallback panel display".
+    val updateFallback: StateFlow<com.gameperf.desktop.core.update.UpdateFallbackState?> =
+        updateDelegate.updateFallback
+
+    /** v4.4.1 — Snapshot of recent [updateAttempts] for the fallback panel's "Detalles técnicos". */
+    fun recentUpdateAttempts(limit: Int = 10): List<com.gameperf.desktop.core.update.UpdateAttempt> =
+        com.gameperf.desktop.viewmodel.UpdateDelegate.defaultHistoryStore().recentAttempts(limit)
 
     // ===== Capture Error (device disconnect, etc.) =====
     /**
@@ -737,6 +812,9 @@ class AppViewModel(
     fun downloadAndApplyUpdate() = updateDelegate.downloadAndApplyUpdate()
     fun dismissUpdate() = updateDelegate.dismissUpdate()
 
+    /** v4.4.1 — Wired to the fallback panel's close icon. Spec scenario D1. */
+    fun dismissUpdateFallback() = updateDelegate.dismissFallback()
+
     private fun startDevicePolling() {
         pollingJob?.cancel()
         pollingJob = scope.launch {
@@ -925,6 +1003,9 @@ class AppViewModel(
             // NOW start the clock - video and metrics are synced from this point
             val startTime = System.currentTimeMillis()
             captureStartTime = startTime
+            // v4.4.1: mirror to the public StateFlow so the live UI overlay can compute
+            // event x-positions relative to capture origin without touching a private field.
+            _captureStartMs.value = startTime
 
             // ═══ v4.4.0 — Auto event detection (Android only, gated by Settings) ═══
             //
@@ -1018,6 +1099,15 @@ class AppViewModel(
             val nativeHistory = mutableListOf<Long>()
             val javaHistory = mutableListOf<Long>()
             val cpuHistory = mutableListOf<Int>()
+            // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-005). Parallel
+            // accumulator for the total-device CPU% samples captured via
+            // [AdbBridgeApi.captureCpuDual]. Populated only on Android (iOS
+            // sidecar doesn't expose device-wide CPU separately today, see
+            // exploration §"Out of scope"). Appended whenever the dual snapshot
+            // total channel is > 0 (the legacy `cpu > 0` gate for the app
+            // channel is mirrored 1:1 — both channels honour the -1 sentinel
+            // from the underlying [AdbBridge.captureCpuPercent] paths).
+            val cpuTotalHistory = mutableListOf<Int>()
             val tempCpuHistory = mutableListOf<Double>()
             val tempGpuHistory = mutableListOf<Double>()
             val tempSkinHistory = mutableListOf<Double>()
@@ -1043,6 +1133,12 @@ class AppViewModel(
             val frameTimeTimed = mutableListOf<TimedSample>()
             val jankTimed = mutableListOf<TimedSample>()
             val stutterTimed = mutableListOf<TimedSample>()
+            // v4.5.0 — FPower accumulators (design §9b). Parallels the thermal history
+            // pattern at lines 1056-1077. Single timeline; the per-tick capture lands a
+            // value when [com.gameperf.desktop.core.model.FPowerSnapshot.fpowerAvailable]
+            // is true AND `fpowerMwPerFrame > 0` (see history-append guard below).
+            val fpowerHistory = mutableListOf<Double>()
+            val fpowerTimed = mutableListOf<TimedSample>()
             var totalJank = 0
             var totalStutter = 0
             var consecutiveAdbFailures = 0
@@ -1070,6 +1166,21 @@ class AppViewModel(
             var iterCount = 0
             var lastMem: com.gameperf.desktop.core.model.MemSnapshot? = null
             var lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
+            // v4.5.0 — `cpu-total-vs-app-usage`. Most-recent total-device CPU%
+            // captured by the Android branch's [AdbBridgeApi.captureCpuDual]
+            // call. -1 is the legacy sentinel for "first tick or parse error"
+            // (preserved verbatim from the underlying captureCpuPercent call);
+            // the history-append guard below filters sentinels via `> 0`. iOS
+            // path leaves this at -1 ⇒ no total samples persisted ⇒ the dual
+            // chart falls back to the legacy single-line view (CDU-007).
+            var lastCpuTotalPct: Int = -1
+            // v4.5.0 — FPower live cache (design §9a). The default snapshot has all
+            // numeric fields = -1.0 with `fpowerAvailable=true` (the v4.4.x-compatible
+            // sentinel from FPowerSnapshot in Metrics.kt:93). The per-tick capture
+            // overwrites this when the medium-cadence (`iterCount % 4 == 0`) tier fires.
+            // Pre-first-poll the history-append guard `fpowerMwPerFrame > 0` excludes
+            // the sentinel so no -1.0 value contaminates [fpowerHistory].
+            var lastFPower = com.gameperf.desktop.core.model.FPowerSnapshot()
 
             // v4.3.5 — FPS resume after ad / interstitial:
             // After an ad close the SurfaceFlinger layer cache (inside AdbBridge)
@@ -1130,11 +1241,18 @@ class AppViewModel(
                     // FAST TIER (every 500ms): FPS, CPU, battery
                     frame = adb.captureFrames(device.id, pkg)
                     if (shouldStop) break
-                    // v4.2.5: pass pkg so we measure the GAME's CPU%, not the
-                    // device-wide CPU% (which used to mislead users into thinking
-                    // a 30% reading meant the game was light when really it was
-                    // 30% across ALL processes including system + idle).
-                    cpu = adb.captureCpuPercent(device.id, pkg)
+                    // v4.5.0 — GameBench-inspired dual CPU capture
+                    // (`cpu-total-vs-app-usage`, spec CDU-005). [captureCpuDual]
+                    // is a thin convenience over the existing two
+                    // [captureCpuPercent] overloads — composes BOTH device-wide
+                    // total AND per-process app CPU in one call. The app channel
+                    // (`cpu`) keeps the v4.2.5 semantics (the value the user
+                    // grades against). The total channel feeds the new dual-line
+                    // chart so the dev can distinguish "device saturated by OS /
+                    // other apps" from "my app saturating the device".
+                    val cpuDual = adb.captureCpuDual(device.id, pkg)
+                    cpu = cpuDual.appCpuPct
+                    lastCpuTotalPct = cpuDual.totalDeviceCpuPct
                     if (shouldStop) break
                     battery = adb.getBatteryLevel(device.id)
                     if (shouldStop) break
@@ -1144,7 +1262,32 @@ class AppViewModel(
                     if (runThermal) {
                         val t = adb.captureTemperature(device.id)
                         if (shouldStop) break
-                        lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(t.cpu, t.gpu, t.battery, t.skin)
+                        // v4.4.1 (temperature-not-shown, Q1): convert from positional to named args.
+                        // The 4-positional form silently dropped t.dieCpu (added in v4.3.6) AND
+                        // would also drop the new t.thermalAvailable / t.diagnostic fields landed
+                        // in T1 of this change. Named-args makes every field explicit so future
+                        // ThermalSnapshot widenings stay propagated automatically. ADDITIVE only —
+                        // no surrounding refactor (the enclosing startCapture body is detekt-baseline).
+                        lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(
+                            cpu = t.cpu,
+                            gpu = t.gpu,
+                            battery = t.battery,
+                            skin = t.skin,
+                            dieCpu = t.dieCpu,
+                            thermalAvailable = t.thermalAvailable,
+                            diagnostic = t.diagnostic,
+                        )
+                        // v4.5.0 — FPower poll co-located with thermal at the medium tier
+                        // (~2s cadence at the 500ms loop, design §9c + ADR-6). The bridge
+                        // owns the per-device path cache so steady-state cost is ~2 shell
+                        // reads. We pass [frame?.fps] as the per-tick honest reading per
+                        // ADR-3 (FPS = same per-tick value, NOT smoothed). On `fps <= 0`
+                        // the parser raises FPS_ZERO and the tick is dropped by the
+                        // history-append guard below.
+                        val rawFpsForFpower = (frame?.fps ?: 0).toDouble()
+                        val fpowerSnap = adb.captureFPower(device.id, currentFps = rawFpsForFpower)
+                        if (shouldStop) break
+                        lastFPower = fpowerSnap
                     }
 
                     // SLOW TIER (every ~5s): memory
@@ -1232,6 +1375,16 @@ class AppViewModel(
                     if (cpuHistory.size > MAX_HISTORY_SIZE) cpuHistory.removeFirst()
                     if (cpuTimed.size > MAX_HISTORY_SIZE) cpuTimed.removeFirst()
                 }
+                // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-005). Append the
+                // total-device CPU% sample whenever the Android branch produced
+                // a non-sentinel value. The gate is independent of the app
+                // channel above — both channels share the same `> 0` filter
+                // but neither blocks the other (e.g. app process not running
+                // yet ⇒ app=-1 but total still valid).
+                if (lastCpuTotalPct > 0) {
+                    cpuTotalHistory.add(lastCpuTotalPct)
+                    if (cpuTotalHistory.size > MAX_HISTORY_SIZE) cpuTotalHistory.removeFirst()
+                }
                 val shouldRecordThermal = isIosDevice || (iterCount % 4 == 1) // align with runThermal above
                 // v4.1.0: thermal fields use NaN as sentinel. NaN > 0 is false in IEEE 754,
                 // so the guard works identically, but we use !isNaN() for clarity.
@@ -1240,7 +1393,18 @@ class AppViewModel(
                     // when skin is available. Falls back to die when no skin
                     // sensor exists. Old `.gameperf` exports stay readable
                     // because the field type didn't change.
-                    val userFacingTemp = when {
+                    //
+                    // v4.4.1 (temperature-not-shown): make the "no thermal data" path
+                    // EXPLICIT instead of silently falling through the three-branch
+                    // when() to NaN. AdbThermalParser flips lastThermal.thermalAvailable
+                    // to false when no CPU/SKIN zone classifies (unsupported vendor,
+                    // permission denied, all temps OOR). Short-circuiting here keeps
+                    // tempCpuHistory empty so the post-loop maxOrNull stays at 0.0 AND
+                    // the persisted thermalAvailable=false propagates downstream — the
+                    // report will render "N/D" + diagnostic banner instead of "0°C".
+                    val userFacingTemp = if (!lastThermal.thermalAvailable) {
+                        Double.NaN
+                    } else when {
                         !lastThermal.skin.isNaN() && lastThermal.skin > 0 -> lastThermal.skin
                         !lastThermal.dieCpu.isNaN() && lastThermal.dieCpu > 0 -> lastThermal.dieCpu
                         !lastThermal.cpu.isNaN() && lastThermal.cpu > 0 -> lastThermal.cpu
@@ -1269,6 +1433,18 @@ class AppViewModel(
                         tempDieCpuTimed.add(TimedSample(sampleSecond, lastThermal.dieCpu))
                         if (tempDieCpuHistory.size > MAX_HISTORY_SIZE) tempDieCpuHistory.removeFirst()
                         if (tempDieCpuTimed.size > MAX_HISTORY_SIZE) tempDieCpuTimed.removeFirst()
+                    }
+                    // v4.5.0 — FPower history append (design §9d). Co-located with thermal
+                    // recording at the same `iterCount % 4 == 1` cadence (one tick AFTER
+                    // the poll above so the freshest read lands here). Guards both on the
+                    // availability flag AND `> 0` so the sentinel -1.0 from a pre-first-poll
+                    // [FPowerSnapshot] AND the parser's `IMPLAUSIBLE_VALUE` fallback both
+                    // stay out of the persisted timeline.
+                    if (lastFPower.fpowerAvailable && lastFPower.fpowerMwPerFrame > 0) {
+                        fpowerHistory.add(lastFPower.fpowerMwPerFrame)
+                        fpowerTimed.add(TimedSample(sampleSecond, lastFPower.fpowerMwPerFrame))
+                        if (fpowerHistory.size > MAX_HISTORY_SIZE) fpowerHistory.removeFirst()
+                        if (fpowerTimed.size > MAX_HISTORY_SIZE) fpowerTimed.removeFirst()
                     }
                 }
                 if (frame != null && frame.avgFrameTime > 0) {
@@ -1332,11 +1508,23 @@ class AppViewModel(
                     nativeHistory = if (snapshotHistories) nativeHistory.toList() else prev.nativeHistory,
                     javaHistory = if (snapshotHistories) javaHistory.toList() else prev.javaHistory,
                     cpuHistory = if (snapshotHistories) cpuHistory.toList() else prev.cpuHistory,
+                    // v4.5.0 — `cpu-total-vs-app-usage` (CDU-002). Same 0.5 Hz
+                    // snapshot gate as the surrounding history fields so the
+                    // dual-line chart redraws at the same cadence as cpuHistory.
+                    cpuTotalHistory = if (snapshotHistories) cpuTotalHistory.toList() else prev.cpuTotalHistory,
                     tempCpuHistory = if (snapshotHistories) tempCpuHistory.toList() else prev.tempCpuHistory,
                     tempGpuHistory = if (snapshotHistories) tempGpuHistory.toList() else prev.tempGpuHistory,
                     tempSkinHistory = if (snapshotHistories) tempSkinHistory.toList() else prev.tempSkinHistory,
                     frameTimeHistory = if (snapshotHistories) frameTimeAvgHistory.toList() else prev.frameTimeHistory,
-                    allFrameTimes = if (snapshotHistories) allFrameTimes.toList() else prev.allFrameTimes
+                    allFrameTimes = if (snapshotHistories) allFrameTimes.toList() else prev.allFrameTimes,
+                    // v4.5.0 — FPower live tile + history (design §9e). The scalar follows
+                    // the same "0.0 when unavailable" convention as the legacy thermal
+                    // tiles: HUD reads as "--" instead of a misleading numeric value. List
+                    // snapshots mirror the `snapshotHistories` 0.5 Hz gate so the graphs
+                    // refresh at the same cadence as the thermal histories.
+                    fpower = if (lastFPower.fpowerAvailable) lastFPower.fpowerMwPerFrame else 0.0,
+                    fpowerHistory = if (snapshotHistories) fpowerHistory.toList() else prev.fpowerHistory,
+                    fpowerTimed = if (snapshotHistories) fpowerTimed.toList() else prev.fpowerTimed,
                 )
             }
 
@@ -1567,6 +1755,11 @@ class AppViewModel(
             // using the same union of padded event ranges Phase 3 applied.
             // This lets trend rules (MemoryGrowthRule, etc.) operate on the
             // same "kept" sample set the dashboard shows.
+            // v4.5.0 Sprint 3 — capture the ConclusionInput so the
+            // DevActionEngine can reuse it AFTER ConclusionEngine.run.
+            // Null for the insufficient-data short-circuit (we never
+            // build an input for that path).
+            var conclusionInputForBrief: ConclusionInput? = null
             val conclusions: List<Conclusion> = if (
                 finalElapsed < 30 || filterResult.raw.sampleCount < 60
             ) {
@@ -1607,8 +1800,27 @@ class AppViewModel(
                     memTimedFiltered = memTimed.toList().outsideEventWindows(),
                     tempCpuTimedFiltered = tempCpuTimed.toList().outsideEventWindows(),
                     fpsTimedFiltered = fpsTimed.toList().outsideEventWindows(),
+                    // v4.4.1 (discovery #274 + Q2 frozen): sourced from the
+                    // last per-tick snapshot. When the thermal pipeline could
+                    // not classify any zone (vendor catalog gap, permission
+                    // denied, OOR), `false` propagates to the 3 thermal-derived
+                    // rules so they short-circuit instead of emitting a
+                    // fabricated "device has headroom" claim.
+                    thermalAvailable = lastThermal.thermalAvailable,
                 )
+                conclusionInputForBrief = conclusionInput
                 ConclusionEngine.run(conclusionInput)
+            }
+
+            // v4.5.0 Sprint 3 — DevActionBrief computed AFTER conclusions, using
+            // the SAME ConclusionInput. Null on the insufficient-data path (no
+            // input was built) AND when the engine produces zero enriched
+            // items (DevActionEngine.run returns a brief with items.isEmpty();
+            // we map that to null so the renderer + persistence omit it,
+            // matching DAB-008 negative case).
+            val devActionBrief: DevActionBrief? = conclusionInputForBrief?.let { input ->
+                val brief = DevActionEngine.run(input)
+                brief.takeIf { it.items.isNotEmpty() }
             }
 
             // Generate HTML report (wrapped in try-catch to avoid crash on report failure)
@@ -1650,6 +1862,35 @@ class AppViewModel(
                     detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
                     detectorWarnings = _detectorWarnings.value,
                     captureStartMs = captureStartTime,
+                    // v4.4.1 (temperature-not-shown, Phase 6 wire): propagate the
+                    // last-known thermal availability flag + diagnostic payload
+                    // so the report renders "N/D" + a Spanish-tuteo-formal banner
+                    // listing the raw vendor zone names instead of a misleading
+                    // "0°C". Defaults on the generator preserve baseline rendering
+                    // for legacy fixtures (ReportRenderingTest) and pre-v4.4.1
+                    // history re-loads where lastThermal.diagnostic is null.
+                    thermalAvailable = lastThermal.thermalAvailable,
+                    thermalDiagnostic = lastThermal.diagnostic,
+                    // v4.5.0 (fpower-metric, Batch 5 wire): propagate the per-
+                    // session FPower payload to the report. Defaults on the
+                    // generator preserve legacy rendering for pre-v4.5.0 history
+                    // re-loads where fpowerAvailable=true / history empty.
+                    fpowerHistory = fpowerHistory.toList(),
+                    fpowerAvg = if (fpowerHistory.isNotEmpty()) fpowerHistory.average() else 0.0,
+                    fpowerPeak = fpowerHistory.maxOrNull() ?: 0.0,
+                    fpowerAvailable = lastFPower.fpowerAvailable,
+                    fpowerDiagnostic = lastFPower.diagnostic,
+                    // v4.5.0 Sprint 3 — DevActionBrief rendered at TOP of body
+                    // BEFORE summary cards (ADR-7). Null when no rules fired
+                    // OR insufficient-data path → renderer omits section.
+                    devActionBrief = devActionBrief,
+                    // SDD cpu-total-vs-app-usage Sprint 2 (design ADR-5) —
+                    // total-device CPU history captured in parallel with
+                    // [cpuHistory] (app-specific) per the Bridge dual-capture
+                    // shipped in Sprint 0. Defaulted-empty on the generator
+                    // for backward compat (ADR-3) so legacy fixtures stay
+                    // byte-equivalent.
+                    cpuTotalHistory = cpuTotalHistory.toList(),
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")
@@ -1664,6 +1905,11 @@ class AppViewModel(
                 avgFrameTime = if (allFrameTimes.isNotEmpty()) allFrameTimes.average() else 0.0,
                 p99FrameTime = p99ft,
                 peakMemMb = peakMem, avgCpu = avgCpu, maxCpu = maxCpu,
+                // v4.5.0 — `cpu-total-vs-app-usage` (CDU-003). Persist the raw
+                // total-device CPU samples on SessionResult so the report
+                // renderer (CDU-007) and the HistoryEntry builder below
+                // (single source of truth via _result.value) both see them.
+                cpuTotalHistory = cpuTotalHistory.toList(),
                 maxTempCpu = maxTempCpu, maxTempGpu = maxTempGpu,
                 batteryStart = batteryStart, batteryEnd = batteryEnd,
                 batteryDrain = batteryStart - batteryEnd,
@@ -1672,15 +1918,29 @@ class AppViewModel(
                 videoPath = videoPath,
                 deviceGrade = deviceGrade, deviceScore = deviceScore, deviceTier = tier.label,
                 markers = sessionMarkers,
-                // v4.4.0 — auto event detection payload. Phase 4 (T4.13)
-                // populates `conclusions`; Phase 5 (T5.9) will set
-                // `detectionMode` based on the platform / Developer Mode probe.
-                // Until then the `detectionMode` field default stays in place
-                // (MANUAL_ONLY).
+                // v4.4.0 — auto event detection payload.
                 events = _events.value,
                 rawAggregates = filterResult.raw,
                 filteredAggregates = filterResult.filtered,
                 conclusions = conclusions,
+                // v4.4.1 — set detectionMode HERE so the pendingEntry builder below can
+                // copy it from _result.value verbatim. Without this line, detectionMode
+                // would always default to MANUAL_ONLY and the persisted history would
+                // lie about whether the auto-detector actually ran (Bug 2 fidelity fix).
+                detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
+                // v4.5.0 — FPower aggregates + history payload (design §9f, spec FPW-008).
+                // Empty history → 0.0 for both avg and peak (mirrors the post-loop guard at
+                // `maxTempCpu = tempCpuHistory.maxOrNull() ?: 0.0`).
+                fpowerAvailable = lastFPower.fpowerAvailable,
+                fpowerDiagnostic = lastFPower.diagnostic,
+                fpowerHistory = fpowerHistory.toList(),
+                fpowerTimed = fpowerTimed.toList(),
+                fpowerAvg = if (fpowerHistory.isNotEmpty()) fpowerHistory.average() else 0.0,
+                fpowerPeak = fpowerHistory.maxOrNull() ?: 0.0,
+                // v4.5.0 Sprint 3 — persist the brief on SessionResult so the
+                // HistoryEntry builder below carries it into history.json.
+                // Null when no rules fired (DAB-008 negative case).
+                devActionBrief = devActionBrief,
             )
 
             // P95 frame time
@@ -1723,6 +1983,50 @@ class AppViewModel(
                 maxTemp = maxTempCpu, score = score,
                 markers = sessionMarkers,
                 fpsTimed = fpsTimed.map { it.second to it.value.toInt() },
+                // v4.4.1 — additive named-args copying the auto-event-detection payload from
+                // the in-memory SessionResult / ViewModel state into the persisted HistoryEntry.
+                // Bug 2 (auto-event-detection-not-marking): the v4.4.0 schema bump promised
+                // these fields but the builder dropped them on the way to disk. Read BEFORE the
+                // `captureStartTime = 0L` reset on the next block — the value is still valid here.
+                events = _result.value.events,
+                detectionMode = _result.value.detectionMode,
+                detectorWarnings = _detectorWarnings.value,
+                rawAggregates = _result.value.rawAggregates,
+                filteredAggregates = _result.value.filteredAggregates,
+                conclusions = _result.value.conclusions,
+                captureStartMs = captureStartTime,
+                // v4.4.1 (temperature-not-shown, Q2): persist the per-tick availability
+                // flag from the last thermal sample. AdbThermalParser sets it to false
+                // when the device exposes no classifiable CPU/SKIN zone (unsupported
+                // vendor like Pixel XL pre-T0 + Tab A8 pre-T0, permission denied, all
+                // temps OOR). Default `true` on the var preserves v4.3.x behavior: a
+                // session that NEVER captured thermal at all (zero ticks, e.g. ultra
+                // short captures or an iOS-only run that bypassed the Android branch)
+                // still records `true` and the report renders the legacy 0°C cell —
+                // matching pre-v4.4.1 user experience.
+                thermalAvailable = lastThermal.thermalAvailable,
+                // v4.5.0 — FPower mirror of the session payload (design §9f, spec FPW-008).
+                // Pull from _result.value so a future refactor that drops a field at the
+                // SessionResult build site here gets caught by the round-trip tests at the
+                // HistoryEntry boundary. Mirrors how detectionMode/events/aggregates are
+                // sourced from _result.value (Bug 2 lesson — single source of truth).
+                fpowerAvailable = _result.value.fpowerAvailable,
+                fpowerDiagnostic = _result.value.fpowerDiagnostic,
+                fpowerHistory = _result.value.fpowerHistory,
+                fpowerTimed = _result.value.fpowerTimed,
+                fpowerAvg = _result.value.fpowerAvg,
+                fpowerPeak = _result.value.fpowerPeak,
+                // v4.5.0 Sprint 3 — DevActionBrief mirror. Null on SessionResult
+                // when no rules fired; we coerce to the empty-brief shape on
+                // the wire so the SerializableEntry roundtrip is symmetric
+                // (DAB-010 backward compat ↔ this writer).
+                devActionBrief = _result.value.devActionBrief ?: DevActionBrief(),
+                // v4.5.0 — `cpu-total-vs-app-usage` (CDU-004). Read from
+                // _result.value so a future refactor that drops the field at
+                // the SessionResult build site gets caught by the round-trip
+                // test at the HistoryEntry boundary (same pattern as
+                // detectionMode / events / fpower fields above).
+                cpuTotalHistory = _result.value.cpuTotalHistory,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {
@@ -1732,6 +2036,8 @@ class AppViewModel(
             _history.value = SessionHistory.load()
 
             captureStartTime = 0L
+            // v4.4.1: keep the public mirror in sync — UI uses 0L as "no active capture".
+            _captureStartMs.value = 0L
             _isCapturing.value = false
             // v4.2.5: clear the processing-status overlay now that we're switching
             // to RESULTS — the user is about to see all the data and doesn't need

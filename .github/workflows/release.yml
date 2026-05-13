@@ -137,6 +137,87 @@ jobs:
           name: game-perf-desktop-${{ matrix.os }}
           path: build/compose/jars/*.jar
 
+  # ===== v4.4.1: Windows MSI installer =====
+  #
+  # Compose Desktop's `packageReleaseMsi` (jpackage under the hood) produces an
+  # `.msi` that elevates via UAC, installs into `C:\Program Files\GamePerf\`,
+  # and registers a Start Menu / Add-Remove Programs entry. The generated MSI is
+  # what the v4.4.1 fallback panel's "Descargar manualmente" button points users
+  # to when their in-app updater fails (UAC denied, watchdog timeout, etc.).
+  #
+  # Restored after v4.x silently dropped MSI when the original release.yml was
+  # rewritten — only `packageUberJarForCurrentOS` was running and the bundled
+  # JAR alone is not installable for non-technical Windows users. See spec
+  # capability `release-packaging` REQ "Windows release publishes MSI installer".
+  msi:
+    needs: smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # WiX 3.x is required by jpackage to produce MSI. As of late-2025 the
+      # `windows-latest` runner image still ships WiX 3.14, but Microsoft has
+      # rotated the image multiple times this year — guard with a probe so a
+      # future image without WiX still produces an MSI instead of failing the
+      # whole release.
+      - name: Probe for WiX (light.exe / candle.exe)
+        id: wix-probe
+        shell: pwsh
+        run: |
+          $found = $false
+          foreach ($exe in @('candle.exe', 'light.exe')) {
+            $cmd = Get-Command $exe -ErrorAction SilentlyContinue
+            if ($cmd) {
+              Write-Host "Found $exe at $($cmd.Source)"
+              $found = $true
+            }
+          }
+          if ($found) {
+            Write-Host "wix=present" | Out-File $env:GITHUB_OUTPUT -Append
+          } else {
+            Write-Host "wix=missing" | Out-File $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Install WiX 3.14 (only when missing)
+        if: steps.wix-probe.outputs.wix == 'missing'
+        shell: pwsh
+        run: |
+          Write-Host "WiX not found — installing via Chocolatey…"
+          choco install wixtoolset -y --no-progress
+
+      - name: Build MSI installer
+        run: ./gradlew packageReleaseMsi --console=plain
+
+      - name: Locate MSI artifact
+        id: locate-msi
+        shell: bash
+        run: |
+          MSI=$(find build/compose/binaries/main-release/msi -name "*.msi" | head -1)
+          if [ -z "$MSI" ]; then
+            # jpackage writes to either main-release/ or main/; fall back.
+            MSI=$(find build/compose/binaries/main/msi -name "*.msi" 2>/dev/null | head -1)
+          fi
+          if [ -z "$MSI" ]; then
+            echo "FATAL: no MSI produced under build/compose/binaries/"
+            find build/compose/binaries -type f -name "*.msi" || true
+            exit 1
+          fi
+          echo "MSI: $MSI ($(stat -c%s "$MSI" 2>/dev/null || stat -f%z "$MSI") bytes)"
+          # Stage in a stable subdir so upload-artifact globs predictably.
+          mkdir -p msi-out
+          cp "$MSI" msi-out/
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-perf-desktop-msi
+          path: msi-out/*.msi
+
   # v4.2.11 fix iteration 2: the `mark-draft` job at the top of this workflow
   # has already flipped the release to draft before any build job started, so
   # this job only needs to upload the assets and flip draft=false to make the
@@ -144,7 +225,7 @@ jobs:
   # release after this job finishes — which is precisely when the binaries are
   # available for download.
   release:
-    needs: [build, sidecar]
+    needs: [build, sidecar, msi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -161,6 +242,7 @@ jobs:
           draft: false
           files: |
             game-perf-desktop-*/*.jar
+            game-perf-desktop-msi/*.msi
             sidecar-*/gameperf-sidecar-*
           # generate_release_notes left at default (false) to preserve the manual
           # notes passed to `gh release create --notes-file` by the human before

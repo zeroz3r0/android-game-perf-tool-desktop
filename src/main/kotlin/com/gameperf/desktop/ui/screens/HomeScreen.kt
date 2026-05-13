@@ -51,6 +51,9 @@ fun HomeScreen(vm: AppViewModel) {
     val updateInfo by vm.updateAvailable.collectAsState()
     val updateProgress by vm.updateProgress.collectAsState()
     val updateError by vm.updateError.collectAsState()
+    // v4.4.1: fallback panel state (non-null = render UpdateFallbackPanel
+    // alongside the existing yellow update banner). Spec REQ "Fallback panel display".
+    val updateFallback by vm.updateFallback.collectAsState()
 
     // v4.2.14 — In-app dependency bootstrap state. Mirrors the UpdateBanner
     // pattern: missingDeps drives banner visibility, bootstrapProgress shows
@@ -261,6 +264,20 @@ fun HomeScreen(vm: AppViewModel) {
                     }
                 }
             }
+        }
+
+        // ===== v4.4.1 — Update Fallback Panel =====
+        // Renders below the (optional) update banner when the last update
+        // attempt failed terminally. Spec REQ "Fallback panel display" + D1.
+        updateFallback?.let { fallbackState ->
+            val recent = remember(fallbackState) { vm.recentUpdateAttempts(10) }
+            com.gameperf.desktop.ui.components.UpdateFallbackPanel(
+                state = fallbackState,
+                onDismiss = { vm.dismissUpdateFallback() },
+                onOpenDownload = { openInBrowser(fallbackState.downloadUrl) },
+                onOpenGuide = { openInBrowser(fallbackState.installGuideUrl) },
+                recentAttempts = recent,
+            )
         }
 
         // ===== v4.2.14 — Dependency Bootstrap Banner =====
@@ -1936,6 +1953,20 @@ private fun DepsBootstrapBanner(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * v4.4.1 — Best-effort browser opener for the [com.gameperf.desktop.ui.components.UpdateFallbackPanel]
+ * action buttons. Failures are silently ignored — the panel itself surfaces
+ * the URL via the button label so the user can copy/paste manually.
+ */
+private fun openInBrowser(url: String) {
+    runCatching {
+        val desktop = java.awt.Desktop.getDesktop()
+        if (desktop.isSupported(java.awt.Desktop.Action.BROWSE)) {
+            desktop.browse(java.net.URI(url))
         }
     }
 }

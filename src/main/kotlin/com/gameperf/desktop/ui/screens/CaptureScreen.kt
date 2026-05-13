@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gameperf.desktop.ui.components.MetricCard
 import com.gameperf.desktop.ui.components.MiniGraph
+import com.gameperf.desktop.ui.components.MiniGraphWithEvents
 import com.gameperf.desktop.ui.theme.*
 import com.gameperf.desktop.ui.util.fmtUS
 import com.gameperf.desktop.ui.util.formatDuration
@@ -36,6 +37,7 @@ fun CaptureScreen(vm: AppViewModel) {
     val markers by vm.markers.collectAsState()
     val events by vm.events.collectAsState()
     val detectorWarnings by vm.detectorWarnings.collectAsState()
+    val captureStartMs by vm.captureStartMs.collectAsState()
     val captureError by vm.captureError.collectAsState()
     val captureWarning by vm.captureWarning.collectAsState()
     // v4.2.5: live status of the post-capture pipeline (stop -> pull -> concat ->
@@ -340,11 +342,29 @@ fun CaptureScreen(vm: AppViewModel) {
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(Modifier.weight(1f)) {
-                MiniGraph("FPS", metrics.fpsHistory, Cyan, maxValue = 65f,
-                    modifier = Modifier.fillMaxWidth().weight(1f))
+                // v4.4.1 — the FPS plot now overlays vertical cyan dashed lines for each
+                // auto-detected event. CPU/Memoria/Temperatura keep using the plain MiniGraph
+                // so the new behavior stays scoped to where the spec asks for it.
+                MiniGraphWithEvents(
+                    label = "FPS",
+                    values = metrics.fpsHistory,
+                    captureStartMs = captureStartMs,
+                    captureNowMs = System.currentTimeMillis(),
+                    events = events,
+                    color = Cyan,
+                    maxValue = 65f,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                )
                 Spacer(Modifier.height(8.dp))
+                // SDD cpu-total-vs-app-usage Sprint 2 — dual-line CPU
+                // (GameBench-inspired). Primary = APP cpu (yellow), secondary
+                // = TOTAL device cpu (cyan dashed). The MiniGraph defaults
+                // secondaryValues to empty so this is the only call site
+                // that opts into the dual-line view today (HUD/HOME stay
+                // legacy single-line).
                 MiniGraph("CPU %", metrics.cpuHistory, Yellow, maxValue = 100f,
-                    modifier = Modifier.fillMaxWidth().weight(1f))
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    secondaryValues = metrics.cpuTotalHistory)
             }
             Column(Modifier.weight(1f)) {
                 MiniGraph("Memoria (MB)", metrics.memHistory, Purple,

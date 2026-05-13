@@ -1,0 +1,25 @@
+05-12 09:00:00.000  3210  4567 I MyGame: Frame rendered fps=60
+05-12 09:00:00.500  3210  4567 I Unity: Behaviour update tick=120
+05-12 09:00:01.000  3210  4567 I MyGame: Frame rendered fps=60
+05-12 09:00:01.200  3210  4567 I MyGame: Level complete, requesting next map
+05-12 09:00:01.250  3210  4567 I MyGame: Calling SceneManager.LoadSceneAsync(Level4)
+05-12 09:00:01.260  3210  4567 I Unity: Loading scene transition
+05-12 09:00:01.265  3210  4567 I UnityEngine: AsyncOperation started for scene index 3
+05-12 09:00:01.300  3210  4567 D Unity: Unloading 412 unused assets
+05-12 09:00:01.400  3210  4567 D Unity: System memory in use before: 312.5 MB
+05-12 09:00:01.450  3210  4567 D Unity: System memory in use after: 298.1 MB
+05-12 09:00:01.500  3210  4567 D Unity: Loading textures batch 1 of 4
+05-12 09:00:01.700  3210  4567 D Unity: Loading textures batch 2 of 4
+05-12 09:00:01.900  3210  4567 D Unity: Loading textures batch 3 of 4
+05-12 09:00:02.100  3210  4567 D Unity: Loading textures batch 4 of 4
+05-12 09:00:02.300  3210  4567 D Unity: Loading meshes batch 1 of 2
+05-12 09:00:02.500  3210  4567 D Unity: Loading meshes batch 2 of 2
+05-12 09:00:02.700  3210  4567 D Unity: Loading audio clips
+05-12 09:00:02.900  3210  4567 D Unity: Loading scripts and prefabs
+05-12 09:00:03.100  3210  4567 D Unity: Activating scene Level4
+05-12 09:00:03.150  3210  4567 I UnityEngine: AsyncOperation done progress=1.0
+05-12 09:00:03.160  3210  4567 I Unity: Scene loaded successfully name=Level4
+05-12 09:00:03.200  3210  4567 I MyGame: Scene activation complete
+05-12 09:00:03.300  3210  4567 I MyGame: Frame rendered fps=58
+05-12 09:00:03.800  3210  4567 I Unity: Behaviour update tick=130
+05-12 09:00:04.000  3210  4567 I MyGame: Frame rendered fps=60

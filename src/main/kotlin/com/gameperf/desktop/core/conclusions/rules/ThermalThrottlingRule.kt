@@ -32,6 +32,11 @@ object ThermalThrottlingRule : Rule {
     private const val FPS_DROP_RATIO = 0.6
 
     override fun matches(input: ConclusionInput): Boolean {
+        // v4.4.1 (discovery #274): when thermalAvailable=false, every
+        // temperature-derived predicate is unreliable. Skip the rule entirely
+        // so we do not silently emit "no throttling detected" for a vendor
+        // whose zones never classified.
+        if (!input.thermalAvailable) return false
         val tempHot = input.filtered.maxTempCpu >= THERMAL_HOT_CPU_THRESHOLD ||
             input.filtered.maxTempSkin >= THERMAL_HOT_SKIN_THRESHOLD
         if (!tempHot) return false

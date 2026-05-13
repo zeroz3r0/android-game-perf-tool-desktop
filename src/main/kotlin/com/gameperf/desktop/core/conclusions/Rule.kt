@@ -63,6 +63,15 @@ data class Conclusion(
  *           Used by ThermalThrottlingRule to correlate FPS drops with thermal events.
  * @property fpsTimedFiltered FPS samples over time, event-filtered.
  *           Used by trend rules to detect sustained dips vs transient spikes.
+ * @property thermalAvailable v4.4.1 — `false` when the thermal pipeline could
+ *           not produce a usable snapshot (vendor zone catalog gap, permission
+ *           denied, all temps OOR, etc.). Sourced from `lastThermal.thermalAvailable`
+ *           at finalization. Rules that derive claims from temperature MUST
+ *           short-circuit when this is `false` — without the guard a `0°C`
+ *           sentinel reads as a "cool device" and produces a fabricated
+ *           "device has headroom" recommendation (discovery #274).
+ *           Defaults to `true` to preserve v4.3.x semantics for callers that
+ *           do not yet pass it (legacy fixtures, ReportRenderingTest).
  *
  * @since v4.4.0
  */
@@ -76,6 +85,7 @@ data class ConclusionInput(
     val memTimedFiltered: List<TimedSample> = emptyList(),
     val tempCpuTimedFiltered: List<TimedSample> = emptyList(),
     val fpsTimedFiltered: List<TimedSample> = emptyList(),
+    val thermalAvailable: Boolean = true,
 )
 
 /**

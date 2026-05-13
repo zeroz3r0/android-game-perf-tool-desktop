@@ -1,0 +1,19 @@
+05-12 11:30:00.000  6789  7012 I MyGame: Frame rendered fps=60
+05-12 11:30:00.500  6789  7012 I cocos2d: Render: drew 1024 sprites
+05-12 11:30:01.000  6789  7012 I MyGame: Player completed stage, requesting next scene
+05-12 11:30:01.100  6789  7012 I cocos2d: Director::replaceScene to GameScene_Stage2
+05-12 11:30:01.150  6789  7012 D cocos2d: Director: scheduled scene replacement
+05-12 11:30:01.200  6789  7012 D cocos2d: TextureCache: addImage assets/stage2/bg.png
+05-12 11:30:01.300  6789  7012 D cocos2d: TextureCache: addImage assets/stage2/sprites.plist
+05-12 11:30:01.400  6789  7012 D cocos2d: SpriteFrameCache: loaded 128 frames
+05-12 11:30:01.500  6789  7012 D cocos2d: AudioEngine: preloading bgm.mp3
+05-12 11:30:01.600  6789  7012 D cocos2d: AudioEngine: preloading sfx.mp3
+05-12 11:30:01.700  6789  7012 D Cocos2dx: CCDirector.replaceScene executing transition
+05-12 11:30:01.800  6789  7012 D cocos2d: Scene: building node tree
+05-12 11:30:01.900  6789  7012 D cocos2d: Physics: initializing world
+05-12 11:30:02.000  6789  7012 I cocos2d: GameScene_Stage2 onEnter called
+05-12 11:30:02.050  6789  7012 D cocos2d: Schedule: enabled update for GameScene_Stage2
+05-12 11:30:02.100  6789  7012 I MyGame: New stage ready for input
+05-12 11:30:02.200  6789  7012 I MyGame: Frame rendered fps=60
+05-12 11:30:02.700  6789  7012 I cocos2d: Render: drew 856 sprites
+05-12 11:30:03.000  6789  7012 I MyGame: Frame rendered fps=60

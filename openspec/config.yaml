@@ -1,31 +1,62 @@
 schema: spec-driven
 
 context: |
-  Tech stack: Kotlin 1.9.22 + Compose Desktop 1.6.1 + Coroutines + Serialization
-  Architecture: MVVM with Delegates (AppViewModel → Delegates per feature)
-  Testing: kotlin-test + kotlinx-coroutines-test with FakeAdbBridge pattern
-  Static analysis: detekt 1.23.7 (lenient baseline)
-  Build: Gradle Kotlin DSL, JVM 17 toolchain
-  Packaging: Multi-platform (Windows MSI, macOS DMG)
+  Tech stack: Kotlin 1.9.22 + Compose Desktop 1.6.1 + Coroutines 1.7.3 + kotlinx-serialization 1.6.3
+  Architecture: MVVM with Delegates (AppViewModel -> per-feature Delegates), platform-agnostic core.model.*
+  Bridges: AdbBridgeApi (Android via adb) and IosBridge (Python sidecar via HTTP)
+  Testing: kotlin-test + kotlinx-coroutines-test, pure-function-first, FakeAdbBridge pattern (no mocks)
+  Static analysis: detekt 1.23.7 with detekt.yml (lenient baseline, ignoreFailures=false)
+  Build: Gradle Kotlin DSL, JVM 17 toolchain, ./gradlew check runs detekt + tests
+  Packaging: Multi-platform native distributions (Windows MSI, macOS DMG) via compose.desktop
+  External tools: ALL external binaries (adb, ffmpeg, ffprobe) MUST go through core.ToolResolver
+  Version: 4.4.1 (gradle.properties), AppVersion.kt auto-generated each build
+
+strict_tdd: true
+
+testing:
+  test_runner:
+    framework: kotlin-test (JUnit Platform via kotlin("jvm"))
+    command: ./gradlew test
+    full_check: ./gradlew check
+  layers:
+    unit: kotlin-test + kotlinx-coroutines-test (~815 tests, 75 test files)
+    integration: pure-test pattern with FakeAdbBridge / fake sidecar (no separate framework)
+    e2e: NOT INSTALLED
+  coverage:
+    available: false
+    note: No jacoco/kover configured. Coverage threshold gate not enforced.
+  quality:
+    linter: detekt 1.23.7 (./gradlew detekt)
+    type_checker: kotlinc (built-in via ./gradlew compileKotlin)
+    formatter: NOT CONFIGURED (no ktlint/ktfmt)
 
 rules:
   proposal:
     - Include rollback plan for risky changes
-    - Identify affected modules/packages (core/, viewmodel/, ui/)
+    - Identify affected modules/packages (core/, viewmodel/, ui/, report/, cloud/)
   specs:
     - Use Given/When/Then format for scenarios
     - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
   design:
     - Include sequence diagrams for complex flows
     - Document architecture decisions with rationale
+    - Honor CLAUDE.md operative rules (ToolResolver, SdkSignatureCatalog single source of truth)
   tasks:
     - Group tasks by phase (infrastructure, implementation, testing)
-    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Use hierarchical numbering (1.1, 1.2, ...)
     - Keep tasks small enough to complete in one session
   apply:
-    - Follow existing code patterns in CLAUDE.md
-    - Tests must be pure without mocks
-    - Any external tool (adb, ffmpeg) must use ToolResolver
+    - Follow existing code patterns in CLAUDE.md (bug pattern catalogue)
+    - Tests must be pure without mocks (use Fake* pattern)
+    - Any external tool (adb, ffmpeg, ffprobe) MUST use core.ToolResolver
+    - Event detection lives ONLY in core/events/; conclusions in core/conclusions/
+    - Regex compiled top-level as private val (never inline in hot paths)
+    tdd: true
+    test_command: ./gradlew test
   verify:
-    - Run ./gradlew check (detekt + tests)
+    test_command: ./gradlew test
+    build_command: ./gradlew check
+    coverage_threshold: 0
     - Compare implementation against every spec scenario
+  archive:
+    - Warn before merging destructive deltas (large removals)

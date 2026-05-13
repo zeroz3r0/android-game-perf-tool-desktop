@@ -10,6 +10,14 @@ import kotlinx.serialization.Serializable
  * @property IAP In-app purchase flow (Google Play Billing, StoreKit).
  * @property LOADING Loading screen or scene transition detected via heuristics.
  * @property FOREGROUND_LOSS Game lost foreground (iOS fallback for ad detection).
+ * @property APP_STARTUP Application launch / cold start window (Sprint 1).
+ * @property SDK_INIT Third-party SDK initialization phase (Sprint 1).
+ * @property ANR Application Not Responding incident (Sprint 1).
+ * @property SCREEN_TRANSITION In-game navigation between screens (Sprint 2a).
+ * @property INSTRUMENTED Event injected via the in-game instrumentation hook (Sprint 3).
+ * @property VR_SESSION VR headset session window (Sprint 4a).
+ * @property VR_RETURN_TRANSITION Return-to-2D transition after VR session (Sprint 4a).
+ * @property RATE_US Rate-us / review prompt presentation (Sprint 5).
  * @property UNKNOWN Unclassified event (SDK not in catalog).
  */
 @Serializable
@@ -19,6 +27,14 @@ enum class EventType {
     IAP,
     LOADING,
     FOREGROUND_LOSS,
+    APP_STARTUP,
+    SDK_INIT,
+    ANR,
+    SCREEN_TRANSITION,
+    INSTRUMENTED,
+    VR_SESSION,
+    VR_RETURN_TRANSITION,
+    RATE_US,
     UNKNOWN,
 }
 

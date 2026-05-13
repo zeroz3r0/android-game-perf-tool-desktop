@@ -67,4 +67,37 @@ class LoadingThermalRecoveryRuleTest {
         val input = input(filtered = filtered, raw = raw, events = listOf(loading))
         assertFalse(LoadingThermalRecoveryRule.matches(input))
     }
+
+    /**
+     * v4.4.1 (discovery #274): when thermalAvailable=false, the rule MUST NOT
+     * emit a thermal-derived recovery claim. raw vs filtered max temps would
+     * both be 0 anyway, but the guard makes the intent explicit and prevents
+     * false positives if either aggregate later changes shape.
+     */
+    @Test
+    fun `does not fire when thermalAvailable is false even with valid loading event`() {
+        val raw = aggregates(maxTempCpu = 45.0)
+        val filtered = aggregates(maxTempCpu = 42.0)
+        val loading = event(type = EventType.LOADING, startMs = 1_000L, endMs = 8_000L)
+        val input = input(
+            filtered = filtered, raw = raw,
+            events = listOf(loading), thermalAvailable = false,
+        )
+        assertFalse(LoadingThermalRecoveryRule.matches(input))
+    }
+
+    /**
+     * Triangulation: same fixture WITH thermalAvailable=true still fires.
+     */
+    @Test
+    fun `still fires when thermalAvailable is true and predicates pass`() {
+        val raw = aggregates(maxTempCpu = 45.0)
+        val filtered = aggregates(maxTempCpu = 42.0)
+        val loading = event(type = EventType.LOADING, startMs = 1_000L, endMs = 8_000L)
+        val input = input(
+            filtered = filtered, raw = raw,
+            events = listOf(loading), thermalAvailable = true,
+        )
+        assertTrue(LoadingThermalRecoveryRule.matches(input))
+    }
 }

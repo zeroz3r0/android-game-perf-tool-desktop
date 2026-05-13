@@ -49,4 +49,26 @@ class ThermalThrottlingRuleTest {
         val agg = aggregates(avgFps = 50, p5 = 48, maxTempCpu = 47.0)
         assertFalse(ThermalThrottlingRule.matches(input(filtered = agg)))
     }
+
+    /**
+     * v4.4.1 (discovery #274): when thermalAvailable=false, the rule MUST NOT
+     * emit "no throttling detected". Without the guard a vendor with an
+     * unsupported zone catalog would silently look healthy.
+     */
+    @Test
+    fun `does not fire when thermalAvailable is false even if hot temps look real`() {
+        val agg = aggregates(avgFps = 50, p5 = 25, maxTempCpu = 47.0, maxTempSkin = 40.0)
+        val input = input(filtered = agg, thermalAvailable = false)
+        assertFalse(ThermalThrottlingRule.matches(input))
+    }
+
+    /**
+     * Triangulation: same hot fixture WITH thermalAvailable=true still fires.
+     */
+    @Test
+    fun `still fires when thermalAvailable is true and predicates pass`() {
+        val agg = aggregates(avgFps = 50, p5 = 25, maxTempCpu = 47.0, maxTempSkin = 40.0)
+        val input = input(filtered = agg, thermalAvailable = true)
+        assertTrue(ThermalThrottlingRule.matches(input))
+    }
 }

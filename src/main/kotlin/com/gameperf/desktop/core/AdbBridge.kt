@@ -3,6 +3,7 @@ package com.gameperf.desktop.core
 import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.core.model.DevicePlatform
+import com.gameperf.desktop.core.model.FPowerSnapshot
 import com.gameperf.desktop.core.model.FrameSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
@@ -266,6 +267,19 @@ object AdbBridge {
     private val prevPidProcJiffies: MutableMap<Int, Long> = mutableMapOf()
     private val prevPidSystemJiffies: MutableMap<Int, Long> = mutableMapOf()
 
+    // v4.5.0 — per-device FPower probe cache (FPW-006, design ADR-7).
+    // `winningTuple` is the catalog entry whose current+voltage reads both
+    // returned non-empty content. `firstProbeFailed=true` short-circuits the
+    // catalog walk on subsequent ticks so we don't spam shells when a device
+    // can't expose battery sysfs at all (non-rooted Android 13+, OEM hardening).
+    // Both are cleared by [resetSessionState].
+    private data class FPowerDeviceState(
+        val winningTuple: FPowerVendorCatalog.PathTuple?,
+        val firstProbeFailed: Boolean,
+    )
+    private val fpowerLock = Any()
+    private val fpowerStateMap: MutableMap<String, FPowerDeviceState> = mutableMapOf()
+
     /** Reset session-scoped state so consecutive captures start clean. */
     fun resetSessionState() {
         cachedLayer = null
@@ -282,6 +296,11 @@ object AdbBridge {
             cachedPidByPkg.clear()
             prevPidProcJiffies.clear()
             prevPidSystemJiffies.clear()
+        }
+        // v4.5.0: clear FPower per-device probe cache so a new session can
+        // re-discover the winning sysfs tuple (FPW-006, design ADR-7).
+        synchronized(fpowerLock) {
+            fpowerStateMap.clear()
         }
     }
 
@@ -555,6 +574,31 @@ object AdbBridge {
         return captureProcessCpuPercent(deviceId, pkg)
     }
 
+    /**
+     * v4.5.0 — Capture BOTH the device-wide total CPU% AND the per-process app
+     * CPU% in a single composite snapshot. Adopted from GameBench's dual-line
+     * CPU chart UX (user feedback 2026-05-12): a dev distinguishing "device
+     * saturated by OS/other apps" vs "my app saturating the device" in one glance.
+     *
+     * Implementation is a thin composition of the two existing readers:
+     *  - [totalDeviceCpuPct] ← [captureCpuPercent(deviceId)] (device-wide /proc/stat).
+     *  - [appCpuPct]         ← [captureCpuPercent(deviceId, pkg)] (per-process
+     *    /proc/<pid>/stat, scoped to the game's PID).
+     *
+     * Sentinel preservation: either field MAY be -1 ("first tick of session,
+     * no delta yet" or "parse failure"). We do NOT coerce sentinels to 0;
+     * callers (AppViewModel) already gate on `> 0` before recording history.
+     * See sdd/cpu-total-vs-app-usage/design ADR-2.
+     *
+     * Cost: ~1 extra `cat /proc/stat` shell vs the legacy single-call path
+     * (~5-10ms). Stays comfortably under the 500ms fast-tier budget.
+     */
+    fun captureCpuDual(deviceId: String, pkg: String): CpuDualSnapshot =
+        CpuDualSnapshot(
+            totalDeviceCpuPct = captureCpuPercent(deviceId),
+            appCpuPct = captureCpuPercent(deviceId, pkg),
+        )
+
     fun captureCpuPercent(deviceId: String): Int {
         val output = shell(deviceId, "cat /proc/stat")
         val line = output.lines().firstOrNull { it.startsWith("cpu ") } ?: return -1
@@ -690,6 +734,109 @@ object AdbBridge {
         }
         return snapshot
     }
+
+    /**
+     * v4.5.0 — capture an [FPowerSnapshot] (battery power normalised by FPS).
+     *
+     * State machine per device (cleared by [resetSessionState]):
+     *  1. Cache hit (winningTuple non-null) → 2 shell reads (current + voltage
+     *     of the cached tuple). Steady-state path.
+     *  2. Cached failure (firstProbeFailed=true) → return BATTERY_PATH_MISSING
+     *     immediately, NO shell calls. Avoids spamming non-supporting devices.
+     *  3. Cold probe → walk [FPowerVendorCatalog.ORDERED_PATHS] top-down. For
+     *     each tuple read current_now + voltage_now; if BOTH parse to a
+     *     non-null Long, cache the tuple as winner and return. If every tuple
+     *     fails, cache firstProbeFailed=true and return BATTERY_PATH_MISSING.
+     *
+     * The diagnostic on failure caps `rawPathsTried` / `lastReadout` at 10
+     * entries to keep failed-session payloads bounded (5 tuples × 2 paths = 10
+     * is the natural upper bound here).
+     *
+     * Parser math + plausibility + sign convention live in [FPowerParser]; this
+     * function is pure I/O orchestration. See `sdd/fpower-metric/design` §5
+     * + spec FPW-001 / FPW-006.
+     */
+    fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot {
+        // ── Cached states ────────────────────────────────────────────────
+        val cached = synchronized(fpowerLock) { fpowerStateMap[deviceId] }
+        if (cached != null) {
+            if (cached.firstProbeFailed) {
+                return FPowerParser.buildSnapshot(
+                    currentMicroA = null,
+                    voltageMicroV = null,
+                    fps = currentFps,
+                    rawPathsTried = emptyList(),
+                    lastReadout = emptyMap(),
+                )
+            }
+            val winner = cached.winningTuple
+            if (winner != null) {
+                val currentRaw = shell(deviceId, "cat ${winner.currentPath} 2>/dev/null", timeoutMs = 2000)
+                val voltageRaw = shell(deviceId, "cat ${winner.voltagePath} 2>/dev/null", timeoutMs = 2000)
+                return FPowerParser.buildSnapshot(
+                    currentMicroA = FPowerParser.parseMicroAmpere(currentRaw),
+                    voltageMicroV = FPowerParser.parseMicroVolt(voltageRaw),
+                    fps = currentFps,
+                    rawPathsTried = listOf(winner.currentPath, winner.voltagePath),
+                    lastReadout = mapOf(
+                        winner.currentPath to currentRaw,
+                        winner.voltagePath to voltageRaw,
+                    ),
+                )
+            }
+        }
+
+        // ── Cold probe ───────────────────────────────────────────────────
+        val pathsTried = mutableListOf<String>()
+        val readouts = linkedMapOf<String, String>()
+        for (tuple in FPowerVendorCatalog.ORDERED_PATHS) {
+            val currentRaw = shell(deviceId, "cat ${tuple.currentPath} 2>/dev/null", timeoutMs = 2000)
+            val voltageRaw = shell(deviceId, "cat ${tuple.voltagePath} 2>/dev/null", timeoutMs = 2000)
+            pathsTried += tuple.currentPath
+            pathsTried += tuple.voltagePath
+            readouts[tuple.currentPath] = currentRaw
+            readouts[tuple.voltagePath] = voltageRaw
+            val currentMicroA = FPowerParser.parseMicroAmpere(currentRaw)
+            val voltageMicroV = FPowerParser.parseMicroVolt(voltageRaw)
+            if (currentMicroA != null && voltageMicroV != null) {
+                synchronized(fpowerLock) {
+                    fpowerStateMap[deviceId] = FPowerDeviceState(
+                        winningTuple = tuple,
+                        firstProbeFailed = false,
+                    )
+                }
+                return FPowerParser.buildSnapshot(
+                    currentMicroA = currentMicroA,
+                    voltageMicroV = voltageMicroV,
+                    fps = currentFps,
+                    rawPathsTried = listOf(tuple.currentPath, tuple.voltagePath),
+                    lastReadout = mapOf(
+                        tuple.currentPath to currentRaw,
+                        tuple.voltagePath to voltageRaw,
+                    ),
+                )
+            }
+        }
+
+        // ── All tuples failed → cache the failure and return diagnostic ─
+        synchronized(fpowerLock) {
+            fpowerStateMap[deviceId] = FPowerDeviceState(
+                winningTuple = null,
+                firstProbeFailed = true,
+            )
+        }
+        return FPowerParser.buildSnapshot(
+            currentMicroA = null,
+            voltageMicroV = null,
+            fps = currentFps,
+            rawPathsTried = pathsTried.take(FPOWER_DIAGNOSTIC_CAP),
+            lastReadout = readouts.entries.take(FPOWER_DIAGNOSTIC_CAP)
+                .associate { it.key to it.value },
+        )
+    }
+
+    /** Upper bound for diagnostic field sizes — 5 tuples × 2 paths. */
+    private const val FPOWER_DIAGNOSTIC_CAP: Int = 10
 
     fun getMissedFrames(deviceId: String): Int {
         val output = shell(deviceId, "dumpsys SurfaceFlinger", timeoutMs = 3000)
@@ -1230,6 +1377,27 @@ object AdbBridge {
 // the frozen region (lines 64-88: Device data class + switchToWifi legacy)
 // stays untouched byte-for-byte. Every type here is a pure value carrier —
 // no state, no methods beyond `compareTo` on AdbVersion.
+
+/**
+ * v4.5.0 — Composite snapshot of the two CPU readings that the GameBench-
+ * inspired dual-line chart needs:
+ *  - [totalDeviceCpuPct]: device-wide CPU% summing across ALL processes
+ *    (what `/proc/stat` `cpu ` line yields). Drives the "total dispositivo"
+ *    line; helps the dev see when other processes / OS are saturating the
+ *    device independently of their game.
+ *  - [appCpuPct]: per-process CPU% scoped to the game's PID (what
+ *    `/proc/<pid>/stat` utime+stime yields, normalised against system jiffies).
+ *    Drives the "app" line; the value the user grades against.
+ *
+ * Either field MAY be -1 (the legacy first-tick / parse-error sentinel from
+ * the underlying [AdbBridge.captureCpuPercent] methods). The dual snapshot
+ * preserves sentinels verbatim — caller is expected to gate on `> 0` before
+ * recording history. See `sdd/cpu-total-vs-app-usage/design` ADR-2.
+ */
+data class CpuDualSnapshot(
+    val totalDeviceCpuPct: Int,
+    val appCpuPct: Int,
+)
 
 /**
  * Result of an `adb pair ip:port` invocation. Never thrown — errors are

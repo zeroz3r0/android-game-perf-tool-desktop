@@ -76,6 +76,7 @@ internal object ConclusionTestFixtures {
         memTimedFiltered: List<TimedSample> = emptyList(),
         tempCpuTimedFiltered: List<TimedSample> = emptyList(),
         fpsTimedFiltered: List<TimedSample> = emptyList(),
+        thermalAvailable: Boolean = true,
     ): ConclusionInput = ConclusionInput(
         filtered = filtered,
         raw = raw,
@@ -86,6 +87,7 @@ internal object ConclusionTestFixtures {
         memTimedFiltered = memTimedFiltered,
         tempCpuTimedFiltered = tempCpuTimedFiltered,
         fpsTimedFiltered = fpsTimedFiltered,
+        thermalAvailable = thermalAvailable,
     )
 
     /** Builds a closed event with sensible defaults. */

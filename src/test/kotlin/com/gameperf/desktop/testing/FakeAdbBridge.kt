@@ -5,12 +5,15 @@ import com.gameperf.desktop.core.AdbBridgeApi
 import com.gameperf.desktop.core.AdbVersion
 import com.gameperf.desktop.core.ConnectFailureReason
 import com.gameperf.desktop.core.ConnectResult
+import com.gameperf.desktop.core.FPowerParser
+import com.gameperf.desktop.core.FPowerVendorCatalog
 import com.gameperf.desktop.core.MdnsService
 import com.gameperf.desktop.core.PairFailureReason
 import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.core.model.DevicePlatform
+import com.gameperf.desktop.core.model.FPowerSnapshot
 import com.gameperf.desktop.core.model.FrameSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
@@ -77,7 +80,12 @@ open class FakeAdbBridge(
     override fun disableCharging(deviceId: String): String = ""
     override fun restoreCharging(deviceId: String): String = ""
 
-    override fun resetSessionState() { /* no-op */ }
+    override fun resetSessionState() {
+        // v4.5.0 — mirror production: clear the per-device FPower probe cache
+        // so a fresh probe re-walks ORDERED_PATHS. Without this the cache
+        // contract (FPW-006, design ADR-7) would not be testable via the fake.
+        fpowerStateMap.clear()
+    }
 
     /** Records every [invalidateLayerCache] call so tests can assert the
      *  capture-loop forced re-discovery K times. v4.3.5. */
@@ -87,11 +95,161 @@ open class FakeAdbBridge(
     }
 
     override fun captureFrames(deviceId: String, pkg: String): FrameSnapshot? = null
-    override fun captureCpuPercent(deviceId: String): Int = 0
-    override fun captureCpuPercent(deviceId: String, pkg: String): Int = captureCpuPercent(deviceId)
+    open override fun captureCpuPercent(deviceId: String): Int = 0
+    open override fun captureCpuPercent(deviceId: String, pkg: String): Int = captureCpuPercent(deviceId)
+
+    /**
+     * v4.5.0 — Default impl delegates to the two existing `captureCpuPercent`
+     * overrides so subclasses that script the underlying readouts via
+     * `override fun captureCpuPercent(...)` get the right values composed
+     * into the dual snapshot for free. Tests for `cpu-total-vs-app-usage`
+     * follow this pattern (see `AdbBridgeCpuDualTest.ScriptedCpuBridge`).
+     */
+    open override fun captureCpuDual(deviceId: String, pkg: String): com.gameperf.desktop.core.CpuDualSnapshot =
+        com.gameperf.desktop.core.CpuDualSnapshot(
+            totalDeviceCpuPct = captureCpuPercent(deviceId),
+            appCpuPct = captureCpuPercent(deviceId, pkg),
+        )
+
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? = null
+
+    /**
+     * v4.4.1 — Optional override for [captureTemperature]. When non-null, the
+     * fake returns this exact snapshot (additive — preserves the legacy
+     * NaN-quad default for tests that don't care about thermal). Use the
+     * [setThermal] builder to install a fixture.
+     */
+    @Volatile
+    private var scriptedThermal: ThermalSnapshot? = null
+
+    /**
+     * v4.4.1 builder — install a [ThermalSnapshot] fixture that
+     * [captureTemperature] will return. Defaults to `thermalAvailable=true`
+     * for the legacy NaN-quad case (preserves v4.3.x test semantics).
+     */
+    fun setThermal(snapshot: ThermalSnapshot): FakeAdbBridge {
+        scriptedThermal = snapshot
+        return this
+    }
+
     override fun captureTemperature(deviceId: String): ThermalSnapshot =
-        ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
+        scriptedThermal ?: ThermalSnapshot(Double.NaN, Double.NaN, Double.NaN, Double.NaN)
+
+    /**
+     * v4.5.0 — optional override for [captureFPower]. When non-null, the fake
+     * returns this exact snapshot (identity) — short-circuits BEFORE issuing
+     * any [shell] reads. When null, [captureFPower] simulates a cold catalog
+     * probe against [shellResponses] so end-to-end probe scenarios work too.
+     * Install via [setFPower].
+     */
+    @Volatile
+    private var scriptedFPower: FPowerSnapshot? = null
+
+    /**
+     * v4.5.0 builder — install an [FPowerSnapshot] fixture that
+     * [captureFPower] returns identity. Use this for lazy / unit-scope
+     * scenarios. Tests that want to exercise the catalog-walk + cache logic
+     * end-to-end should leave [scriptedFPower] null and populate
+     * [shellResponses] with the vendor sysfs path keys instead.
+     */
+    fun setFPower(snapshot: FPowerSnapshot): FakeAdbBridge {
+        scriptedFPower = snapshot
+        return this
+    }
+
+    /**
+     * v4.5.0 — per-device probe-cache mirror of [AdbBridge.fpowerStateMap].
+     * Cleared by [resetSessionState]. Allows tests to exercise the FPW-006
+     * cache contract end-to-end without spinning up a real adb subprocess.
+     */
+    private data class FPowerDeviceState(
+        val winningTuple: FPowerVendorCatalog.PathTuple?,
+        val firstProbeFailed: Boolean,
+    )
+    private val fpowerStateMap: MutableMap<String, FPowerDeviceState> = mutableMapOf()
+
+    override fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot {
+        scriptedFPower?.let { return it }
+
+        // Cache hit / cached failure — production parity (FPW-006).
+        val cached = fpowerStateMap[deviceId]
+        if (cached != null) {
+            if (cached.firstProbeFailed) {
+                return FPowerParser.buildSnapshot(
+                    currentMicroA = null,
+                    voltageMicroV = null,
+                    fps = currentFps,
+                    rawPathsTried = emptyList(),
+                    lastReadout = emptyMap(),
+                )
+            }
+            val winner = cached.winningTuple
+            if (winner != null) {
+                val currentRaw = shell(deviceId, "cat ${winner.currentPath} 2>/dev/null", timeoutMs = 2000)
+                val voltageRaw = shell(deviceId, "cat ${winner.voltagePath} 2>/dev/null", timeoutMs = 2000)
+                return FPowerParser.buildSnapshot(
+                    currentMicroA = FPowerParser.parseMicroAmpere(currentRaw),
+                    voltageMicroV = FPowerParser.parseMicroVolt(voltageRaw),
+                    fps = currentFps,
+                    rawPathsTried = listOf(winner.currentPath, winner.voltagePath),
+                    lastReadout = mapOf(
+                        winner.currentPath to currentRaw,
+                        winner.voltagePath to voltageRaw,
+                    ),
+                )
+            }
+        }
+
+        // Cold-probe simulation. Mirrors AdbBridge.captureFPower so end-to-end
+        // tests can drive the catalog walk by populating shellResponses with
+        // vendor path keys. Caches winner / first-probe-failure to honour
+        // FPW-006 cache contract.
+        val pathsTried = mutableListOf<String>()
+        val readouts = linkedMapOf<String, String>()
+        for (tuple in FPowerVendorCatalog.ORDERED_PATHS) {
+            val currentRaw = shell(deviceId, "cat ${tuple.currentPath} 2>/dev/null", timeoutMs = 2000)
+            val voltageRaw = shell(deviceId, "cat ${tuple.voltagePath} 2>/dev/null", timeoutMs = 2000)
+            pathsTried += tuple.currentPath
+            pathsTried += tuple.voltagePath
+            readouts[tuple.currentPath] = currentRaw
+            readouts[tuple.voltagePath] = voltageRaw
+            val currentMicroA = FPowerParser.parseMicroAmpere(currentRaw)
+            val voltageMicroV = FPowerParser.parseMicroVolt(voltageRaw)
+            if (currentMicroA != null && voltageMicroV != null) {
+                fpowerStateMap[deviceId] = FPowerDeviceState(
+                    winningTuple = tuple,
+                    firstProbeFailed = false,
+                )
+                return FPowerParser.buildSnapshot(
+                    currentMicroA = currentMicroA,
+                    voltageMicroV = voltageMicroV,
+                    fps = currentFps,
+                    rawPathsTried = listOf(tuple.currentPath, tuple.voltagePath),
+                    lastReadout = mapOf(
+                        tuple.currentPath to currentRaw,
+                        tuple.voltagePath to voltageRaw,
+                    ),
+                )
+            }
+        }
+        fpowerStateMap[deviceId] = FPowerDeviceState(
+            winningTuple = null,
+            firstProbeFailed = true,
+        )
+        return FPowerParser.buildSnapshot(
+            currentMicroA = null,
+            voltageMicroV = null,
+            fps = currentFps,
+            rawPathsTried = pathsTried.take(FPOWER_FAKE_DIAGNOSTIC_CAP),
+            lastReadout = readouts.entries.take(FPOWER_FAKE_DIAGNOSTIC_CAP)
+                .associate { it.key to it.value },
+        )
+    }
+
+    private companion object {
+        /** Mirror of [AdbBridge]'s diagnostic cap so test sizes track production. */
+        const val FPOWER_FAKE_DIAGNOSTIC_CAP: Int = 10
+    }
 
     override fun startScreenRecord(
         deviceId: String, sessionId: String, segment: Int,

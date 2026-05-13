@@ -2,6 +2,7 @@ package com.gameperf.desktop.core
 
 import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.FPowerSnapshot
 import com.gameperf.desktop.core.model.FrameSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
@@ -49,8 +50,38 @@ interface AdbBridgeApi {
      *  user wants. New code should always pass [pkg]. */
     fun captureCpuPercent(deviceId: String, pkg: String): Int
 
+    /**
+     * v4.5.0 — Composite of BOTH [captureCpuPercent(deviceId)] AND
+     * [captureCpuPercent(deviceId, pkg)] in a single call. Used by the
+     * GameBench-inspired dual-CPU-line chart so the dev distinguishes
+     * "device saturated by OS/other apps" from "my app saturating the device".
+     * Sentinels (-1 from either underlying method) are preserved verbatim;
+     * the caller gates on `> 0` before recording history.
+     *
+     * @since v4.5.0 (`cpu-total-vs-app-usage` change)
+     */
+    fun captureCpuDual(deviceId: String, pkg: String): CpuDualSnapshot
+
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot?
     fun captureTemperature(deviceId: String): ThermalSnapshot
+
+    /**
+     * v4.5.0 — Capture an [FPowerSnapshot] (battery power normalised by FPS).
+     *
+     * The bridge probes the battery sysfs catalog in
+     * [FPowerVendorCatalog.ORDERED_PATHS]; the first tuple yielding non-empty
+     * current + voltage payloads is cached per-device for the rest of the
+     * session. On cache hit the call issues exactly 2 shell reads
+     * (current + voltage of the cached tuple). On cold all-fail the failure
+     * is cached so subsequent ticks return immediately with NO further shell
+     * calls. The cache is cleared by [resetSessionState].
+     *
+     * [currentFps] is the per-tick FPS reading from the same loop; it is the
+     * divisor in `mW per frame`. Pass <=0 to surface a `FPS_ZERO` diagnostic.
+     *
+     * @since v4.5.0
+     */
+    fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot
 
     fun startScreenRecord(
         deviceId: String,
@@ -145,11 +176,17 @@ class RealAdbBridge : AdbBridgeApi {
     override fun captureCpuPercent(deviceId: String, pkg: String): Int =
         AdbBridge.captureCpuPercent(deviceId, pkg)
 
+    override fun captureCpuDual(deviceId: String, pkg: String): CpuDualSnapshot =
+        AdbBridge.captureCpuDual(deviceId, pkg)
+
     override fun captureMemory(deviceId: String, pkg: String): MemSnapshot? =
         AdbBridge.captureMemory(deviceId, pkg)
 
     override fun captureTemperature(deviceId: String): ThermalSnapshot =
         AdbBridge.captureTemperature(deviceId)
+
+    override fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot =
+        AdbBridge.captureFPower(deviceId, currentFps)
 
     override fun startScreenRecord(
         deviceId: String, sessionId: String, segment: Int,

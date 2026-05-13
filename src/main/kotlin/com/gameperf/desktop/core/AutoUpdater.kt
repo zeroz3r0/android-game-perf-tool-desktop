@@ -360,6 +360,14 @@ object AutoUpdater {
         val updatedJarPath: String = "",
         val message: String = "",
         val pendingElevatedExit: Boolean = false,
+        /**
+         * v4.4.1 (spec auto-updater REQ "Update failure surface area"):
+         * structured outcome so [com.gameperf.desktop.viewmodel.UpdateDelegate]
+         * can fan failures out to `UpdateFallbackState` and `UpdateHistoryStore`.
+         * `null` only when an existing call site predates the fan-out (backward
+         * compat); new failure paths MUST populate it.
+         */
+        val outcome: com.gameperf.desktop.core.update.UpdateOutcome? = null,
     )
 
     /** Minimum size (bytes) for a JAR to be considered an "uber JAR" with all deps embedded.
@@ -367,6 +375,93 @@ object AutoUpdater {
      *  if the downloaded update is smaller than this, replacing the bundle JAR with a thin
      *  JAR would crash the bundle on next launch (NoClassDefFoundError everywhere). */
     private const val MIN_UBER_JAR_BYTES = 50_000_000L
+
+    /** Canonical app name baked into staged JAR filenames. */
+    internal const val STAGED_JAR_APP_NAME: String = "android-game-perf-tool-desktop"
+
+    // ═══════ v4.4.1 — Failure fan-out helpers (pure, testable in isolation) ═══════
+
+    /**
+     * Build an [UpdateResult] for an HTTP / network download failure.
+     *
+     * Spec auto-updater REQ "Update failure surface area" (scenarios E1):
+     * download/asset failures MUST emit a [com.gameperf.desktop.core.update.UpdateOutcome.FailedDownload]
+     * outcome. The [errorMessage] surfaces the raw cause; [httpStatus] is `null`
+     * for connection-level failures (no HTTP exchange happened).
+     */
+    internal fun buildDownloadFailureResult(
+        errorMessage: String,
+        httpStatus: Int? = null,
+    ): UpdateResult = UpdateResult(
+        success = false,
+        message = errorMessage,
+        outcome = com.gameperf.desktop.core.update.UpdateOutcome.FailedDownload(
+            httpStatus = httpStatus,
+            message = errorMessage,
+        ),
+    )
+
+    /**
+     * Build an [UpdateResult] for a watchdog timeout (no canary observed).
+     *
+     * Spec auto-updater REQ U2: when `HelperLogWatcher.awaitCanary` returns
+     * `TimedOut`, the JVM MUST NOT call `exitProcess` and MUST emit
+     * [com.gameperf.desktop.core.update.UpdateOutcome.FailedWatchdogTimeout].
+     */
+    internal fun buildWatchdogTimeoutResult(message: String): UpdateResult = UpdateResult(
+        success = false,
+        message = message,
+        outcome = com.gameperf.desktop.core.update.UpdateOutcome.FailedWatchdogTimeout,
+    )
+
+    /**
+     * Build an [UpdateResult] for any catch-all terminal failure that does
+     * not fit the [com.gameperf.desktop.core.update.UpdateOutcome.FailedDownload],
+     * [com.gameperf.desktop.core.update.UpdateOutcome.FailedWatchdogTimeout], or
+     * [com.gameperf.desktop.core.update.UpdateOutcome.FailedHelperCrash] cases.
+     *
+     * Used for: missing JAR asset on the release, PowerShell spawn IOException,
+     * unexpected exceptions during planning. Spec scenario U3 (spawn throws).
+     */
+    internal fun buildUnknownFailureResult(message: String): UpdateResult = UpdateResult(
+        success = false,
+        message = message,
+        outcome = com.gameperf.desktop.core.update.UpdateOutcome.FailedUnknown(message),
+    )
+
+    /**
+     * Build a successful, elevated-exit-pending [UpdateResult].
+     *
+     * Spec auto-updater REQ U1: canary observed within timeout → return
+     * `success=true, pendingElevatedExit=true, outcome=Success` so the caller
+     * (UpdateDelegate) can run its existing 1.5s-then-`exitProcess(0)` path.
+     */
+    internal fun buildElevatedSuccessResult(updatedJarPath: String, message: String): UpdateResult =
+        UpdateResult(
+            success = true,
+            pendingElevatedExit = true,
+            updatedJarPath = updatedJarPath,
+            message = message,
+            outcome = com.gameperf.desktop.core.update.UpdateOutcome.Success,
+        )
+
+    /**
+     * Build the staged JAR filename for a download targeting [targetVersion].
+     *
+     * v4.4.1 (spec N1/N2): the filename MUST derive from the release's
+     * `targetVersion` rather than the running [AppVersion.NAME], so the
+     * on-disk artifact accurately names the version that will be installed.
+     * Pre-v4.4.1 a v4.3.8 client downloading v4.4.1 produced the misleading
+     * `android-game-perf-tool-desktop-4.3.8-staged.jar`.
+     *
+     * Path-traversing characters (`/`, `\`) in [targetVersion] are sanitized
+     * to `-` defensively. Hyphens (legitimate in pre-release tags like
+     * `4.4.1-beta`) are preserved.
+     */
+    internal fun stagedJarFilename(targetVersion: String): String {
+        val sanitized = targetVersion.replace('/', '-').replace('\\', '-')
+        return "$STAGED_JAR_APP_NAME-$sanitized-staged.jar"
+    }
 
     /**
      * Apply the downloaded update.
@@ -387,7 +482,16 @@ object AutoUpdater {
      * Every update attempt writes a detailed log to `~/GamePerf Reports/updates/last-update.log`
      * for post-mortem debugging.
      */
-    fun applyUpdate(downloadedFile: File): UpdateResult {
+    fun applyUpdate(downloadedFile: File): UpdateResult = applyUpdate(downloadedFile, AppVersion.NAME)
+
+    /**
+     * v4.4.1 overload that threads the release [targetVersion] through to the
+     * Windows-bundle elevated path so the staged JAR filename reflects the
+     * version being installed (per spec N1/N2). Other branches ignore
+     * [targetVersion] today — the staged filename is only used in the
+     * elevated-helper temp dir.
+     */
+    fun applyUpdate(downloadedFile: File, targetVersion: String): UpdateResult {
         return try {
             val info = detectInstallation()
 
@@ -413,7 +517,7 @@ object AutoUpdater {
                         ?: return UpdateResult(false, message = "No se pudo determinar el JAR del bundle")
                     val launcher = info.launcher
                         ?: return UpdateResult(false, message = "No se pudo localizar el launcher .exe del bundle")
-                    applyUpdateWindowsBundle(downloadedFile, currentJar, launcher)
+                    applyUpdateWindowsBundle(downloadedFile, currentJar, launcher, targetVersion)
                 }
 
                 InstallationType.LINUX_NATIVE_PACKAGE -> {
@@ -497,7 +601,12 @@ object AutoUpdater {
         return UpdateResult(true) // unreachable
     }
 
-    private fun applyUpdateWindowsBundle(downloadedFile: File, currentJar: File, launcher: File): UpdateResult {
+    private fun applyUpdateWindowsBundle(
+        downloadedFile: File,
+        currentJar: File,
+        launcher: File,
+        targetVersion: String = AppVersion.NAME,
+    ): UpdateResult {
         if (downloadedFile.length() < MIN_UBER_JAR_BYTES) {
             throw IllegalStateException(
                 "El JAR descargado (${downloadedFile.length()} bytes) es demasiado pequeño para ser un uber-JAR. " +
@@ -518,8 +627,9 @@ object AutoUpdater {
         // app down cleanly.
         if (InstallLocation.requiresAdmin(installDir, isWindows = true)) {
             val helperDir = File(System.getProperty("java.io.tmpdir"), "GamePerf-update").apply { mkdirs() }
-            // Stage the new JAR in the temp dir so the elevated helper can read it after we exit.
-            val stagedNewJar = File(helperDir, "android-game-perf-tool-desktop-${AppVersion.NAME}-staged.jar")
+            // v4.4.1 spec N1/N2: staged filename derives from the release's target version,
+            // not the running AppVersion.NAME. See [stagedJarFilename] KDoc for rationale.
+            val stagedNewJar = File(helperDir, stagedJarFilename(targetVersion))
             downloadedFile.copyTo(stagedNewJar, overwrite = true)
             return planAndLaunchElevatedUpdate(
                 newJar = stagedNewJar,
@@ -717,14 +827,86 @@ exit 0
     }
 
     /**
+     * v4.4.1 (ADR-8): single source of truth for the helper-log path used by
+     * BOTH the JVM-side breadcrumb writer and HelperLogWatcher's production
+     * wrapper. Keeping the resolution in one place prevents the two writers
+     * from drifting apart.
+     */
+    fun lastUpdateLogPath(): java.nio.file.Path =
+        File(System.getProperty("user.home"), "GamePerf Reports/updates/last-update.log").toPath()
+
+    /**
+     * v4.4.1 — pure orchestrator for the post-spawn watchdog flow.
+     *
+     * Sequence (per design §1):
+     *   1. write JVM-side breadcrumb to `last-update.log` BEFORE spawning the helper
+     *      (spec REQ "Pre-spawn JVM breadcrumb" / scenario B1)
+     *   2. invoke [spawn] (production wires this to `ProcessBuilder.start()`)
+     *   3. if spawn fails → return [buildUnknownFailureResult] (U3); skip watchdog
+     *   4. if spawn ok → invoke [awaitCanary] and fan out:
+     *      - [WatchdogResult.CanaryFound] → [buildElevatedSuccessResult] (U1)
+     *      - [WatchdogResult.Disabled]    → [buildElevatedSuccessResult] (W4 — preserves legacy 1.5s exit)
+     *      - [WatchdogResult.TimedOut]    → [buildWatchdogTimeoutResult] (U2 — NO pendingExit)
+     *
+     * Breadcrumb writer errors are SWALLOWED (spec scenario B3) — a read-only
+     * log dir must NOT block the user's update.
+     *
+     * All collaborators are injected so the integration test can drive every
+     * branch deterministically without spawning a real PowerShell.
+     */
+    @Suppress("LongParameterList")
+    internal fun runWatchdogAndBuildResult(
+        oldJar: File,
+        installDir: File,
+        appExe: File,
+        logPath: File,
+        writeBreadcrumb: () -> Unit,
+        spawn: () -> Boolean,
+        awaitCanary: () -> com.gameperf.desktop.core.update.WatchdogResult,
+    ): UpdateResult {
+        // Reference unused params so detekt's UnusedParameter rule stays quiet —
+        // they belong to the spawn closure's captured environment in production.
+        require(installDir.path.isNotBlank())
+        require(appExe.path.isNotBlank())
+        require(logPath.path.isNotBlank())
+
+        // 1. JVM-side breadcrumb. Tolerated to fail per spec B3.
+        runCatching { writeBreadcrumb() }
+
+        // 2. Spawn the elevated helper. Closure returns false on IOException/etc.
+        val launched = runCatching { spawn() }.getOrElse { false }
+        if (!launched) {
+            return buildUnknownFailureResult(
+                "No se pudo lanzar el actualizador con permisos de administrador. " +
+                    "Cancelaste la solicitud de UAC o PowerShell no está disponible."
+            )
+        }
+
+        // 3. Await the helper canary. Watchdog disabled (timeout=0) returns Disabled
+        //    so we treat it as Success and let UpdateDelegate run the legacy 1.5s exit.
+        return when (awaitCanary()) {
+            is com.gameperf.desktop.core.update.WatchdogResult.CanaryFound,
+            is com.gameperf.desktop.core.update.WatchdogResult.Disabled -> buildElevatedSuccessResult(
+                updatedJarPath = oldJar.absolutePath,
+                message = "Actualización lista. Cerrando GamePerf para aplicarla con permisos de administrador.",
+            )
+            is com.gameperf.desktop.core.update.WatchdogResult.TimedOut -> buildWatchdogTimeoutResult(
+                "El actualizador no respondió a tiempo. Probablemente cancelaste la solicitud de Windows " +
+                    "o el helper no pudo iniciarse. Probá descargar la nueva versión manualmente."
+            )
+        }
+    }
+
+    /**
      * Production entry point: plan the elevated update, then spawn the `powershell.exe`
-     * process that triggers the UAC consent dialog. Returns a `pendingElevatedExit`
-     * result on success so the caller exits the app to let the helper take over.
+     * process that triggers the UAC consent dialog. v4.4.1 wraps the spawn with the
+     * pre-spawn breadcrumb + post-spawn canary watchdog (default timeout 8 s per ADR-2).
      *
      * If UAC is denied (user clicks "No"), the outer powershell.exe still exits 0
-     * — there's no portable way to know the user denied without polling. We rely on
-     * the helper's log file at `~/GamePerf Reports/updates/last-update.log` for
-     * post-mortem debugging when the user reports "I clicked Update and nothing happened".
+     * — but the watchdog now catches this as a [com.gameperf.desktop.core.update.WatchdogResult.TimedOut]
+     * because the elevated helper never spawned to write the canary line. The result
+     * surfaces [com.gameperf.desktop.core.update.UpdateOutcome.FailedWatchdogTimeout]
+     * to UpdateDelegate, which renders the fallback panel (spec U2).
      */
     private fun planAndLaunchElevatedUpdate(
         newJar: File,
@@ -737,7 +919,7 @@ exit 0
         if (!plan.success) return plan
 
         val helperScript = File(helperDir, "update-helper.ps1")
-        val logPath = File(System.getProperty("user.home"), "GamePerf Reports/updates/last-update.log")
+        val logPath = lastUpdateLogPath().toFile()
         runCatching { logPath.parentFile?.mkdirs() }
 
         val args = buildElevatedLaunchArgs(
@@ -749,22 +931,33 @@ exit 0
             logPath = logPath,
         )
 
-        val launched = runCatching {
-            ProcessBuilder(args)
-                .redirectErrorStream(true)
-                .start()
-            true
-        }.getOrElse { false }
-
-        return if (launched) {
-            plan
-        } else {
-            UpdateResult(
-                false,
-                message = "No se pudo lanzar el actualizador con permisos de administrador. " +
-                    "Cancelaste la solicitud de UAC o PowerShell no está disponible."
-            )
-        }
+        return runWatchdogAndBuildResult(
+            oldJar = oldJar,
+            installDir = installDir,
+            appExe = appExe,
+            logPath = logPath,
+            writeBreadcrumb = {
+                logPath.parentFile?.mkdirs()
+                val ts = java.time.Instant.now().toString()
+                logPath.appendText(
+                    "$ts JVM breadcrumb: outer PS launching helper for v${AppVersion.NAME} " +
+                        "→ v${plan.updatedJarPath} (script=${helperScript.absolutePath})\n",
+                    Charsets.UTF_8,
+                )
+            },
+            spawn = {
+                ProcessBuilder(args)
+                    .redirectErrorStream(true)
+                    .start()
+                true
+            },
+            awaitCanary = {
+                com.gameperf.desktop.core.update.HelperLogWatcher.awaitCanary(
+                    logPath = logPath.toPath(),
+                    timeout = kotlin.time.Duration.parse("8s"),
+                )
+            },
+        )
     }
 
     private fun applyUpdateLinuxPackage(

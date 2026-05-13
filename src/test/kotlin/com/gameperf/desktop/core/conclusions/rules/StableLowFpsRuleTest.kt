@@ -56,4 +56,28 @@ class StableLowFpsRuleTest {
         val agg = aggregates(p50 = 0, avgCpu = 0, maxTempCpu = 0.0)
         assertFalse(StableLowFpsRule.matches(input(filtered = agg, targetFps = 0)))
     }
+
+    /**
+     * v4.4.1 (discovery #274): when the parser flagged thermalAvailable=false,
+     * the rule MUST NOT fire even if FPS+CPU+temp predicates would otherwise
+     * pass. Without this guard the recommendation falsely tells the user
+     * "the device has headroom" using a fabricated 0°C reading.
+     */
+    @Test
+    fun `does not fire when thermalAvailable is false even if FPS and CPU predicates pass`() {
+        val agg = aggregates(p50 = 20, avgCpu = 30, maxTempCpu = 0.0)
+        val input = input(filtered = agg, targetFps = 30, thermalAvailable = false)
+        assertFalse(StableLowFpsRule.matches(input))
+    }
+
+    /**
+     * Triangulation: the same fixture WITH thermalAvailable=true (default) still
+     * fires — proves the new guard is the single point of difference.
+     */
+    @Test
+    fun `still fires when thermalAvailable is true and predicates pass`() {
+        val agg = aggregates(p50 = 20, avgCpu = 30, maxTempCpu = 38.0)
+        val input = input(filtered = agg, targetFps = 30, thermalAvailable = true)
+        assertTrue(StableLowFpsRule.matches(input))
+    }
 }

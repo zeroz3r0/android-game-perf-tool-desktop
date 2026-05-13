@@ -1,0 +1,21 @@
+05-12 10:15:00.000  4521  5544 I MyGame: Frame rendered fps=60
+05-12 10:15:00.500  4521  5544 I UE4: LogTemp: tick complete frame=240
+05-12 10:15:01.000  4521  5544 I MyGame: Player triggered level transition
+05-12 10:15:01.050  4521  5544 I LoadingScreen: LoadingScreen Shown
+05-12 10:15:01.100  4521  5544 I UE4: LogStreaming: Loading package /Game/Maps/Arena
+05-12 10:15:01.150  4521  5544 I UE4: LogStreaming: Loading package /Game/Characters/HeroBP
+05-12 10:15:01.200  4521  5544 D UE4: LogStreaming: Async loading 47 packages
+05-12 10:15:01.400  4521  5544 D UE4: LogStreaming: Package /Game/Maps/Arena loaded
+05-12 10:15:01.600  4521  5544 D UE4: LogStreaming: Package /Game/Characters/HeroBP loaded
+05-12 10:15:01.800  4521  5544 D UE4: LogStreaming: Loading textures
+05-12 10:15:02.000  4521  5544 D UE4: LogStreaming: Loading audio
+05-12 10:15:02.200  4521  5544 D UE4: LogStreaming: Loading materials
+05-12 10:15:02.400  4521  5544 D UE4: LogStreaming: Loading static meshes
+05-12 10:15:02.600  4521  5544 D UE4: LogStreaming: Loading levels
+05-12 10:15:02.800  4521  5544 D UE4: LogStreaming: Finalizing load
+05-12 10:15:03.000  4521  5544 I UE4: LogStreaming: Flushing async loaders
+05-12 10:15:03.050  4521  5544 I LoadingScreen: LoadingScreen Hidden
+05-12 10:15:03.100  4521  5544 I MyGame: Map ready for play
+05-12 10:15:03.200  4521  5544 I MyGame: Frame rendered fps=58
+05-12 10:15:03.700  4521  5544 I UE4: LogTemp: tick complete frame=250
+05-12 10:15:04.000  4521  5544 I MyGame: Frame rendered fps=60

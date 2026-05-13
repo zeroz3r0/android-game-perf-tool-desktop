@@ -5,11 +5,17 @@ import com.gameperf.desktop.core.AppVersion
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.conclusions.Severity
+import com.gameperf.desktop.core.devactions.DevActionBrief
+import com.gameperf.desktop.core.devactions.DevActionItem
 import com.gameperf.desktop.core.events.Confidence
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventType
 import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.model.FPowerDiagnostic
+import com.gameperf.desktop.core.model.FPowerUnavailableReason
+import com.gameperf.desktop.core.model.ThermalDiagnostic
+import com.gameperf.desktop.core.model.ThermalUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
@@ -71,6 +77,44 @@ object ReportGenerator {
         detectionMode: DetectionMode = DetectionMode.MANUAL_ONLY,
         detectorWarnings: List<String> = emptyList(),
         captureStartMs: Long = 0L,
+        // v4.4.1 -- thermal pipeline availability flag + diagnostic payload.
+        // When `thermalAvailable = false` the temperature card renders "N/D"
+        // instead of "0°C" (which the user would otherwise read as "device is
+        // cold") and the temp section gets a Spanish-tuteo-formal banner
+        // listing the raw vendor zone names that the classifier could not
+        // bucket. Defaults preserve pre-v4.4.1 rendering for legacy fixtures
+        // (ReportRenderingTest, ReportGradingTest) and re-renders of v4.3.x
+        // sessions reloaded from `.gameperf` history files.
+        thermalAvailable: Boolean = true,
+        thermalDiagnostic: ThermalDiagnostic? = null,
+        // v4.5.0 -- FPower (mW/frame) pipeline payload. All defaulted so
+        // legacy fixtures (ReportRenderingTest, ReportGradingTest) and pre-
+        // v4.5.0 history re-renders skip the FPower section entirely. The
+        // card is rendered only when (fpowerAvailable && fpowerHistory.isNotEmpty())
+        // OR (!fpowerAvailable && fpowerDiagnostic != null) per spec FPW-009.
+        // See design §10 + ADR-5 for the Spanish-tuteo-formal banner copy.
+        fpowerHistory: List<Double> = emptyList(),
+        fpowerAvg: Double = 0.0,
+        fpowerPeak: Double = 0.0,
+        fpowerAvailable: Boolean = true,
+        fpowerDiagnostic: FPowerDiagnostic? = null,
+        // v4.5.0 Sprint 3 — DevActionBrief (spec DAB-008, ADR-7).
+        // Rendered at TOP of body BEFORE the summary section, with a
+        // nav-link "Acción Dev" as the FIRST nav entry. Defaults to
+        // null so legacy fixtures (ReportRenderingTest, ReportGradingTest)
+        // and pre-Sprint-3 history re-renders skip the new section
+        // entirely (backward compat DAB-010 negative case).
+        devActionBrief: DevActionBrief? = null,
+        // SDD cpu-total-vs-app-usage Sprint 2 — total-device CPU history
+        // (parallel to [cpuHistory] which carries the app-specific %).
+        // Defaulted-empty so legacy fixtures (ReportRenderingTest) and
+        // pre-v4.5.x `.gameperf` re-renders skip the second Chart.js
+        // dataset entirely and stay byte-equivalent (design ADR-3 mirrors
+        // the v4.5.0 fpower backward-compat playbook). When non-empty the
+        // CPU chart switches to the 2-dataset form per ADR-5 and the CPU
+        // section gains a Spanish-tuteo-formal caveat about device
+        // saturation (CPUDUAL-003).
+        cpuTotalHistory: List<Int> = emptyList(),
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -125,6 +169,12 @@ object ReportGenerator {
         val javD = javaHistory.joinToString(",")
         val memL = memHistory.indices.joinToString(",") { "\"${it + 1}s\"" }
         val cpuD = cpuHistory.joinToString(",")
+        // SDD cpu-total-vs-app-usage Sprint 2 — total-device CPU series for
+        // the optional second Chart.js dataset (design ADR-5). Empty string
+        // when [cpuTotalHistory] is empty so the JS branch below stays
+        // identical to the legacy single-dataset form.
+        val cpuTotalD = cpuTotalHistory.joinToString(",")
+        val cpuDualView = cpuTotalHistory.isNotEmpty()
         val tcD = tempCpuHistory.joinToString(",") { fmtUS("%.1f", it) }
         val tgD = tempGpuHistory.joinToString(",") { fmtUS("%.1f", it) }
         val tsD = tempSkinHistory.joinToString(",") { fmtUS("%.1f", it) }
@@ -175,6 +225,25 @@ object ReportGenerator {
             filteredAggregates != null -> sectionConclusionsEmpty()
             else -> ""
         }
+
+        // v4.5.0 — FPower section (spec FPW-009). Empty string when there's
+        // nothing to render (legacy callers, ultra-short captures, defaulted
+        // args). Injected after the temperature section in the template.
+        val fpowerSectionHtml = fpowerSection(
+            history = fpowerHistory,
+            avg = fpowerAvg,
+            peak = fpowerPeak,
+            available = fpowerAvailable,
+            diagnostic = fpowerDiagnostic,
+        )
+
+        // v4.5.0 Sprint 3 — DevActionBrief section (spec DAB-008, ADR-7).
+        // Rendered at TOP of body BEFORE the summary section. Empty string
+        // when brief is null or has no items (backward compat DAB-010).
+        val devActionBriefHtml = sectionDevActionBrief(devActionBrief)
+        val devActionBriefNavLink = if (devActionBriefHtml.isNotEmpty()) {
+            """<a href="#sec-dev-action-brief" class="nav-link">Acción Dev</a>"""
+        } else ""
 
         // Problems HTML
         val problemsHtml = if (problems.isEmpty()) {
@@ -251,6 +320,7 @@ $CSS
 
 <nav class="topnav" id="topnav">
     <div class="nav-inner">
+        $devActionBriefNavLink
         <a href="#sec-summary" class="nav-link">Resumen</a>
         ${if (conclusionsHtml.isNotEmpty()) """<a href="#sec-conclusions" class="nav-link">Conclusiones</a>""" else ""}
         <a href="#sec-dashboard" class="nav-link">Metricas</a>
@@ -284,6 +354,8 @@ $CSS
 </header>
 
 $detectionBannerHtml
+
+$devActionBriefHtml
 
 <section id="sec-summary" class="card card-summary">
     <div class="summary-grid">
@@ -347,19 +419,36 @@ $excessiveCalloutHtml
             // v4.3.6: card title + value + sub-line all depend on whether the
             // device exposed a skin sensor. Skin = case temp the user feels.
             // Die = silicon temp, routinely 80-95°C under load (NORMAL).
+            //
+            // v4.4.1 (temperature-not-shown): when the thermal pipeline reports
+            // unavailable (!thermalAvailable) the card renders "N/D" + sub-line
+            // "Sensor no disponible" with a neutral grade ('A' to avoid the
+            // misleading red/yellow visual). The user would otherwise read the
+            // legacy "0°C" / "N/A" fallback as "device is cold".
             run {
-                val cardTitle = if (showSkinAsPrimary) "Temperatura piel" else "Temperatura die"
-                val primaryValue = when {
-                    showSkinAsPrimary -> "${maxTempSkin.toInt()}\u00B0C"
-                    maxTempCpu > 0 -> "${maxTempCpu.toInt()}\u00B0C"
-                    else -> "N/A"
+                if (!thermalAvailable) {
+                    metricCard(
+                        title = "Temperatura",
+                        value = "N/D",
+                        icon = "temp",
+                        grade = 'A',
+                        gc = "#94a3b8",
+                        detail = "Sensor no disponible",
+                    )
+                } else {
+                    val cardTitle = if (showSkinAsPrimary) "Temperatura piel" else "Temperatura die"
+                    val primaryValue = when {
+                        showSkinAsPrimary -> "${maxTempSkin.toInt()}\u00B0C"
+                        maxTempCpu > 0 -> "${maxTempCpu.toInt()}\u00B0C"
+                        else -> "N/A"
+                    }
+                    val subLine = when {
+                        showSkinAsPrimary && maxTempCpu > 0 -> "Die máx: ${maxTempCpu.toInt()}\u00B0C"
+                        maxTempGpu > 0 -> "GPU ${maxTempGpu.toInt()}\u00B0C"
+                        else -> "Solo CPU"
+                    }
+                    metricCard(cardTitle, primaryValue, "temp", tempGrade, gradeColor(tempGrade), subLine)
                 }
-                val subLine = when {
-                    showSkinAsPrimary && maxTempCpu > 0 -> "Die máx: ${maxTempCpu.toInt()}\u00B0C"
-                    maxTempGpu > 0 -> "GPU ${maxTempGpu.toInt()}\u00B0C"
-                    else -> "Solo CPU"
-                }
-                metricCard(cardTitle, primaryValue, "temp", tempGrade, gradeColor(tempGrade), subLine)
             }
         }
         ${metricCard("Bateria", "${batteryDrain}%", "battery",
@@ -430,7 +519,28 @@ $excessiveCalloutHtml
     <div class="stats-row">
         <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value ${cls(avgCpu, 85, 70)}">${avgCpu}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Maximo</span><span class="stat-pill-value">${maxCpu}%</span></div>
+        ${
+            // SDD cpu-total-vs-app-usage Sprint 2 — optional "Total prom"
+            // pill when dual view is active (design ADR-5 + design §wiring
+            // map). Average computed inline because we only need it here
+            // and the existing maxCpu/avgCpu fields stay app-specific so
+            // grading semantics are unchanged (ADR-7).
+            if (cpuDualView) {
+                val avgTotal = cpuTotalHistory.average().toInt()
+                """<div class="stat-pill"><span class="stat-pill-label">Total prom</span><span class="stat-pill-value">${avgTotal}%</span></div>"""
+            } else ""
+        }
     </div>
+    ${
+        // CPUDUAL-003 — Spanish-tuteo-formal caveat copy. Rendered ONLY
+        // when the dual view is active so legacy fixtures
+        // (ReportRenderingTest) stay byte-equivalent (CPUDUAL-004). Voice
+        // register matches the existing thermal die/skin copy at line 521
+        // (tuteo-formal: "tu juego", "tu dispositivo").
+        if (cpuDualView) {
+            """<p class="hint">&#8505; <strong>Total dispositivo</strong> incluye el SO y otros procesos del telefono. Si el total esta alto pero la app esta baja, el dispositivo esta saturado por otros procesos &mdash; no necesariamente por tu juego.</p>"""
+        } else ""
+    }
     <div class="chart-container"><canvas id="cpuChart"></canvas></div>
 </section>
 
@@ -439,6 +549,7 @@ $excessiveCalloutHtml
         <h2>&#127777; Temperatura</h2>
         <span class="card-badge" style="background:${gradeColor(tempGrade)}20;color:${gradeColor(tempGrade)}">${tempGrade}</span>
     </div>
+    ${thermalDiagnosticBanner(thermalAvailable, thermalDiagnostic)}
     <p class="card-desc">${
         // v4.3.6: copy depends on whether we have skin or only die. Skin throttle
         // ~42°C; die throttle ~95°C. Mixing them was the v4.3.5 UX bug that made
@@ -460,6 +571,8 @@ $excessiveCalloutHtml
     </div>
     <div class="chart-container"><canvas id="tempChart"></canvas></div>
 </section>
+
+$fpowerSectionHtml
 
 <section class="card">
     <div class="card-header"><h2>&#128267; Bateria</h2></div>
@@ -689,7 +802,36 @@ var C = IS_PRINT ? COLORS_PRINT : COLORS_DARK;
 })();
 """)
             // CPU Chart — same color treatment as FPS
-            if (cpuD.isNotEmpty()) append("""
+            // SDD cpu-total-vs-app-usage Sprint 2 (ADR-5): when
+            // `cpuTotalHistory` is non-empty we emit a 2-dataset chart with
+            // 'CPU total dispositivo' (amber, informational) layered first
+            // and 'CPU app' (cyan + segment-color gradient) layered second.
+            // When empty we emit the legacy single 'CPU %' dataset so
+            // `ReportRenderingTest` + pre-v4.5.x re-renders stay
+            // byte-equivalent.
+            if (cpuD.isNotEmpty() && cpuDualView) append("""
+(function(){
+  var c=document.getElementById('cpuChart').getContext('2d');
+  var g;
+  if (IS_PRINT) {
+    g = 'rgba(3,105,161,0.08)';
+  } else {
+    g = c.createLinearGradient(0,0,0,300);
+    g.addColorStop(0,'rgba(56,189,248,0.2)');
+    g.addColorStop(1,'rgba(56,189,248,0.01)');
+  }
+  new Chart(c,{
+    type:'line',
+    data:{labels:[$tL],datasets:[
+      {label:'CPU total dispositivo',data:[$cpuTotalD],borderColor:C.warn,tension:0.3,pointRadius:0,borderWidth:1.5,borderDash:[6,4]},
+      {label:'CPU app',data:[$cpuD],borderColor:C.primary,backgroundColor:g,fill:true,tension:0.3,pointRadius:0,borderWidth: IS_PRINT ? 2 : 2.5,segment:{borderColor:function(ctx){var v=ctx.p1.parsed.y;if(v>85)return C.bad;if(v>70)return C.warn;return C.primary}}}
+    ]},
+    options:{...B,scales:{...B.scales,y:{...B.scales.y,min:0,max:100}},plugins:{...B.plugins,annotation:{annotations:{
+      w:{type:'line',yMin:85,yMax:85,borderColor: IS_PRINT ? 'rgba(185,28,28,0.6)' : 'rgba(239,68,68,0.3)',borderWidth:1,borderDash:[6,4],label:{content:'85% Saturacion',display:true,color: C.bad,font:{size:9},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:3}}
+    }}}}
+  });
+})();
+""") else if (cpuD.isNotEmpty()) append("""
 (function(){
   var c=document.getElementById('cpuChart').getContext('2d');
   var g;
@@ -1089,6 +1231,116 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
         return """<div class="metric-raw">$prefix: $rawStr$unit</div>"""
     }
 
+    /**
+     * v4.5.0 Sprint 3 — `#sec-dev-action-brief` renderer (spec DAB-008,
+     * design ADR-7). Rendered at the TOP of `<body>` BEFORE the summary
+     * section. Hidden entirely when the brief is null or has no items
+     * (DAB-008 negative + DAB-010 backward compat).
+     *
+     * Layout (Spanish tuteo-formal, design ADR-4):
+     *  - `<h2>` headline with target audience signal
+     *  - per-item `<article>` with severity badge (CRITICAL/WARNING/INFO),
+     *    confidence badge, evidence list, diagnostic paragraph, code-area
+     *    hints, suggested actions (each with optional doc link).
+     *  - Top-N visible by default (DAB-012); when items.size > topN a
+     *    "Mostrar todos los hallazgos (N más)" toggle reveals the rest.
+     *
+     * Severity-CSS classes (`severity-CRITICAL`, `severity-WARNING`,
+     * `severity-INFO`) match the spec's `.dev-action-severity-*` family
+     * (DAB-011) — we keep the inline form to align with the `.severity-*`
+     * convention already used by the existing problem rows.
+     */
+    private fun sectionDevActionBrief(brief: DevActionBrief?): String {
+        if (brief == null || brief.items.isEmpty()) return ""
+        val items = brief.items
+        val topN = brief.topN
+        val itemsHtml = items.joinToString("\n") { renderDevActionItem(it) }
+        val toggleHtml = if (items.size > topN) {
+            val rest = items.size - topN
+            """<button class="show-all-toggle" onclick="document.querySelector('.dev-action-brief').classList.toggle('show-all')">Mostrar todos los hallazgos ($rest más)</button>"""
+        } else ""
+        return """
+<section id="sec-dev-action-brief" class="dev-action-brief">
+    <h2>&#127919; Para el equipo dev — acciones priorizadas</h2>
+    <div class="brief-summary">
+        Se identificaron <strong>${items.size}</strong> hallazgos. ${if (items.size > topN) "Top $topN mostrados." else "Todos mostrados."}
+    </div>
+    <div class="brief-items">
+$itemsHtml
+    </div>
+    $toggleHtml
+</section>"""
+    }
+
+    /** Per-item `<article>` block. Spanish tuteo-formal copy. */
+    private fun renderDevActionItem(item: DevActionItem): String {
+        val severityName = item.severity.name
+        val (badgeLabel, badgeIcon) = when (item.severity) {
+            Severity.CRITICAL -> "CRÍTICO" to "&#9940;"
+            Severity.WARNING -> "ALERTA" to "&#9888;"
+            Severity.INFO -> "INFO" to "&#8505;"
+        }
+        val confidenceLabel = when (item.confidence) {
+            com.gameperf.desktop.core.devactions.Confidence.HIGH -> "confianza alta"
+            com.gameperf.desktop.core.devactions.Confidence.MEDIUM -> "confianza media"
+            com.gameperf.desktop.core.devactions.Confidence.LOW -> "confianza baja"
+        }
+        val evidenceItems = item.evidence.values.entries.joinToString("\n") { (k, v) ->
+            "                <li><strong>${esc(k)}</strong>: ${esc(v)}</li>"
+        }
+        val evidenceBlock = if (item.evidence.values.isNotEmpty()) {
+            """
+        <section class="evidence">
+            <h4>&#128202; Evidencia (${esc(item.evidence.segment)}):</h4>
+            <ul>
+$evidenceItems
+            </ul>
+        </section>"""
+        } else ""
+        val diagnosticBlock = if (item.diagnostic.isNotBlank()) {
+            """
+        <section class="diagnostic">
+            <h4>&#128269; Diagnóstico probable:</h4>
+            <p>${esc(item.diagnostic)}</p>
+        </section>"""
+        } else ""
+        val hintsItems = item.codeAreaHints.joinToString("\n") { hint ->
+            val link = hint.docLink?.let { """ <a href="${esc(it)}">Doc</a>""" } ?: ""
+            "                <li><strong>${esc(hint.area)}</strong> — ${esc(hint.whyHere)}$link</li>"
+        }
+        val hintsBlock = if (item.codeAreaHints.isNotEmpty()) {
+            """
+        <section class="code-areas">
+            <h4>&#127919; Dónde mirar:</h4>
+            <ul>
+$hintsItems
+            </ul>
+        </section>"""
+        } else ""
+        val actionsItems = item.suggestedActions.joinToString("\n") { step ->
+            val tool = step.tool?.let { " <em>(${esc(it)})</em>" } ?: ""
+            val link = step.docLink?.let { """ <a href="${esc(it)}">Doc</a>""" } ?: ""
+            "                <li>${esc(step.description)}$tool$link</li>"
+        }
+        val actionsBlock = if (item.suggestedActions.isNotEmpty()) {
+            """
+        <section class="actions">
+            <h4>&#9881;&#65039; Acciones sugeridas:</h4>
+            <ol>
+$actionsItems
+            </ol>
+        </section>"""
+        } else ""
+        return """
+    <article class="brief-item severity-$severityName" data-confidence="${item.confidence.name}">
+        <header class="brief-item-header">
+            <span class="severity-badge">$badgeIcon $badgeLabel</span>
+            <h3>${esc(item.title)}</h3>
+            <span class="confidence-badge">$confidenceLabel</span>
+        </header>$evidenceBlock$diagnosticBlock$hintsBlock$actionsBlock
+    </article>"""
+    }
+
     private fun sectionConclusions(conclusions: List<Conclusion>): String {
         if (conclusions.isEmpty()) return ""
         val isInsufficientData = conclusions.size == 1 && conclusions[0].ruleId == "insufficient-data"
@@ -1197,6 +1449,14 @@ $cards
                 EventType.IAP -> "Compra (IAP)"
                 EventType.LOADING -> "Carga"
                 EventType.FOREGROUND_LOSS -> "Pérdida de foreground"
+                EventType.APP_STARTUP -> "Arranque"
+                EventType.SDK_INIT -> "Init SDK"
+                EventType.ANR -> "ANR"
+                EventType.SCREEN_TRANSITION -> "Navegación"
+                EventType.INSTRUMENTED -> "Instrumentado"
+                EventType.VR_SESSION -> "VR"
+                EventType.VR_RETURN_TRANSITION -> "Retorno VR"
+                EventType.RATE_US -> "Rate-us"
                 EventType.UNKNOWN -> "Desconocido"
             }
             val typeColor = when (e.type) {
@@ -1204,6 +1464,14 @@ $cards
                 EventType.IAP -> "#38bdf8"
                 EventType.LOADING -> "#f59e0b"
                 EventType.FOREGROUND_LOSS -> "#a855f7"
+                EventType.APP_STARTUP -> "#3b82f6"
+                EventType.SDK_INIT -> "#60a5fa"
+                EventType.ANR -> "#ef4444"
+                EventType.SCREEN_TRANSITION -> "#94a3b8"
+                EventType.INSTRUMENTED -> "#a855f7"
+                EventType.VR_SESSION -> "#06b6d4"
+                EventType.VR_RETURN_TRANSITION -> "#f59e0b"
+                EventType.RATE_US -> "#22c55e"
                 EventType.UNKNOWN -> "#94a3b8"
             }
             val confidenceTag = when (e.confidence) {
@@ -1318,6 +1586,168 @@ $cards
     Las métricas filtradas pueden no ser representativas, así que las cifras mostradas son las brutas (toda la sesión) como salvaguarda.
     Considera capturar una sesión más larga sin tantas interrupciones para un análisis más fiable.
 </div>"""
+    }
+
+    /**
+     * v4.4.1 -- Diagnostic banner emitted at the top of the temperature section
+     * when the thermal pipeline reported unavailable (`!thermalAvailable`) AND
+     * the parser populated a [ThermalDiagnostic] payload. The banner explains
+     * (in Spanish tuteo-formal) WHY the pipeline failed and lists the raw
+     * vendor zone names so users / devs can file a vendor-catalog bug.
+     *
+     * Returns an empty string on the happy path (thermalAvailable=true) and
+     * when the caller did not pass a diagnostic — keeps the legacy temp
+     * section markup identical for v4.3.x re-renders.
+     *
+     * Reason copy is intentionally short (one sentence) so the banner stays
+     * visually balanced against the rest of the section. Zone names are
+     * `take(10)` capped defensively even though [com.gameperf.desktop.core.AdbThermalParser]
+     * already truncates the list at the source — `escapeHtml`-style escaping
+     * via [esc] protects against the (theoretical) vendor that puts HTML
+     * special chars in a sysfs node name.
+     */
+    private fun thermalDiagnosticBanner(
+        thermalAvailable: Boolean,
+        diagnostic: ThermalDiagnostic?,
+    ): String {
+        if (thermalAvailable) return ""
+        if (diagnostic == null) return ""
+        val reasonText = when (diagnostic.reason) {
+            ThermalUnavailableReason.NO_ZONES_DETECTED ->
+                "El dispositivo no reportó zonas térmicas legibles. Suele ocurrir cuando el acceso a sysfs queda bloqueado por permisos."
+            ThermalUnavailableReason.ALL_ZONES_UNCLASSIFIED ->
+                "No pudimos clasificar las zonas térmicas que expuso el fabricante. El catálogo de sensores no las reconoce."
+            ThermalUnavailableReason.ALL_TEMPS_INVALID ->
+                "Las temperaturas reportadas están fuera del rango plausible del sensor (probablemente lecturas corruptas o en otra escala)."
+            ThermalUnavailableReason.PERMISSION_DENIED ->
+                "El sistema operativo negó los permisos necesarios para leer los sensores térmicos. Probá habilitar adb root si tu dispositivo lo permite."
+            ThermalUnavailableReason.UNKNOWN ->
+                "El motivo exacto es desconocido. Reportá este caso adjuntando las zonas listadas debajo para que podamos extender el catálogo."
+        }
+        val zoneItems = diagnostic.rawZoneNames.take(10).joinToString("") { name ->
+            "<li><code>${esc(name)}</code></li>"
+        }
+        val zonesBlock = if (zoneItems.isEmpty()) "" else """
+        <p class="thermal-diag-zones-label">Zonas detectadas:</p>
+        <ul class="thermal-diag-zones">$zoneItems</ul>"""
+        return """
+    <div class="callout callout-warning thermal-diag-banner">
+        <strong>&#9888; Datos térmicos no disponibles.</strong>
+        <p>$reasonText</p>$zonesBlock
+    </div>"""
+    }
+
+    /**
+     * v4.5.0 -- FPower color band classifier per spec FPW-009. PerfDog
+     * anchors: green `< 50 mW/frame`, amber `50 <= x < 65`, red `>= 65`.
+     * Boundaries are inclusive-lower / exclusive-upper for the amber band
+     * (same shape as the thermal `cls` helper at this file).
+     *
+     * Negative input is treated as "no data" and bucketed as the same neutral
+     * gray class the unavailable card uses. The renderer guards against
+     * negative avg upstream; this is a defensive fallback.
+     */
+    private fun fpowerBand(value: Double): String = when {
+        value < 0 -> "fpower-unknown"
+        value < 50.0 -> "fpower-green"
+        value < 65.0 -> "fpower-amber"
+        else -> "fpower-red"
+    }
+
+    /**
+     * v4.5.0 -- Spanish-tuteo-formal diagnostic banner for the FPower card.
+     * Mirrors [thermalDiagnosticBanner] exactly (design ADR-1, ADR-5).
+     *
+     * Each [FPowerUnavailableReason] maps to a distinct one-sentence reason
+     * copy. Raw `rawPathsTried` strings are listed as a `<code>`-wrapped
+     * list so users (or devs) can file an issue identifying the missing
+     * vendor tuple for [com.gameperf.desktop.core.FPowerVendorCatalog].
+     *
+     * Path strings are escaped via [esc] defensively in case a vendor ever
+     * exposes HTML-special chars in a sysfs node name; [rawPathsTried] is
+     * already capped at the source by [com.gameperf.desktop.core.FPowerParser].
+     */
+    private fun fpowerDiagnosticBanner(diagnostic: FPowerDiagnostic): String {
+        val reasonText = when (diagnostic.reason) {
+            FPowerUnavailableReason.BATTERY_PATH_MISSING ->
+                "No pudimos leer el consumo de batería en este dispositivo. Probamos los siguientes paths sysfs sin éxito; probablemente el vendor todavía no está en nuestro catálogo."
+            FPowerUnavailableReason.FPS_ZERO ->
+                "No hay FPS válidos en esta sesión, por lo que no se puede calcular mW/frame. Capturá una sesión con gameplay activo."
+            FPowerUnavailableReason.IMPLAUSIBLE_VALUE ->
+                "Los valores leídos del sensor de batería están fuera del rango plausible (probable bug del kernel del dispositivo). Reportá la marca, el modelo y la versión de Android."
+            FPowerUnavailableReason.OEM_LOCKED ->
+                "Este OEM (Huawei Knox, Xiaomi GameTurbo o equivalente) bloquea el acceso al sensor de batería. No hay workaround sin root."
+            FPowerUnavailableReason.PERMISSION_DENIED ->
+                "El sistema operativo negó los permisos necesarios para leer el sensor de batería. Probá habilitar adb root si tu dispositivo lo permite."
+            FPowerUnavailableReason.UNKNOWN ->
+                "El motivo exacto es desconocido. Reportá este caso adjuntando los paths listados debajo para que podamos extender el catálogo."
+        }
+        val pathItems = diagnostic.rawPathsTried.take(10).joinToString("") { p ->
+            "<li><code>${esc(p)}</code></li>"
+        }
+        val pathsBlock = if (pathItems.isEmpty()) """
+        <p class="fpower-diag-paths-label">Paths probados: <code>ninguno</code></p>""" else """
+        <p class="fpower-diag-paths-label">Paths probados:</p>
+        <ul class="fpower-diag-paths">$pathItems</ul>"""
+        return """
+    <div class="callout callout-warning fpower-diag-banner">
+        <strong>&#9888; Datos de FPower no disponibles.</strong>
+        <p>$reasonText</p>$pathsBlock
+    </div>"""
+    }
+
+    /**
+     * v4.5.0 -- Build the FPower `<section>` HTML conditionally per spec
+     * FPW-009. Returns the empty string when there's nothing to render so
+     * the caller can splat it unconditionally into the template.
+     *
+     * Render matrix:
+     *  - `!available && diagnostic != null` → N/D card + diagnostic banner.
+     *  - `available && history.isNotEmpty()` → numeric card with avg/peak/
+     *    band CSS class.
+     *  - everything else (legacy callers, ultra-short captures, etc.) →
+     *    empty string (no card). Matches the v4.4.1 thermal precedent of
+     *    `thermalAvailable=true + empty history` → legacy rendering.
+     */
+    private fun fpowerSection(
+        history: List<Double>,
+        avg: Double,
+        peak: Double,
+        available: Boolean,
+        diagnostic: FPowerDiagnostic?,
+    ): String {
+        if (!available && diagnostic != null) {
+            return """
+<section id="sec-fpower" class="card fpower-card fpower-unavailable">
+    <div class="card-header">
+        <h2>&#9889; FPower (mW/frame)</h2>
+    </div>
+    <p class="card-desc">Energía consumida por frame renderizado. Útil para comparar eficiencia entre builds.</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Pico</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">0</span></div>
+    </div>
+    ${fpowerDiagnosticBanner(diagnostic)}
+</section>"""
+        }
+        if (available && history.isNotEmpty()) {
+            val avgBand = fpowerBand(avg)
+            val peakBand = fpowerBand(peak)
+            return """
+<section id="sec-fpower" class="card fpower-card $avgBand">
+    <div class="card-header">
+        <h2>&#9889; FPower (mW/frame)</h2>
+    </div>
+    <p class="card-desc">Energía consumida por frame renderizado (PerfDog anchors: &lt;50 verde, 50-65 amber, &gt;=65 rojo).</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value $avgBand">${fmtUS("%.1f", avg)} mW/frame</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Pico</span><span class="stat-pill-value $peakBand">${fmtUS("%.1f", peak)} mW/frame</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">${history.size}</span></div>
+    </div>
+</section>"""
+        }
+        return ""
     }
 
     /**
@@ -1508,6 +1938,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .callout{max-width:960px;margin:0 auto 20px;padding:14px 18px;border-radius:12px;font-size:13px;line-height:1.6}
 .callout-warning{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);color:#fcd34d}
 .callout-warning strong{color:#fbbf24}
+.fpower-card{border-left:4px solid #475569}
+.fpower-card.fpower-green{border-left-color:#22c55e}
+.fpower-card.fpower-amber{border-left-color:#f59e0b}
+.fpower-card.fpower-red{border-left-color:#ef4444}
+.fpower-card.fpower-unavailable{border-left-color:#6b7280;opacity:0.85}
+.stat-pill-value.fpower-green{color:#22c55e}
+.stat-pill-value.fpower-amber{color:#f59e0b}
+.stat-pill-value.fpower-red{color:#ef4444}
+.fpower-diag-banner{margin-top:12px}
+.fpower-diag-paths-label{color:#cbd5e1;font-size:12px;margin-top:8px;margin-bottom:4px;font-weight:600}
+.fpower-diag-paths{margin:6px 0 2px 20px;color:#94a3b8;line-height:1.6;font-size:12px}
+.fpower-diag-paths code{font-size:0.9em;opacity:0.85}
 .metric-raw{color:#64748b;font-size:0.85em;margin-top:4px;opacity:0.75;font-weight:500}
 .conclusions-list{display:flex;flex-direction:column;gap:12px}
 .conclusion-card{background:rgba(15,23,42,0.5);border:1px solid rgba(148,163,184,0.1);border-left:4px solid #64748b;border-radius:10px;padding:14px 16px}
@@ -1525,6 +1967,35 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .conclusion-rec{color:#94a3b8;font-size:12px;line-height:1.6;margin:0}
 .events-table .source-auto{color:#38bdf8;font-weight:700}
 .events-table .source-manual{color:#f97316;font-weight:700}
+/* v4.5.0 Sprint 3 — DevActionBrief section (DAB-008..DAB-013) */
+.dev-action-brief{max-width:960px;margin:0 auto 20px;background:linear-gradient(135deg,rgba(99,102,241,0.08),rgba(15,23,42,0.5));border:1px solid rgba(99,102,241,0.2);border-left:4px solid #6366f1;border-radius:14px;padding:18px 22px}
+.dev-action-brief h2{color:#e2e8f0;font-size:1.15rem;font-weight:700;margin-bottom:8px;letter-spacing:-0.2px}
+.brief-summary{color:#94a3b8;font-size:13px;margin-bottom:14px}
+.brief-summary strong{color:#e2e8f0;font-weight:700}
+.brief-items{display:flex;flex-direction:column;gap:10px}
+.brief-item{background:rgba(15,23,42,0.6);border:1px solid rgba(148,163,184,0.1);border-left:4px solid #64748b;border-radius:10px;padding:12px 14px}
+.brief-item.severity-CRITICAL{border-left-color:#ef4444;background:rgba(239,68,68,0.04)}
+.brief-item.severity-WARNING{border-left-color:#f59e0b;background:rgba(245,158,11,0.04)}
+.brief-item.severity-INFO{border-left-color:#38bdf8;background:rgba(56,189,248,0.04)}
+.brief-item-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.brief-item-header h3{color:#e2e8f0;font-size:0.95rem;font-weight:700;margin:0;flex:1;line-height:1.4}
+.severity-badge{display:inline-block;padding:3px 10px;border-radius:6px;font-weight:800;font-size:10px;letter-spacing:0.4px}
+.brief-item.severity-CRITICAL .severity-badge{background:rgba(239,68,68,0.15);color:#ef4444}
+.brief-item.severity-WARNING .severity-badge{background:rgba(245,158,11,0.15);color:#f59e0b}
+.brief-item.severity-INFO .severity-badge{background:rgba(56,189,248,0.15);color:#38bdf8}
+.confidence-badge{color:#64748b;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px}
+.brief-item h4{color:#cbd5e1;font-size:11.5px;font-weight:700;margin:10px 0 4px;text-transform:uppercase;letter-spacing:0.4px}
+.brief-item section{margin:6px 0}
+.brief-item ul,.brief-item ol{margin:4px 0 4px 22px;color:#94a3b8;font-size:12.5px;line-height:1.6}
+.brief-item li{margin:2px 0}
+.brief-item strong{color:#cbd5e1;font-weight:700}
+.brief-item em{color:#64748b;font-style:italic}
+.brief-item a{color:#818cf8;text-decoration:none;font-size:11px;font-weight:600;border-bottom:1px dotted rgba(129,140,248,0.4)}
+.brief-item a:hover{color:#a5b4fc;border-bottom-color:#a5b4fc}
+.brief-item p{color:#94a3b8;font-size:12.5px;line-height:1.6;margin:2px 0}
+.show-all-toggle{margin-top:12px;background:linear-gradient(135deg,#6366f1,#818cf8);color:#fff;border:none;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:0.3px;transition:all 0.2s ease}
+.show-all-toggle:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(99,102,241,0.4)}
+.dev-action-brief:not(.show-all) .brief-item:nth-child(n+6){display:none}
 @media(max-width:768px){.container{padding:0 12px 32px}.report-header{padding:32px 20px 28px}.header-title{font-size:1.6rem}.header-meta{flex-direction:column;gap:4px}.meta-sep{display:none}.summary-grid{grid-template-columns:1fr}.summary-grade{padding:24px;border-right:none;border-bottom:1px solid rgba(148,163,184,0.06)}.summary-stats{grid-template-columns:repeat(2,1fr)}.metrics-grid{grid-template-columns:repeat(2,1fr)}.hw-grid{grid-template-columns:1fr}.hw-item{border-radius:0!important}.hw-item:first-child{border-radius:10px 10px 0 0!important}.hw-item:last-child{border-radius:0 0 10px 10px!important}.stats-row{gap:6px}.stat-pill{padding:6px 10px;font-size:12px}.grade-ring{width:110px;height:110px}.grade-letter{font-size:2.8rem}.fab-group{top:auto;bottom:16px;right:16px}.detection-banner{margin:0 12px 16px;font-size:12px}.callout{margin:0 12px 16px}}
 @media(max-width:480px){.metrics-grid{grid-template-columns:1fr}.summary-stats{grid-template-columns:1fr 1fr}.nav-link{font-size:11px;padding:5px 8px}}
 @media print {

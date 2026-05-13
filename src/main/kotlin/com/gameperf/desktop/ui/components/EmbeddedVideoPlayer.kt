@@ -525,6 +525,48 @@ fun EmbeddedVideoPlayer(
         lastPreloadCenter = centerIndex
     }
 
+    /**
+     * v4.4.1: Force a fresh PLAYBACK_WINDOW preload, ignoring the
+     * shouldReset heuristic.
+     *
+     * Used ONLY by the playback `LaunchedEffect` at play-start. Unlike
+     * [preloadWindow], which decides reset-vs-extend via
+     * `PreloadStrategy.shouldReset(idx, lastCenter)`, this helper
+     * UNCONDITIONALLY resets to [PreloadStrategy.PLAYBACK_WINDOW]. This
+     * is correct for play-after-scrub: the in-flight job (if any) is a
+     * SCRUB_WINDOW (300/300 symmetric) which wastes half its budget on
+     * backward frames the playhead is moving away from. Without this
+     * helper, `shouldReset(idx, idx)` returned `false` → `preloadWindow`
+     * no-op'd → playback ran at ~5-7fps until the cache cap exhausted.
+     * See explore #260, ADR 1.
+     *
+     * Body delegates to the pure top-level [forcePlaybackPreloadCore] so
+     * the integration test can drive the same logic without a Compose
+     * runtime. Cancellation order is critical: caller MUST cancel
+     * `fullResDebounceJob` BEFORE invoking this helper (ADR 2) so a
+     * stale debounce cannot fire post-spawn and `killActiveFrameProcesses`
+     * the freshly-spawned playback preload.
+     */
+    fun forcePlaybackPreload(centerIndex: Int) {
+        preloadJob?.cancel()
+        // H-1: kill any ffmpeg processes spawned by the cancelled preload.
+        // Frame-extractor only — thumbnail track is in a separate set.
+        killActiveFrameProcesses()
+        lastPreloadCenter = centerIndex
+        val totalFrames = (videoDurationMs / 1000.0 * videoFps).toInt().coerceAtLeast(1)
+        preloadJob = coroutineScope.launch(Dispatchers.IO) {
+            forcePlaybackPreloadCore(
+                centerIndex = centerIndex,
+                totalFrames = totalFrames,
+                window = PreloadStrategy.PLAYBACK_WINDOW,
+                isCached = { idx -> frameCache.contains(idx) },
+                extractFrame = { idx -> extractFrameAtIndex(videoPath, idx, videoFps) },
+                putFrame = { idx, bmp -> frameCache.put(idx, bmp) },
+                parallelism = 3,
+            )
+        }
+    }
+
     // ---- Error / not found UI ----
     if (errorMessage != null) {
         Box(modifier.background(Color(0xFF0D1117), RoundedCornerShape(12.dp)), Alignment.Center) {
@@ -694,8 +736,19 @@ fun EmbeddedVideoPlayer(
         var idx = msToFrame(currentTimeMs, videoFps, totalFrames)
         val intervalMs = (1000.0 / videoFps / playbackSpeed).toLong().coerceAtLeast(8L)
 
-        // Pre-load window ahead of playhead
-        preloadWindow(idx)
+        // v4.4.1: kill any pending scrub debounce BEFORE spawning the play
+        // preload. Order is critical (ADR 2) — if we spawned first, the
+        // debounce (still 0-250ms from firing) could call `preloadWindow` →
+        // `killActiveFrameProcesses` and nuke the play preload's ffmpegs.
+        // Null-safe: cancel on a completed/null Job is a no-op.
+        fullResDebounceJob?.cancel()
+        fullResDebounceJob = null
+
+        // v4.4.1: force PLAYBACK_WINDOW regardless of prior preload center.
+        // The previous `preloadWindow(idx)` here was classified as "extend"
+        // after a scrub-then-play sequence (delta=0 from scrub seed) → no-op
+        // → cache only had 300 forward frames. See explore #260, ADR 1.
+        forcePlaybackPreload(idx)
 
         while (isActive) {
             delay(intervalMs)
@@ -808,6 +861,67 @@ private fun killActiveThumbnailProcesses() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * v4.4.1: Pure, testable core of the play-start preload sequence.
+ *
+ * Seeds the cache with frames in `[centerIndex - window.backward .. centerIndex + window.forward]`,
+ * forward-biased (the playhead is moving forward — backfill behind it only
+ * after the forward budget is satisfied). Skips frames already in the cache.
+ * Runs up to [parallelism] extractions concurrently — same chunked policy
+ * the in-Composable [EmbeddedVideoPlayer.preloadWindow] uses.
+ *
+ * Intentionally split out of the Composable so the integration test can drive
+ * it without `rememberCoroutineScope` or a Compose runtime: the production
+ * wrapper closes over `frameCache`, `videoFps`, `videoDurationMs` and the
+ * real `extractFrameAtIndex`; the test wraps a [FakeFfmpeg] + an in-memory
+ * `MutableMap`. Behavior is identical because the wrapper is a pure pass-
+ * through.
+ *
+ * Bug context (see explore #260, ADR 1): the original [preloadWindow] routed
+ * play-start through `PreloadStrategy.shouldReset(idx, idx)` which returned
+ * `false` and the extend branch found an active scrub-window job and no-op'd.
+ * The forward buffer therefore stayed at `SCRUB_WINDOW.forward = 300` (with
+ * half wasted backward) instead of `PLAYBACK_WINDOW.forward = 500`. This
+ * helper UNCONDITIONALLY uses the window passed in — the caller (always the
+ * play-start `LaunchedEffect`) hardcodes `PLAYBACK_WINDOW`, never asks the
+ * heuristic.
+ *
+ * `coroutineScope { ... }` is used to await all in-flight extractions before
+ * returning, so cancellation propagates correctly: cancelling the parent job
+ * (e.g. user pauses, then plays again) cancels every chunk's `async` and
+ * lets [FakeFfmpeg.cancelledFrames] observe it.
+ */
+internal suspend fun forcePlaybackPreloadCore(
+    centerIndex: Int,
+    totalFrames: Int,
+    window: PreloadStrategy.Window,
+    isCached: (Int) -> Boolean,
+    extractFrame: suspend (Int) -> ImageBitmap?,
+    putFrame: (Int, ImageBitmap) -> Unit,
+    parallelism: Int = 3,
+) {
+    if (totalFrames <= 0) return
+    val start = (centerIndex - window.backward).coerceAtLeast(0)
+    val end = (centerIndex + window.forward).coerceAtMost(totalFrames - 1)
+    val forwardIndices = (centerIndex..end).filter { !isCached(it) }
+    val backwardIndices = (start until centerIndex).reversed().filter { !isCached(it) }
+    val allIndices = forwardIndices + backwardIndices
+
+    coroutineScope {
+        allIndices.chunked(parallelism).forEach { chunk ->
+            if (!isActive) return@forEach
+            chunk.map { idx ->
+                async {
+                    if (!isActive || isCached(idx)) return@async
+                    val bmp = extractFrame(idx)
+                    if (bmp != null) putFrame(idx, bmp)
+                }
+            }.awaitAll()
+        }
+    }
+}
+
 private fun msToFrame(ms: Long, fps: Double, total: Int): Int =
     (ms * fps / 1000.0).toInt().coerceIn(0, (total - 1).coerceAtLeast(0))
 

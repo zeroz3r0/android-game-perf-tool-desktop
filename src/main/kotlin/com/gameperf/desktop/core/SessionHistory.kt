@@ -1,7 +1,14 @@
 package com.gameperf.desktop.core
 
+import com.gameperf.desktop.core.conclusions.Conclusion
+import com.gameperf.desktop.core.devactions.DevActionBrief
+import com.gameperf.desktop.core.events.DetectedEvent
+import com.gameperf.desktop.core.metrics.MetricsAggregates
+import com.gameperf.desktop.core.model.FPowerDiagnostic
+import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
+import com.gameperf.desktop.viewmodel.TimedSample
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -51,18 +58,23 @@ object SessionHistory {
      *  - v1..v3 — pre-kotlinx.serialization, hand-rolled JSON shapes (no explicit version field).
      *  - v4 — kotlinx.serialization migration (v4.1.0). [SerializableEntry] became the canonical
      *    on-disk schema. Forward-compat is provided by `Json { ignoreUnknownKeys = true }`.
-     *  - v5 — v4.4.0 / `auto-event-detection-and-clean-metrics` change. Adds (when persisted by
-     *    the in-memory [com.gameperf.desktop.viewmodel.SessionResult]) the optional fields
-     *    `events`, `rawAggregates`, `filteredAggregates`, `conclusions`, `detectionMode`.
+     *  - v5 — v4.4.0 schema bump for `auto-event-detection-and-clean-metrics`. The on-disk
+     *    keys were promised but the data classes were NOT widened — Bug 2 (v4.4.1
+     *    `auto-event-detection-not-marking`) revealed that the encoder silently dropped
+     *    the new fields. v4.4.1 is the first build where the schema actually carries the
+     *    payload: `events`, `detectionMode` (persisted as the enum's `.name` String for
+     *    forward compat with future enum values), `detectorWarnings`, `rawAggregates`,
+     *    `filteredAggregates`, `conclusions`, `captureStartMs`. All defaulted (empty list
+     *    or null) so pre-v4.4.1 rows still deserialize via `ignoreUnknownKeys = true`.
      *
      * The disk file does NOT carry this constant explicitly (no breaking change to existing
      * `history.json` payloads). It exists as a SOURCE-OF-TRUTH integer that callers (export
      * pipelines, future migrations, tests) can reference. Loading is fully forward-compat:
-     * a v4 file deserializes into a v5-aware code path with the new fields defaulting to
-     * empty/null. There is no v4→v5 *transformation* required — only an additive widening
-     * of the in-memory model.
+     * a v4 / v4.4.0 file deserializes into a v5-aware code path with the new fields
+     * defaulting to empty/null. There is no v4→v5 *transformation* required — only an
+     * additive widening of the in-memory model.
      *
-     * @since v4.4.0
+     * @since v4.4.0 (schema bump) / v4.4.1 (field set actually persisted)
      */
     const val SCHEMA_VERSION = 5
 
@@ -164,6 +176,51 @@ object SessionHistory {
         val isFavorite: Boolean = false,
         // v4.2.0: FPS timeline data for re-viewing past sessions
         val fpsTimed: List<List<Int>> = emptyList(),
+        // v4.4.1: auto-event detection payload promised by the v4.4.0 schema bump but never
+        // persisted until now. All defaulted so pre-v4.4.1 history.json rows hydrate cleanly
+        // via Json { ignoreUnknownKeys = true }.
+        val events: List<DetectedEvent> = emptyList(),
+        /** [DetectionMode.name] persisted as String for forward compat with new enum values. */
+        val detectionMode: String? = null,
+        val detectorWarnings: List<String> = emptyList(),
+        val rawAggregates: MetricsAggregates? = null,
+        val filteredAggregates: MetricsAggregates? = null,
+        val conclusions: List<Conclusion> = emptyList(),
+        val captureStartMs: Long? = null,
+        // v4.4.1 (temperature-not-shown): availability flag for thermal data. Defaults to
+        // `true` so pre-v4.4.1 history.json rows hydrate as "thermal data is trustworthy"
+        // (the v4.3.x semantics — the report renders the raw value). Set to `false` by the
+        // ViewModel when AdbThermalParser could not classify any CPU/SKIN zone within the
+        // plausibility window (unsupported vendor, permission denied, ...). The report then
+        // renders "N/D" plus a diagnostic banner instead of a misleading "0°C".
+        val thermalAvailable: Boolean = true,
+        // v4.5.0 — FPower metric (mW per frame, see core/model/FPowerSnapshot). Defaults
+        // mirror the thermalAvailable pattern: `fpowerAvailable=true` preserves backward
+        // compat with v4.4.1 history.json rows (no FPower section rendered if history is
+        // empty AND fpowerAvailable=true). [FPowerDiagnostic] is itself @Serializable so
+        // it nests cleanly into the entry. [fpowerTimed] uses `List<List<Double>>` of
+        // shape `[second, value]` to mirror the [fpsTimed] workaround for non-@Serializable
+        // [TimedSample] — converted both ways in [toSerializable] / [toHistoryEntry].
+        val fpowerAvailable: Boolean = true,
+        val fpowerDiagnostic: FPowerDiagnostic? = null,
+        val fpowerHistory: List<Double> = emptyList(),
+        val fpowerTimed: List<List<Double>> = emptyList(),
+        val fpowerAvg: Double = 0.0,
+        val fpowerPeak: Double = 0.0,
+        // v4.5.0 Sprint 3 — DevActionBrief (spec DAB-007). Defaulted to the
+        // empty brief shape (items=emptyList, topN=5) for backward compat with
+        // pre-Sprint-3 history.json rows. [DevActionBrief] is @Serializable so
+        // nests cleanly. The brief is never present on the wire for sessions
+        // captured before Sprint 3 ships; loaders rely on Json {
+        // ignoreUnknownKeys = true } AND this defaulted field to hydrate them
+        // safely.
+        val devActionBrief: DevActionBrief = DevActionBrief(),
+        // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-004). Per-tick total
+        // device CPU% samples that pair with the existing app-CPU averages
+        // (avgCpu/maxCpu) to drive the dual-line CPU chart in the report.
+        // Defaulted empty so pre-cpu-dual history.json rows hydrate as the
+        // legacy single-line CPU view via Json { ignoreUnknownKeys = true }.
+        val cpuTotalHistory: List<Int> = emptyList(),
     )
 
     data class HistoryEntry(
@@ -194,6 +251,43 @@ object SessionHistory {
         val isFavorite: Boolean = false,
         /** v4.2.0: FPS timeline samples (second, fps) for re-viewing sessions. */
         val fpsTimed: List<Pair<Int, Int>> = emptyList(),
+        // v4.4.1: domain-side mirror of the auto-event detection payload (see
+        // SerializableEntry above). detectionMode is the typed enum here; the
+        // SerializableEntry stores its `.name` String so we keep core/ ignorant
+        // of viewmodel/ enum class membership at the wire level.
+        val events: List<DetectedEvent> = emptyList(),
+        val detectionMode: DetectionMode? = null,
+        val detectorWarnings: List<String> = emptyList(),
+        val rawAggregates: MetricsAggregates? = null,
+        val filteredAggregates: MetricsAggregates? = null,
+        val conclusions: List<Conclusion> = emptyList(),
+        val captureStartMs: Long? = null,
+        // v4.4.1 (temperature-not-shown): mirror of [SerializableEntry.thermalAvailable].
+        // Default `true` keeps every existing call site that constructs a HistoryEntry
+        // without naming this argument byte-equivalent to the pre-v4.4.1 behavior.
+        val thermalAvailable: Boolean = true,
+        // v4.5.0 — FPower mirror of [SerializableEntry] fpower* fields. [fpowerTimed]
+        // is the typed [TimedSample] form on the domain side; the wire format flattens
+        // each sample to a `[second, value]` 2-list. Defaults align with v4.4.1 compat:
+        // `fpowerAvailable=true`, empty history, null diagnostic — a pre-v4.5.0 row
+        // hydrates as "fpower section not present, render unchanged".
+        val fpowerAvailable: Boolean = true,
+        val fpowerDiagnostic: FPowerDiagnostic? = null,
+        val fpowerHistory: List<Double> = emptyList(),
+        val fpowerTimed: List<TimedSample> = emptyList(),
+        val fpowerAvg: Double = 0.0,
+        val fpowerPeak: Double = 0.0,
+        // v4.5.0 Sprint 3 — DevActionBrief (spec DAB-007). Mirror of the
+        // [SerializableEntry] field. Defaulted to the empty-brief shape so
+        // every existing call site that constructs a HistoryEntry without
+        // naming this argument stays byte-equivalent to pre-Sprint-3 behavior.
+        val devActionBrief: DevActionBrief = DevActionBrief(),
+        // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-004). Domain mirror of
+        // [SerializableEntry.cpuTotalHistory]. Defaulted empty so legacy call
+        // sites that construct HistoryEntry without naming this argument stay
+        // byte-equivalent to pre-cpu-dual behavior. The report generator
+        // emits the dual chart only when this list is non-empty.
+        val cpuTotalHistory: List<Int> = emptyList(),
     )
 
     // ===== Conversion =====
@@ -209,6 +303,29 @@ object SessionHistory {
         markers = markers.map { SerializableMarker.from(it) },
         isFavorite = isFavorite,
         fpsTimed = fpsTimed.map { listOf(it.first, it.second) },
+        // v4.4.1: auto-event detection payload mirroring.
+        events = events,
+        detectionMode = detectionMode?.name,
+        detectorWarnings = detectorWarnings,
+        rawAggregates = rawAggregates,
+        filteredAggregates = filteredAggregates,
+        conclusions = conclusions,
+        captureStartMs = captureStartMs,
+        // v4.4.1: persist the thermal-availability flag verbatim.
+        thermalAvailable = thermalAvailable,
+        // v4.5.0 — FPower fields. [TimedSample] is non-@Serializable so we flatten
+        // each sample to a 2-element `[second, value]` Double list (mirrors the
+        // [fpsTimed] precedent).
+        fpowerAvailable = fpowerAvailable,
+        fpowerDiagnostic = fpowerDiagnostic,
+        fpowerHistory = fpowerHistory,
+        fpowerTimed = fpowerTimed.map { listOf(it.second.toDouble(), it.value) },
+        fpowerAvg = fpowerAvg,
+        fpowerPeak = fpowerPeak,
+        // v4.5.0 Sprint 3 — DevActionBrief forward through the wire format.
+        devActionBrief = devActionBrief,
+        // v4.5.0 — `cpu-total-vs-app-usage` forward through the wire format.
+        cpuTotalHistory = cpuTotalHistory,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -224,6 +341,41 @@ object SessionHistory {
         markers = markers.map { it.toSessionMarker() },
         isFavorite = isFavorite,
         fpsTimed = fpsTimed.mapNotNull { if (it.size >= 2) it[0] to it[1] else null },
+        // v4.4.1: decode wire String → typed enum. Unknown / future enum names fall back to
+        // null instead of crashing the load (keeps the same forward-compat stance as
+        // MarkerTypeSerializer above).
+        events = events,
+        detectionMode = detectionMode?.let {
+            try { DetectionMode.valueOf(it) } catch (_: Exception) { null }
+        },
+        detectorWarnings = detectorWarnings,
+        rawAggregates = rawAggregates,
+        filteredAggregates = filteredAggregates,
+        conclusions = conclusions,
+        captureStartMs = captureStartMs,
+        // v4.4.1: hydrate the thermal-availability flag (default true for legacy rows).
+        thermalAvailable = thermalAvailable,
+        // v4.5.0 — FPower hydration. The wire form is `List<List<Double>>` (each entry
+        // shape `[second, value]`); skip malformed sub-arrays defensively (mirrors the
+        // [fpsTimed] decoder hardening in this same converter).
+        fpowerAvailable = fpowerAvailable,
+        fpowerDiagnostic = fpowerDiagnostic,
+        fpowerHistory = fpowerHistory,
+        fpowerTimed = fpowerTimed.mapNotNull {
+            if (it.size >= 2) TimedSample(it[0].toInt(), it[1]) else null
+        },
+        fpowerAvg = fpowerAvg,
+        fpowerPeak = fpowerPeak,
+        // v4.5.0 Sprint 3 — DevActionBrief hydration. Defaulted to the empty
+        // brief on the SerializableEntry side, so a pre-Sprint-3 row decodes
+        // as DevActionBrief() and rendering omits the section (DAB-008
+        // negative case).
+        devActionBrief = devActionBrief,
+        // v4.5.0 — `cpu-total-vs-app-usage` hydration. Defaulted empty on the
+        // SerializableEntry side so a pre-cpu-dual row decodes as empty list
+        // and the report falls back to the single-line CPU chart (CDU-007
+        // legacy branch).
+        cpuTotalHistory = cpuTotalHistory,
     )
 
     // ===== Public API (unchanged contract) =====

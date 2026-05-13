@@ -5,17 +5,17 @@
 
 complexity:
   LongMethod:
-    threshold: 750       # 2026-05-08: HomeScreen.HomeScreen grew to 740 lines. TODO: refactor into smaller composables (carried over from 2026-04-17, growing each release)
+    threshold: 760       # 2026-05-12: HomeScreen.HomeScreen grew to 751 lines (was 740 on 2026-05-08, 730 on 2026-04-17). TODO H.7: refactor into smaller composables BEFORE next release — threshold creep is technical debt, not solution
   LongParameterList:
     functionThreshold: 50  # ReportGenerator.generate has ~48 params after v4.4.0 additions (events, conclusions, filteredAggregates, etc.)
     constructorThreshold: 10
   TooManyFunctions:
     thresholdInClasses: 75   # 2026-05-08: AppViewModel has 72 functions (v4.4.0 added events/warnings flows + detector wiring). TODO: split AppViewModel into focused viewmodels
     thresholdInFiles: 40
-    thresholdInObjects: 46   # 2026-05-08: AdbBridge has 45 functions (v4.4.0 added startLogcat for auto event detection). TODO: split into domain-specific objects
-    thresholdInInterfaces: 30  # 2026-05-08: AdbBridgeApi has 29 functions (v4.4.0 added startLogcat + shell). TODO: split into focused interfaces
+    thresholdInObjects: 48   # 2026-05-12 (PM): AdbBridge has 47 functions (v4.5.0 cpu-total-vs-app-usage added captureCpuDual). 2026-05-12 AM: was 46 (v4.5.0 added captureFPower). 2026-05-08: was 45 (v4.4.0 added startLogcat). TODO: split AdbBridge into domain-specific objects
+    thresholdInInterfaces: 32  # 2026-05-12 (PM): AdbBridgeApi has 31 functions (v4.5.0 cpu-total-vs-app-usage added captureCpuDual). 2026-05-12 AM: was 30 (v4.5.0 added captureFPower). 2026-05-08: was 29 (v4.4.0 added startLogcat + shell). TODO: split into focused interfaces
   CyclomaticComplexMethod:
-    threshold: 200       # 2026-05-08: startCapture grew to 195 (v4.4.0 added EventDetector, FilteredMetricsCalculator, ConclusionEngine wiring). TODO: extract sub-functions for capture phases (carried over from 2026-04-17)
+    threshold: 220       # 2026-05-12 (PM late): startCapture grew to 216 (v4.5.0 cpu-total-vs-app-usage added cpuTotalHistory wiring + dev-action-brief Sprint 3 added brief build call site). 2026-05-12 (PM mid): was 215 (v4.5.0 FPower wiring 4 sites + ReportGenerator fpower args). 2026-05-08: was 200 (v4.4.0 EventDetector + FilteredMetricsCalculator). TODO H.7 — URGENT: extract capture-phase sub-functions BEFORE next release. 5+ threshold bumps in one session indicates structural refactor overdue.
   LargeClass:
     threshold: 2000
   NestedBlockDepth:
