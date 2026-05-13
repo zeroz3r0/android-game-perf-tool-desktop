@@ -38,6 +38,13 @@ internal object InstrumentedLineParser {
         "TUTORIAL",
         "GAMEPLAY_DENSE",
         "SPECIAL_EVENT",
+        // auto-phase-detection-from-engine-logs Phase 4 (AUTO-008) —
+        // INSTRUMENTED phases that can supersede the corresponding AUTO
+        // event types (COMBAT_PHASE / MENU_NAV). Mapping is enforced by
+        // [EventDetectorImpl.instrumentedTagToAutoPhaseType]. Additive
+        // expansion — existing 4-tag deployments stay byte-equivalent.
+        "COMBAT",
+        "MENU",
     )
 
     private val OPEN_RE: Regex = Regex("""^([A-Z_]+)\.Start$""")

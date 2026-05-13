@@ -254,6 +254,11 @@ object ReportGenerator {
         // v4.4.0: detection-mode banner + auto-event live count.
         val detectionBannerHtml = detectionModeBanner(detectionMode, events.size, detectorWarnings)
 
+        // v4.6.0 AUTO-007: auto-phase disclaimer banner — renders when ANY of the
+        // 4 AUTO EventType variants (CUTSCENE / MENU_NAV / COMBAT_PHASE / TUTORIAL_PHASE)
+        // is present. Spanish tuteo formal copy. Zero-cost on legacy callers.
+        val autoPhaseBannerHtml = autoPhaseDisclaimerBanner(events)
+
         // v4.4.0: excessive-filter callout (>70% of session excluded by events).
         val excessiveCalloutHtml = excessiveFilterCallout(
             isExcessiveFilterTriggered(detectorWarnings, filteredAggregates, rawAggregates)
@@ -475,6 +480,8 @@ $CSS$kpiCssBlock
 </header>
 
 $detectionBannerHtml
+
+$autoPhaseBannerHtml
 
 $devActionBriefHtml
 
@@ -1594,6 +1601,12 @@ $cards
                 EventType.VR_SESSION -> "VR"
                 EventType.VR_RETURN_TRANSITION -> "Retorno VR"
                 EventType.RATE_US -> "Rate-us"
+                // auto-phase-detection-from-engine-logs (Phase 1: additive labels;
+                // banner + filter behavior wired in later phases).
+                EventType.CUTSCENE -> "Cinemática"
+                EventType.MENU_NAV -> "Menú"
+                EventType.COMBAT_PHASE -> "Combate"
+                EventType.TUTORIAL_PHASE -> "Tutorial"
                 EventType.UNKNOWN -> "Desconocido"
             }
             val typeColor = when (e.type) {
@@ -1609,6 +1622,10 @@ $cards
                 EventType.VR_SESSION -> "#06b6d4"
                 EventType.VR_RETURN_TRANSITION -> "#f59e0b"
                 EventType.RATE_US -> "#22c55e"
+                EventType.CUTSCENE -> "#8b5cf6"
+                EventType.MENU_NAV -> "#94a3b8"
+                EventType.COMBAT_PHASE -> "#ef4444"
+                EventType.TUTORIAL_PHASE -> "#10b981"
                 EventType.UNKNOWN -> "#94a3b8"
             }
             val confidenceTag = when (e.confidence) {
@@ -1678,6 +1695,34 @@ $cards
             totalSec < 60 -> fmtUS("%.1f s", totalSec)
             else -> fmtUS("%.1f min", totalSec / 60.0)
         }
+    }
+
+    /**
+     * v4.6.0 AUTO-007 — Auto-phase disclaimer banner. Renders when ANY of the
+     * 4 AUTO EventType variants (CUTSCENE / MENU_NAV / COMBAT_PHASE /
+     * TUTORIAL_PHASE) is present in the session events list. Zero-cost on
+     * legacy callers (returns empty string when no AUTO events).
+     *
+     * Spanish tuteo formal copy. Mentions Unity + Unreal coverage scope so
+     * users know the v1 limitation.
+     */
+    private fun autoPhaseDisclaimerBanner(events: List<DetectedEvent>): String {
+        val autoTypes = setOf(
+            EventType.CUTSCENE,
+            EventType.MENU_NAV,
+            EventType.COMBAT_PHASE,
+            EventType.TUTORIAL_PHASE,
+        )
+        val hasAuto = events.any { it.type in autoTypes }
+        if (!hasAuto) return ""
+        return """
+<section class="banner banner-info" id="auto-phase-disclaimer">
+  <strong>Fases detectadas automáticamente por nombre de escena.</strong>
+  Si los nombres del juego no son descriptivos o están ofuscados, la
+  clasificación puede no ser exacta. La detección actual cubre Unity y
+  Unreal Engine.
+</section>
+""".trimIndent()
     }
 
     /**

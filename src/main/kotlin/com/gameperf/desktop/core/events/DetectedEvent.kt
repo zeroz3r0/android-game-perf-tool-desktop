@@ -18,6 +18,10 @@ import kotlinx.serialization.Serializable
  * @property VR_SESSION VR headset session window (Sprint 4a).
  * @property VR_RETURN_TRANSITION Return-to-2D transition after VR session (Sprint 4a).
  * @property RATE_US Rate-us / review prompt presentation (Sprint 5).
+ * @property CUTSCENE Auto-detected cinematic / cutscene phase from engine scene name (auto-phase-detection).
+ * @property MENU_NAV Auto-detected menu / lobby navigation phase from engine scene name (auto-phase-detection).
+ * @property COMBAT_PHASE Auto-detected combat / boss / wave phase from engine scene name (auto-phase-detection).
+ * @property TUTORIAL_PHASE Auto-detected tutorial / onboarding phase from engine scene name (auto-phase-detection).
  * @property UNKNOWN Unclassified event (SDK not in catalog).
  */
 @Serializable
@@ -35,6 +39,11 @@ enum class EventType {
     VR_SESSION,
     VR_RETURN_TRANSITION,
     RATE_US,
+    // auto-phase-detection-from-engine-logs (additive, AUTO-001)
+    CUTSCENE,
+    MENU_NAV,
+    COMBAT_PHASE,
+    TUTORIAL_PHASE,
     UNKNOWN,
 }
 

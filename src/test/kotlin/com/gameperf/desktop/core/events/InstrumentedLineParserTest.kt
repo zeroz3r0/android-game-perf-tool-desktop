@@ -86,10 +86,13 @@ class InstrumentedLineParserTest {
     }
 
     @Test
-    fun `rejects unknown UPPER_SNAKE tag MENU dot Start`() {
-        // IEM-002 — MENU is not in the 4-tag allowlist; the regex shape
-        // matches but the allowlist filter must still reject.
-        assertNull(InstrumentedLineParser.parse("MENU.Start"))
+    fun `rejects unknown UPPER_SNAKE tag UNKNOWN_PHASE dot Start`() {
+        // IEM-002 — UNKNOWN_PHASE is not in the allowlist; the regex shape
+        // matches but the allowlist filter must still reject. (NOTE: MENU
+        // was added to the allowlist by auto-phase-detection Phase 4 to
+        // support AUTO-008 INSTRUMENTED-over-AUTO upgrades; this test now
+        // uses an explicitly synthetic tag to keep the negative case alive.)
+        assertNull(InstrumentedLineParser.parse("UNKNOWN_PHASE.Start"))
     }
 
     @Test
