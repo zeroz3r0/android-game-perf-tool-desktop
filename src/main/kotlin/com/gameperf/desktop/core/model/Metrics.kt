@@ -123,3 +123,30 @@ data class GpuSnapshot(
     val gpuAvailable: Boolean = false,
     val diagnostic: GpuDiagnostic? = null,
 )
+
+/**
+ * v4.6.x -- Platform-agnostic network bandwidth snapshot (Android binder /
+ * dumpsys probe).
+ *
+ * Sentinel semantics (mirrors GpuSnapshot v4.5.0 precedent):
+ *  - [rxBytes] / [txBytes] are non-negative cumulative byte counters for the
+ *    game UID when [networkAvailable] is `true`; `-1L` otherwise.
+ *  - [networkAvailable] defaults to `false` -- pre-v4.6.x `.gameperf` exports
+ *    never captured network, so deserialising one of those files must report
+ *    "no data" (design D6 — same shape as `gpuAvailable=false` default).
+ *  - [diagnostic] is `null` on the happy path; populated by
+ *    [com.gameperf.desktop.core.AdbBridge] when the probe pipeline fails, so
+ *    the report HTML can surface a Spanish tuteo-formal banner instead of
+ *    rendering a misleading "0 KB/s".
+ *
+ * iOS sessions always persist [networkAvailable] = `false` (out of scope v1).
+ *
+ * See `sdd/network-bandwidth-total-app/spec` NET-001 and design §3.
+ */
+@Serializable
+data class NetworkSnapshot(
+    val rxBytes: Long = -1L,
+    val txBytes: Long = -1L,
+    val networkAvailable: Boolean = false,
+    val diagnostic: NetworkDiagnostic? = null,
+)
