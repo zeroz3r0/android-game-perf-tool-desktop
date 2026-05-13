@@ -72,6 +72,12 @@ You don't need to know ADB or touch a terminal. If you've ever plugged a phone i
 
 ## Instrumented mode (opt-in)
 
+> **Who uses this?** The **game developer** (NOT QA). Instrumented mode requires adding log calls to the game's source code, so it only applies if you have access to the game repo, or if you work in QA and can ask the dev team to add them.
+>
+> **As QA without source code access**, GamePerf already does a lot automatically:
+> - **Automatic detection** of ads (AdMob, Unity Ads, IronSource, AppLovin, Meta Audience), IAP (Google Play Billing), loading screens (Unity, Unreal, Cocos2d), ANRs, screen transitions, VR sessions (Oculus Quest, OpenXR) and rate-us prompts. Without touching the game, without an SDK, without anything.
+> - **Manual markers**: press a button in the GamePerf UI while recording to mark key moments of your test session.
+
 If you have access to the game's source code, you can label the segments you care about **yourself**. GamePerf listens to the `GamePerf` logcat tag and recognises four fixed phases with the syntax `<TAG>.Start` / `<TAG>.Stop`:
 
 - `CINEMATIC` — cinematic sequences or intros
