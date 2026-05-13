@@ -1,0 +1,30 @@
+05-08 19:00:00.000  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:00.500  6789  1023 I Unity: Behaviour update tick=5000
+05-08 19:00:01.000  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:01.500  6789  1023 I MyGame: Player tapped store icon
+05-08 19:00:02.000  6789  1023 I MyGame: Showing premium offer
+05-08 19:00:02.300  6789  1023 D BillingClient: querySkuDetails sku=premium_v1
+05-08 19:00:02.400  6789  1023 D BillingClient: SkuDetails returned price=$2.99
+05-08 19:00:02.550  6789  1023 I BillingClient: launchBillingFlow: starting flow for sku=premium_v1
+05-08 19:00:02.600  6789  1023 D BillingClient: ProxyBillingActivity attached
+05-08 19:00:02.700  6789  1023 D BillingClient: Forwarding to Play Store
+05-08 19:00:03.000  6789  1023 D Billing: Sheet animation in
+05-08 19:00:03.500  6789  1023 D BillingClient: Awaiting user response
+05-08 19:00:04.000  6789  1023 I MyGame: Frame rendered fps=58
+05-08 19:00:04.500  6789  1023 D BillingClient: Awaiting user response
+05-08 19:00:05.000  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:05.500  6789  1023 D BillingClient: Awaiting user response
+05-08 19:00:06.000  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:06.500  6789  1023 D BillingClient: User pressed back button
+05-08 19:00:06.800  6789  1023 D BillingClient: Sheet dismissed without purchase
+05-08 19:00:07.000  6789  1023 I BillingClient: BillingResult: responseCode=1 debugMessage=USER_CANCELED
+05-08 19:00:07.050  6789  1023 D BillingClient: ProxyBillingActivity detached
+05-08 19:00:07.100  6789  1023 I BillingClient: billing flow finished result=USER_CANCELED
+05-08 19:00:07.200  6789  1023 I MyGame: Purchase cancelled by user
+05-08 19:00:07.300  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:07.500  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:08.000  6789  1023 I Unity: Behaviour update tick=5010
+05-08 19:00:08.500  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:09.000  6789  1023 I MyGame: Player position updated
+05-08 19:00:09.500  6789  1023 I MyGame: Frame rendered fps=60
+05-08 19:00:10.000  6789  1023 I MyGame: Frame rendered fps=60
