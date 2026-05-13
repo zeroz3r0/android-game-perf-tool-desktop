@@ -40,7 +40,7 @@ Leyenda: ✅ tiene · 🟡 parcial · ❌ no tiene
 
 | Capability | GameBench | Nosotros | ¿Qué significa para tu juego? |
 |---|---|---|---|
-| GPU (uso y frecuencia) | ✅ a nivel driver gráfico | ❌ | Si tu juego es gráficamente exigente (3D, partículas, shaders), GameBench te dice si la GPU está saturada. Nosotros no podemos confirmarlo aún. |
+| GPU (uso y frecuencia) | ✅ a nivel driver gráfico (uso + frecuencia + sub-counters) | 🟡 uso % vía kernel sysfs (v4.5.0, Mali + Adreno; sin frecuencia ni sub-counters)[^gpu] | Para juegos gráficamente exigentes, ahora medimos si la GPU está saturada en % de uso (Mali ARM + Adreno Qualcomm). GameBench sigue ganando en frecuencia por dominio + sub-counters de driver (vertex / fragment / texture), porque su SDK Pro está embebido en el juego. PowerVR (MediaTek/Unisoc) todavía no soportado del lado nuestro. |
 | Red por conexión + tiempo al primer byte | ✅ | ❌ | Si te importa cuánto tarda cada llamada al servidor o cada anuncio en descargar, GameBench desglosa. Nosotros no medimos red. |
 | Frecuencia por núcleo de CPU | ✅ | ❌ | Importa si querés saber qué núcleo está saturado en juegos multi-thread o si el sistema está bajando clocks por calor. |
 | Consumo real de batería (mA / mW) | ✅ Android | 🟡 solo nivel y temperatura | Si tu KPI es "minutos de juego por carga", GameBench te da el dato real. Nosotros estimamos por temperatura y nivel. |
@@ -97,7 +97,7 @@ Leyenda: ✅ tiene · 🟡 parcial · ❌ no tiene
 
 | Gap | Severidad | ¿Qué significa para vos? |
 |---|---|---|
-| Medición de GPU (uso y frecuencia) | **CRÍTICO** | Para juegos gráficamente exigentes, hoy no podemos confirmar si el cuello de botella es la GPU. GameBench sí. |
+| Frecuencia de GPU + sub-counters del driver (vertex / fragment / texture) | MEDIO | Desde v4.5.0 ya medimos % de uso de la GPU vía kernel sysfs (Mali + Adreno). Lo que aún nos falta es la frecuencia por dominio y los sub-counters del driver gráfico — eso solo se obtiene con un SDK embebido en el juego (GameBench Pro). Para juegos hipergráficos donde se necesita ese detalle, GameBench sigue ganando. |
 | Red por conexión + tiempo al primer byte | **CRÍTICO** | Si te importa el detalle de cada llamada de red (anuncios que tardan, multiplayer), GameBench desglosa y nosotros no medimos red. |
 | iOS production-ready end-to-end | ALTO | Para QA exclusivo iOS hoy, GameBench está más maduro. |
 | Batería real en mA/mW | ALTO | Si tu KPI es duración de batería, GameBench te da el dato directo. |
@@ -113,7 +113,7 @@ Leyenda: ✅ tiene · 🟡 parcial · ❌ no tiene
 
 | Categoría | Item | Esfuerzo | Impacto |
 |---|---|---|---|
-| Quick wins | Medir GPU en Android (Mali + Adreno por contadores del sistema) | Bajo | **Crítico** (cierra el gap #1) |
+| ✅ Shipped v4.5.0 | Medir GPU en Android (Mali + Adreno por contadores del sistema) | Bajo | **Crítico** (cerró el gap #1) |
 | Quick wins | Frecuencia por núcleo de CPU | Muy bajo | Medio |
 | Quick wins | Consumo de batería real en mA | Muy bajo | Alto |
 | Quick wins | Export CSV/JSON desde la sesión | Bajo | Medio (CI-friendly) |
@@ -146,6 +146,8 @@ Ventajas estructurales que GameBench no va a copiar por incentivos de negocio:
 
 ---
 
+[^gpu]: **GPU usage v4.5.0 — diferencias técnicas con GameBench.** Lo que tenemos: porcentaje de uso de la GPU leído desde el kernel sysfs por adb (Mali via `/sys/class/misc/mali0/device/utilization` HIGH-confidence; Adreno via `/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage` HIGH; fallback Adreno via delta de `gpubusy` busy/total counters). Sin root, sin SDK embebido en el juego, sin link en compilación. Cubre Mali (ARM) y Adreno (Qualcomm). Lo que NO tenemos: (a) frecuencia de la GPU por dominio (shader core, MMU, L2) — eso lo lee GameBench desde el SDK que se embebe en el juego usando Mali kbase ioctls + DB de clocks máximos; (b) sub-counters del driver (vertex / fragment / texture / compute) — mismo motivo; (c) PowerVR (MediaTek / Unisoc); en lugar de ocultar la métrica mostramos un banner invitando al crowdsource. **Caveat de atribución foreground-app**: el sysfs reporta el uso TOTAL de la GPU, no el del proceso. Lo atribuimos al juego porque la única app en foreground bajo carga gráfica suele ser él; en multi-window o con overlays activos esta atribución se rompe. GameBench, al hookear desde el SDK del juego, no tiene este caveat. **Caveat de warm-up Adreno**: en chipsets Adreno (Qualcomm) los contadores de rendimiento necesitan ~4 s desde el primer poll antes de mostrar un valor estable; los primeros 1-2 puntos del gráfico pueden aparecer en 0% por esta razón. **Caveat de side-effects**: para habilitar los contadores Adreno emitimos `echo 1 > /sys/class/kgsl/kgsl-3d0/perfcounter` al inicio de la sesión y `echo 0 > ...` al final (en `resetSessionState()`), para no dejar el contador activo entre sesiones. En OEMs locked este enable falla silenciosamente y el banner explica por qué.
+
 ## Apéndice — Para devs del repo
 
 ### Estructura interna relevante
@@ -167,6 +169,7 @@ Stack: Kotlin 1.9.22, Compose Desktop 1.6.1, JDK 17, coroutines 1.7.3, detekt 1.
 - **FPS**: medimos `dumpsys SurfaceFlinger --latency <layer>` con `LayerSelector` rank por sufijo `#N` + `LastKnownFpsTracker` para sticky durante transición de anuncio. GameBench hookea framebuffer producer/consumer desde SDK; sin SDK usa el mismo `SurfaceFlinger`.
 - **CPU**: `/proc/<pid>/stat` per-process (desde v4.2.5 — antes leíamos `/proc/stat` device-wide, ver CLAUDE.md). Misma fórmula que GameBench.
 - **GPU GameBench**: Mali kbase ioctls + Adreno `/sys/class/kgsl/kgsl-3d0/perfcounter` + DB de clocks máximos. Adreno en Android 13+ requiere comando `adb shell "echo 1 > /sys/class/kgsl/kgsl-3d0/perfcounter"`. PowerVR no soportado.
+- **GPU GamePerf (v4.5.0)**: kernel sysfs via adb, sin SDK. `core/GpuVendorCatalog.kt` lista candidates ordenados: Mali utilization HIGH → Adreno `gpu_busy_percentage` HIGH → Adreno `gpubusy` delta-counters HIGH → PowerVR LOW placeholders. `core/GpuUsageParser.kt` puro (sin I/O) parsea Mali int 0-100 + Adreno gpu_busy_percentage int + Adreno gpubusy delta math con reject de wraparound y zero-delta. `core/AdbBridge.kt::captureGpuUsage` probe-one-shell-command + cache per-device + lifecycle Adreno perfcounter enable/disable en `resetSessionState()`. 5 GpuUnavailableReason mapping a banners castellano tuteo-formal. 82 tests TDD red→green. Foreground-app attribution caveat + Adreno warm-up footnote documentados en el reporte HTML.
 - **Memoria**: `dumpsys meminfo` (PSS). Idéntico a GameBench Android.
 - **Thermal**: vendor-aware via `ThermalZoneClassifier` con allow-list explícita por SoC family (Snapdragon, Tensor, Unisoc) — fix de v4.3.6 contra substring matching.
 - **Red GameBench**: hooks a libs de red OS-level + `NSURLSessionTaskTransactionMetrics` en iOS; `TrafficStats` + intercept de C-level socket APIs para per-connection en Android. Imposible de replicar sin JNI hooks o SDK opcional.
