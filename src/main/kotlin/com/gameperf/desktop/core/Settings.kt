@@ -32,6 +32,26 @@ data class Settings(
      * read once at `startCapture` time.
      */
     val autoEventDetectionEnabled: Boolean = true,
+
+    // ═══ KPI Scoring (internal v1) ═══
+
+    /**
+     * Enable the internal KPI scoring framework (Issue #2 Block E).
+     *
+     * Default OFF (design D5). When false, `KpiScoringFacade.compute` returns
+     * `null` so no KPI score is computed and the existing
+     * `FinalScoreCalculator` A-F grade is unaffected. When true (or when the
+     * JVM system property `gameperf.kpi.internal=true` is set),
+     * `KpiScoringFacade.compute` runs the full pipeline and returns a
+     * [com.gameperf.desktop.core.kpi.KpiScoreReport].
+     *
+     * Either signal flipping the flag ON is sufficient — the sysprop is a
+     * per-process override for ad-hoc inspection without touching the
+     * persisted JSON.
+     *
+     * @since v4.5 (kpi-scoring internal v1)
+     */
+    val kpiScoringInternalEnabled: Boolean = false,
 ) {
     companion object {
         private val settingsFile: File
