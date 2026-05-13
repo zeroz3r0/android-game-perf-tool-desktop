@@ -1,0 +1,49 @@
+04-21 15:10:00.100  5432  5432 I ActivityManager: Start proc 23456:com.example.openxrgame/u0a235
+04-21 15:10:00.250  5432  5432 I ActivityManager: Displayed com.example.openxrgame/.XrActivity: +312ms
+04-21 15:10:00.500 23456 23456 I MyXrGame: Boot sequence init engine=Unity 2022.3.42f1
+04-21 15:10:00.700 23456 23456 I Choreographer: Skipped 0 frames
+04-21 15:10:00.900 23456 23456 I MyXrGame: Initialising OpenXR loader
+04-21 15:10:01.100 23456 23456 D OpenXR: xrCreateInstance ok handle=0xfeedface
+04-21 15:10:01.250 23456 23456 D OpenXR: xrCreateSession ok handle=0xc0ffee
+04-21 15:10:01.400 23456 23456 I OpenXR: xrBeginSession succeeded handle=0xc0ffee config=stereo
+04-21 15:10:01.600 23456 23456 D OpenXR: swapchain created width=2160 height=2160
+04-21 15:10:02.100 23456 23456 I xrInstance: session state -> XR_SESSION_STATE_READY (within dedup window, must NOT open second event)
+04-21 15:10:02.300 23456 23456 D OpenXR: xrWaitFrame predictedDisplayTime=ok
+04-21 15:10:02.500 23456 23456 I Choreographer: Skipped 0 frames render=90fps
+04-21 15:10:03.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:04.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:05.000 23456 23456 I MyXrGame: Frame rendered fps=89
+04-21 15:10:06.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:07.000 23456 23456 D xrInstance: session state -> XR_SESSION_STATE_SYNCHRONIZED
+04-21 15:10:08.000 23456 23456 I xrInstance: session state -> XR_SESSION_STATE_FOCUSED
+04-21 15:10:09.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:11.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:13.000 23456 23456 I MyXrGame: Frame rendered fps=89
+04-21 15:10:15.000 23456 23456 D OpenXR: xrLocateSpace ok confidence=high
+04-21 15:10:17.000 23456 23456 I MyXrGame: Player picked up object name=cube_red
+04-21 15:10:19.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:21.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:23.000 23456 23456 I MyXrGame: Frame rendered fps=89
+04-21 15:10:25.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:27.000 23456 23456 D ActivityManager: top-activity=com.example.openxrgame/.XrActivity
+04-21 15:10:29.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:31.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:33.000 23456 23456 I MyXrGame: Frame rendered fps=89
+04-21 15:10:35.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:37.000 23456 23456 I MyXrGame: Frame rendered fps=90
+04-21 15:10:39.000 23456 23456 I MyXrGame: User triggered exit-vr
+04-21 15:10:40.000 23456 23456 D OpenXR: xrRequestExitSession ok
+04-21 15:10:40.200 23456 23456 I xrInstance: session state -> XR_SESSION_STATE_STOPPING
+04-21 15:10:40.400 23456 23456 D OpenXR: xrEndFrame final flush
+04-21 15:10:40.500 23456 23456 I OpenXR: xrEndSession returned XR_SUCCESS
+04-21 15:10:40.600 23456 23456 D OpenXR: xrDestroySession ok
+04-21 15:10:40.800 23456 23456 D OpenXR: xrDestroyInstance ok
+04-21 15:10:41.000 23456 23456 I MyXrGame: Returning to 2D companion menu
+04-21 15:10:41.300 23456 23456 I MyXrGame: Frame rendered fps=60
+04-21 15:10:42.000 23456 23456 I MyXrGame: Frame rendered fps=60
+04-21 15:10:43.000 23456 23456 I MyXrGame: Frame rendered fps=60
+04-21 15:10:44.000 23456 23456 I MyXrGame: Frame rendered fps=60
+04-21 15:10:45.000 23456 23456 I MyXrGame: Frame rendered fps=60
+04-21 15:10:46.000 23456 23456 I MyXrGame: Frame rendered fps=60
+04-21 15:10:48.000 23456 23456 I MyXrGame: User opened pause menu
+04-21 15:10:50.000 23456 23456 I MyXrGame: Frame rendered fps=60

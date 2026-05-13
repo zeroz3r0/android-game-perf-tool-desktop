@@ -478,6 +478,70 @@ internal object SdkSignatureCatalog {
                 Regex("""\bam_proc_died\b"""),
             ),
         ),
+        // ────────────────────────────────────────────────────────────────
+        //  Sprint 4 — VR_SESSION (vr-event-detection, Issue #2 / D.6)
+        // ────────────────────────────────────────────────────────────────
+        //
+        // ONE combined signature covers the three Tier-1 VR runtimes:
+        //  - Oculus VrApi (`vrapi_EnterVrMode` / `vrapi_LeaveVrMode`)
+        //  - OVRPlugin (`HMDMounted` / `HMDUnmounted`)
+        //  - OpenXR (`xrBeginSession` / `xrEndSession`, plus the
+        //    `XR_SESSION_STATE_READY` / `XR_SESSION_STATE_STOPPING`
+        //    lifecycle states).
+        //
+        // On a real Quest both VrApi and OpenXR fire on the same headset
+        // session (Meta's runtime layers OpenXR on top of VrApi), so
+        // `dedupWindowMs = 5_000L` collapses the second open into the
+        // first — see design D1 in `sdd/vr-event-detection/design`.
+        //
+        // Tag-allowlist narrowed deliberately: bare `XR` is NOT included
+        // (too generic — collides with custom app tags about exchange
+        // rates etc.). Only the canonical `OpenXR` / `xrInstance` /
+        // `VrApi` / `OVRPlugin` runtime tags pass the filter. Spec VR-006
+        // pins this contract.
+        //
+        // activityClasses = emptyList() — VR runtimes take over the active
+        // surface in-place; they don't push a new Android Activity onto
+        // the back stack the way ad/billing SDKs do. Catalog invariant
+        // test (`SdkSignatureCatalogTest`) treats VR_SESSION as
+        // exempt-from-activity-classes alongside LOADING / SDK_INIT / ANR
+        // / INSTRUMENTED.
+        //
+        // confidence: HINT — patterns NOT lab-verified on real VR hardware
+        // (Quest 2/3/Pro, Pico 4/4 Ultra, Vive Focus 3 / XR Elite,
+        // Samsung XR). Sourced exclusively from public documentation:
+        //   - Khronos OpenXR 1.0 spec (the `xrBeginSession` / `xrEndSession`
+        //     calls + `XR_SESSION_STATE_*` enum values are part of the
+        //     normative API surface)
+        //   - Meta public sample code: `VrCubeWorld_NativeActivity`
+        //     (https://developer.oculus.com/documentation/native/android/mobile-native-samples/)
+        //     and the OVRPlugin reference (`HMDMounted` / `HMDUnmounted`
+        //     event names are taken from the Unity XR plugin source).
+        //   - Unity OpenXR plugin public source on GitHub.
+        // Promotion to HIGH confidence requires a real-device capture
+        // checked into `src/test/resources/logcat-fixtures/vr-real-device-*.log`
+        // and a follow-up review pass. Spec VR-007 enforces this.
+        SdkSignature(
+            sdk = "VRRuntime",
+            defaultType = EventType.VR_SESSION,
+            activityClasses = emptyList(),
+            logcatTags = listOf("VrApi", "OVRPlugin", "OpenXR", "xrInstance"),
+            openPatterns = listOf(
+                Regex("""\bvrapi_EnterVrMode\b""") to EventType.VR_SESSION,
+                Regex("""(?i)\bEntered\s*VR\s*Mode\b""") to EventType.VR_SESSION,
+                Regex("""(?i)\bHMDMounted\b""") to EventType.VR_SESSION,
+                Regex("""\bxrBeginSession\b""") to EventType.VR_SESSION,
+                Regex("""\bXR_SESSION_STATE_READY\b""") to EventType.VR_SESSION,
+            ),
+            closePatterns = listOf(
+                Regex("""\bvrapi_LeaveVrMode\b"""),
+                Regex("""(?i)\bLeft\s*VR\s*Mode\b"""),
+                Regex("""(?i)\bHMDUnmounted\b"""),
+                Regex("""\bxrEndSession\b"""),
+                Regex("""\bXR_SESSION_STATE_STOPPING\b"""),
+            ),
+            dedupWindowMs = 5_000L,
+        ),
     )
 
     /**

@@ -1,0 +1,49 @@
+04-21 14:32:00.100  4321  4321 I ActivityManager: Start proc 12345:com.example.vrgame/u0a234
+04-21 14:32:00.250  4321  4321 I ActivityManager: Displayed com.example.vrgame/.MainActivity: +247ms
+04-21 14:32:00.500 12345 12345 I MyVrGame: Boot sequence init
+04-21 14:32:00.700 12345 12345 I Choreographer: Skipped 0 frames
+04-21 14:32:00.900 12345 12345 I MyVrGame: Loading scene VrBoot
+04-21 14:32:01.100 12345 12345 D VrApi: Initialising VR runtime version=72.0
+04-21 14:32:01.250 12345 12345 D VrApi: vrapi_Initialize ovrInitParms accepted
+04-21 14:32:01.400 12345 12345 I VrApi: vrapi_EnterVrMode() entered headset session
+04-21 14:32:01.500 12345 12345 D VrApi: Eye buffer textures bound left=0x1 right=0x2
+04-21 14:32:02.100 12345 12345 I OVRPlugin: HMDMounted event received (within dedup window, must NOT open second event)
+04-21 14:32:02.250 12345 12345 D VrApi: Display refresh rate set to 90Hz
+04-21 14:32:02.500 12345 12345 I Choreographer: Skipped 0 frames render=90fps
+04-21 14:32:03.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:04.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:05.000 12345 12345 I MyVrGame: Frame rendered fps=89
+04-21 14:32:06.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:07.000 12345 12345 D OVRPlugin: pose update q=(0.0,0.1,0.0,1.0)
+04-21 14:32:08.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:10.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:12.000 12345 12345 I MyVrGame: Player advanced to level=2
+04-21 14:32:14.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:16.000 12345 12345 I MyVrGame: Frame rendered fps=89
+04-21 14:32:18.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:20.000 12345 12345 D OVRPlugin: tracking confidence high
+04-21 14:32:22.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:24.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:26.000 12345 12345 I MyVrGame: Frame rendered fps=89
+04-21 14:32:28.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:30.000 12345 12345 D ActivityManager: top-activity=com.example.vrgame/.MainActivity
+04-21 14:32:32.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:34.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:36.000 12345 12345 I MyVrGame: Frame rendered fps=89
+04-21 14:32:38.000 12345 12345 I MyVrGame: Frame rendered fps=90
+04-21 14:32:40.000 12345 12345 I MyVrGame: Player triggered exit-vr
+04-21 14:32:40.500 12345 12345 D VrApi: Preparing to leave VR mode
+04-21 14:32:40.700 12345 12345 I VrApi: vrapi_LeaveVrMode() reason=user
+04-21 14:32:40.750 12345 12345 D VrApi: Eye textures released
+04-21 14:32:40.900 12345 12345 I OVRPlugin: HMDUnmounted event received
+04-21 14:32:41.100 12345 12345 D VrApi: vrapi_Shutdown completed
+04-21 14:32:41.300 12345 12345 I MyVrGame: Returning to 2D companion menu
+04-21 14:32:41.500 12345 12345 I MyVrGame: Frame rendered fps=60
+04-21 14:32:42.000 12345 12345 I MyVrGame: Frame rendered fps=60
+04-21 14:32:43.000 12345 12345 I MyVrGame: Frame rendered fps=60
+04-21 14:32:44.000 12345 12345 I MyVrGame: Frame rendered fps=60
+04-21 14:32:45.000 12345 12345 I ActivityManager: ProcessRecord state=visible
+04-21 14:32:46.000 12345 12345 I MyVrGame: Frame rendered fps=60
+04-21 14:32:48.000 12345 12345 I MyVrGame: Frame rendered fps=60
+04-21 14:32:50.000 12345 12345 I MyVrGame: User opened pause menu
+04-21 14:32:51.000 12345 12345 I MyVrGame: Frame rendered fps=60

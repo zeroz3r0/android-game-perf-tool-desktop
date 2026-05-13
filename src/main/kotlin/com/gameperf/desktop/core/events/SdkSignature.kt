@@ -33,10 +33,20 @@ package com.gameperf.desktop.core.events
  *           Order matters — first match wins.
  * @property closePatterns Regex patterns matching log MESSAGES that indicate
  *           the event ends. Used to compute endMs.
+ * @property dedupWindowMs Optional same-SDK open-event dedup window in
+ *           milliseconds. When non-null, [EventDetectorImpl.tryOpen] MUST
+ *           suppress a new open for this signature if another event with the
+ *           same `sdkSource` is already open and started within this window.
+ *           Default `null` = no dedup (legacy 18-entry behavior preserved).
+ *           Sprint 4 (vr-event-detection) introduced this for the
+ *           multi-runtime VR signature (VrApi + OpenXR fire on the same
+ *           Quest headset session within ~1s) — see design D1.
  *
  * @since v4.4.0 (Sprint 0 of event-segmentation-coverage rewrites the
  *        `type` and `openPatterns` shape; closePatterns and activityClasses
- *        are unchanged).
+ *        are unchanged). [dedupWindowMs] added in Sprint 4
+ *        (vr-event-detection) — additive, default null, zero behavior
+ *        change for the existing 18 entries.
  */
 internal data class SdkSignature(
     val sdk: String,
@@ -45,4 +55,5 @@ internal data class SdkSignature(
     val logcatTags: List<String>,
     val openPatterns: List<Pair<Regex, EventType>>,
     val closePatterns: List<Regex>,
+    val dedupWindowMs: Long? = null,
 )
