@@ -6,6 +6,7 @@ import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.FPowerDiagnostic
 import com.gameperf.desktop.core.model.GpuDiagnostic
+import com.gameperf.desktop.core.model.NetworkDiagnostic
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
@@ -234,6 +235,22 @@ object SessionHistory {
         val gpuUsageHistory: List<Int> = emptyList(),
         val gpuUsageTimed: List<List<Int>> = emptyList(),
         val gpuDiagnostic: GpuDiagnostic? = null,
+        // v4.6.x — `network-bandwidth-total-app` (spec NET-001). Mirrors the
+        // GPU persistence pattern: networkAvailable defaults to `false`
+        // because pre-v4.6.x sessions NEVER captured network. Sentinels for
+        // [maxNetworkRxBytes] / [maxNetworkTxBytes] are `-1L` matching
+        // [NetworkSnapshot.rxBytes] / [NetworkSnapshot.txBytes]. Empty
+        // histories flatten as `List<Long>` (no timed-2-list flatten needed
+        // because we don't capture network at sub-second cadence — every
+        // sample is a cumulative byte counter so percentile aggregation is
+        // not meaningful per-tick). See `sdd/network-bandwidth-total-app/spec`
+        // NET-001 scenario 2 (forward-compat unknown keys).
+        val networkAvailable: Boolean = false,
+        val maxNetworkRxBytes: Long = -1L,
+        val maxNetworkTxBytes: Long = -1L,
+        val networkRxHistory: List<Long> = emptyList(),
+        val networkTxHistory: List<Long> = emptyList(),
+        val networkDiagnostic: NetworkDiagnostic? = null,
     )
 
     data class HistoryEntry(
@@ -313,6 +330,19 @@ object SessionHistory {
         val gpuUsageHistory: List<Int> = emptyList(),
         val gpuUsageTimed: List<TimedSample> = emptyList(),
         val gpuDiagnostic: GpuDiagnostic? = null,
+        // v4.6.x — `network-bandwidth-total-app` (spec NET-001). Domain mirror
+        // of the [SerializableEntry] network* fields. Defaults align with the
+        // SerializableEntry side so a HistoryEntry constructed without naming
+        // these args stays semantically identical to a pre-v4.6.x row
+        // (networkAvailable=false, history empty, diagnostic null, max bytes
+        // = -1L sentinel). Mirrors the v4.5.0 GPU precedent (NOT thermal /
+        // fpower) because pre-v4.6.x sessions never captured network.
+        val networkAvailable: Boolean = false,
+        val maxNetworkRxBytes: Long = -1L,
+        val maxNetworkTxBytes: Long = -1L,
+        val networkRxHistory: List<Long> = emptyList(),
+        val networkTxHistory: List<Long> = emptyList(),
+        val networkDiagnostic: NetworkDiagnostic? = null,
     )
 
     // ===== Conversion =====
@@ -360,6 +390,15 @@ object SessionHistory {
         gpuUsageHistory = gpuUsageHistory,
         gpuUsageTimed = gpuUsageTimed.map { listOf(it.second, it.value.toInt()) },
         gpuDiagnostic = gpuDiagnostic,
+        // v4.6.x — `network-bandwidth-total-app` (spec NET-001). Domain → wire
+        // pass-through. Defaults preserve "no network data" on legacy
+        // HistoryEntry call sites (networkAvailable=false, history empty).
+        networkAvailable = networkAvailable,
+        maxNetworkRxBytes = maxNetworkRxBytes,
+        maxNetworkTxBytes = maxNetworkTxBytes,
+        networkRxHistory = networkRxHistory,
+        networkTxHistory = networkTxHistory,
+        networkDiagnostic = networkDiagnostic,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -421,6 +460,16 @@ object SessionHistory {
             if (it.size >= 2) TimedSample(it[0], it[1].toDouble()) else null
         },
         gpuDiagnostic = gpuDiagnostic,
+        // v4.6.x — `network-bandwidth-total-app` (spec NET-001). Wire → domain
+        // pass-through. Missing keys on legacy `.gameperf` rows hydrate as
+        // the SerializableEntry defaults (networkAvailable=false, etc.) via
+        // Json { ignoreUnknownKeys = true }. NET-001 scenario 2.
+        networkAvailable = networkAvailable,
+        maxNetworkRxBytes = maxNetworkRxBytes,
+        maxNetworkTxBytes = maxNetworkTxBytes,
+        networkRxHistory = networkRxHistory,
+        networkTxHistory = networkTxHistory,
+        networkDiagnostic = networkDiagnostic,
     )
 
     // ===== Public API (unchanged contract) =====

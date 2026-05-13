@@ -16,6 +16,8 @@ import com.gameperf.desktop.core.model.FPowerDiagnostic
 import com.gameperf.desktop.core.model.FPowerUnavailableReason
 import com.gameperf.desktop.core.model.GpuDiagnostic
 import com.gameperf.desktop.core.model.GpuUnavailableReason
+import com.gameperf.desktop.core.model.NetworkDiagnostic
+import com.gameperf.desktop.core.model.NetworkUnavailableReason
 import com.gameperf.desktop.core.model.ThermalDiagnostic
 import com.gameperf.desktop.core.model.ThermalUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
@@ -129,6 +131,23 @@ object ReportGenerator {
         gpuDiagnostic: GpuDiagnostic? = null,
         gpuUsageHistory: List<Int> = emptyList(),
         maxGpuUsage: Int = -1,
+        // v4.6.x — `network-bandwidth-total-app` (spec NET-001 + design §6).
+        // All defaulted so legacy fixtures (ReportRenderingTest, ReportGradingTest)
+        // and pre-v4.6.x history re-renders skip the new Network section
+        // entirely. Card renders only when
+        //   (networkAvailable && networkRxHistory.isNotEmpty())
+        // OR
+        //   (!networkAvailable && networkDiagnostic != null)
+        // per design §6 (mirrors the v4.5.0 GPU precedent).
+        // [maxNetworkRxBytes] / [maxNetworkTxBytes] use the -1L sentinel from
+        // [NetworkSnapshot.rxBytes] / [NetworkSnapshot.txBytes] when no
+        // samples were captured.
+        networkAvailable: Boolean = false,
+        networkDiagnostic: NetworkDiagnostic? = null,
+        networkRxHistory: List<Long> = emptyList(),
+        networkTxHistory: List<Long> = emptyList(),
+        maxNetworkRxBytes: Long = -1L,
+        maxNetworkTxBytes: Long = -1L,
         // SDD shareable-html-report Block F (v4.6) — KPI scoring sections.
         // All defaulted so legacy callers (UI, pre-v4.6 `.gameperf`
         // re-renders, every existing report test) produce byte-equivalent
@@ -278,6 +297,22 @@ object ReportGenerator {
             maxValue = maxGpuUsage,
             available = gpuAvailable,
             diagnostic = gpuDiagnostic,
+        )
+
+        // v4.6.x — Network section (`network-bandwidth-total-app`, spec
+        // NET-001 + design §6). Empty string for legacy callers
+        // (networkAvailable defaulted false AND no diagnostic) so pre-v4.6.x
+        // fixtures stay byte-equivalent. Render matrix mirrors gpuSection:
+        //  - !available && diagnostic != null -> N/D card + Spanish banner.
+        //  - available && history.isNotEmpty()  -> numeric card + chart canvas.
+        //  - everything else -> "".
+        val networkSectionHtml = networkSection(
+            rxHistory = networkRxHistory,
+            txHistory = networkTxHistory,
+            maxRxBytes = maxNetworkRxBytes,
+            maxTxBytes = maxNetworkTxBytes,
+            available = networkAvailable,
+            diagnostic = networkDiagnostic,
         )
 
         // v4.5.0 Sprint 3 — DevActionBrief section (spec DAB-008, ADR-7).
@@ -670,6 +705,8 @@ $excessiveCalloutHtml
 $fpowerSectionHtml
 
 $gpuSectionHtml
+
+$networkSectionHtml
 
 <section class="card">
     <div class="card-header"><h2>&#128267; Bateria</h2></div>
@@ -1911,6 +1948,148 @@ $cards
      *    + v4.5.0 fpower precedent of "available=true + empty history" -> no
      *    section rendered.
      */
+    /**
+     * v4.6.x — Format a byte counter as a human-readable KB / MB / GB
+     * string. Used by [networkSection] for the RX / TX pills + chart labels.
+     *
+     * Bands:
+     *  - `< 1024 B`         -> "N B"
+     *  - `< 1 MB`           -> "N.NN KB"
+     *  - `< 1 GB`           -> "N.NN MB"
+     *  - `>= 1 GB`          -> "N.NN GB"
+     *
+     * Pure function. Uses [fmtUS] so the decimal separator stays
+     * locale-independent (avoids "1,23 MB" on Spanish locales — the report
+     * is opened in browsers with arbitrary user locales).
+     */
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 0) return "N/D"
+        val kb = 1024.0
+        val mb = kb * 1024.0
+        val gb = mb * 1024.0
+        return when {
+            bytes < kb -> "$bytes B"
+            bytes < mb -> "${fmtUS("%.2f", bytes / kb)} KB"
+            bytes < gb -> "${fmtUS("%.2f", bytes / mb)} MB"
+            else -> "${fmtUS("%.2f", bytes / gb)} GB"
+        }
+    }
+
+    /**
+     * v4.6.x — Render the Spanish-tuteo-formal diagnostic banner for the
+     * network section. Mirrors [gpuDiagnosticBanner] / [fpowerDiagnosticBanner]
+     * exactly (design ADR-1, §6). Each [NetworkUnavailableReason] maps to a
+     * distinct one-sentence reason copy + lists raw probed sources and
+     * failed binder codes when available.
+     *
+     * Voice register: tuteo-formal ("ten en cuenta", "tu dispositivo", NOT
+     * "tené" voseo). Matches the README in-app castellano formal convention
+     * (CLAUDE.md "Convención de idiomas").
+     */
+    private fun networkDiagnosticBanner(diagnostic: NetworkDiagnostic): String {
+        val reasonText = when (diagnostic.reason) {
+            NetworkUnavailableReason.BINDER_UNAVAILABLE ->
+                "Los códigos binder de netstats que probamos no devolvieron datos legibles. " +
+                    "Esto suele pasar en versiones de Android que renombraron la transacción " +
+                    "(AOSP renumeró el call entre Android 11 y 14). Ten en cuenta que la app " +
+                    "intentará la siguiente probe con dumpsys; si seguís viendo este mensaje, " +
+                    "actualizá tu dispositivo o reportá el modelo + versión para sumarlo al catálogo."
+            NetworkUnavailableReason.DUMPSYS_PERMISSION_DENIED ->
+                "El comando dumpsys netstats requiere el permiso android.permission.DUMP que " +
+                    "no está disponible en tu dispositivo sin root. No hay workaround sin acceso " +
+                    "root o un dispositivo con dumpsys accesible (build userdebug)."
+            NetworkUnavailableReason.ALL_PROBES_FAILED ->
+                "Ningún sondeo de netstats funcionó: ni los códigos binder ni el fallback dumpsys " +
+                    "produjeron datos legibles. Tu dispositivo probablemente no expone la API de " +
+                    "netstats por UID. Hacé una medición manual de tráfico desde la app o el " +
+                    "panel del juego como fallback."
+            NetworkUnavailableReason.IMPLAUSIBLE_VALUE ->
+                "El sondeo binder devolvió un valor fuera del rango plausible (0 a 100 GB). Esto " +
+                    "suele ser una colisión del código binder (la transacción está renumerada y " +
+                    "leímos basura interpretada como bytes). El sistema descartó la lectura y la " +
+                    "verificación en laboratorio queda pendiente para confirmar el código correcto."
+            NetworkUnavailableReason.CAPTURE_THREW ->
+                "Se produjo un error inesperado leyendo netstats. Reportá el modelo, marca y " +
+                    "versión de Android para que podamos investigarlo y la app no se cae — sigue " +
+                    "midiendo el resto de las métricas con normalidad."
+        }
+        val sourceItems = diagnostic.probedSources.take(10).joinToString("") { s ->
+            "<li><code>${esc(s)}</code></li>"
+        }
+        val sourcesBlock = if (sourceItems.isEmpty()) "" else """
+        <p class="network-diag-sources-label">Sondeos intentados:</p>
+        <ul class="network-diag-sources">$sourceItems</ul>"""
+        val failedCodesBlock = if (diagnostic.failedBinderCodes.isEmpty()) "" else """
+        <p class="network-diag-sources-label">Códigos binder sin respuesta:</p>
+        <p><code>${diagnostic.failedBinderCodes.joinToString(", ")}</code></p>"""
+        return """
+    <div class="callout callout-warning network-diag-banner">
+        <strong>&#9888; Datos de red no disponibles.</strong>
+        <p>$reasonText</p>$sourcesBlock$failedCodesBlock
+    </div>"""
+    }
+
+    /**
+     * v4.6.x — Build the Network `<section>` HTML conditionally per spec
+     * NET-001 + design §6. Returns the empty string when there's nothing to
+     * render so the caller can splat it unconditionally into the template
+     * (matches the gpuSection / fpowerSection precedent).
+     *
+     * Render matrix (parallel to gpuSection):
+     *  - `!available && diagnostic != null` -> N/D card + diagnostic banner.
+     *  - `available && rxHistory.isNotEmpty()` -> numeric card with max RX /
+     *    max TX in human-readable KB/MB/GB form + chart canvas + a Spanish
+     *    tuteo-formal caveat about total-app scope (no per-connection split,
+     *    design D2).
+     *  - everything else -> empty string (no card).
+     */
+    private fun networkSection(
+        rxHistory: List<Long>,
+        txHistory: List<Long>,
+        maxRxBytes: Long,
+        maxTxBytes: Long,
+        available: Boolean,
+        diagnostic: NetworkDiagnostic?,
+    ): String {
+        if (!available && diagnostic != null) {
+            return """
+<section id="sec-network" class="card network-card network-unavailable">
+    <div class="card-header">
+        <h2>&#127760; Ancho de banda de red</h2>
+    </div>
+    <p class="card-desc">Bytes acumulados RX/TX del UID del juego leídos via binder netstats (Mali / Adreno / PowerVR independiente — la red es una métrica del sistema).</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Pico RX</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Pico TX</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">0</span></div>
+    </div>
+    ${networkDiagnosticBanner(diagnostic)}
+</section>"""
+        }
+        if (available && rxHistory.isNotEmpty()) {
+            val peakRx = if (maxRxBytes >= 0) maxRxBytes else (rxHistory.max())
+            val peakTx = if (maxTxBytes >= 0) maxTxBytes else (txHistory.maxOrNull() ?: 0L)
+            val rxD = rxHistory.joinToString(",")
+            val txD = txHistory.joinToString(",")
+            val labels = rxHistory.indices.joinToString(",") { "\"${(it + 1) * 2}s\"" }
+            return """
+<section id="sec-network" class="card network-card">
+    <div class="card-header">
+        <h2>&#127760; Ancho de banda de red</h2>
+    </div>
+    <p class="card-desc">Bytes acumulados RX/TX del UID del juego en cada muestra. Útil para detectar picos de descarga de assets, llamadas a API de anuncios o sincronizaciones de IAP.</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Pico RX</span><span class="stat-pill-value">${formatBytes(peakRx)}</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Pico TX</span><span class="stat-pill-value">${formatBytes(peakTx)}</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">${rxHistory.size}</span></div>
+    </div>
+    <div class="chart-container"><canvas id="networkChart" data-network-labels="$labels" data-network-rx="$rxD" data-network-tx="$txD"></canvas></div>
+    <p class="hint">&#8505; <strong>Atribución total app:</strong> reportamos bytes RX/TX agregados del UID del juego — no diferenciamos por conexión (Unity Cloud, Google APIs, anuncios). Si tu app usa VPN o un proxy a nivel de sistema, los bytes pueden quedar ocultos. Para análisis per-endpoint conectá un mitmproxy externo.</p>
+</section>"""
+        }
+        return ""
+    }
+
     private fun gpuSection(
         history: List<Int>,
         maxValue: Int,

@@ -9,6 +9,9 @@ import com.gameperf.desktop.core.model.GpuDiagnostic
 import com.gameperf.desktop.core.model.GpuSnapshot
 import com.gameperf.desktop.core.model.GpuUnavailableReason
 import com.gameperf.desktop.core.model.MemSnapshot
+import com.gameperf.desktop.core.model.NetworkDiagnostic
+import com.gameperf.desktop.core.model.NetworkSnapshot
+import com.gameperf.desktop.core.model.NetworkUnavailableReason
 import com.gameperf.desktop.core.model.ThermalSnapshot
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -343,6 +346,12 @@ object AdbBridge {
                     } catch (_: Exception) { /* swallow per spec */ }
                 }
             gpuStateMap.clear()
+        }
+        // v4.6.x (network-bandwidth-total-app): clear per-device network probe
+        // cache so a new session re-walks the binder catalog (NET-007 cache
+        // contract). Mirrors fpowerStateMap / gpuStateMap.clear().
+        synchronized(networkLock) {
+            networkStateMap.clear()
         }
     }
 
@@ -1142,6 +1151,340 @@ object AdbBridge {
         return GpuSnapshot(usagePct = -1, gpuAvailable = false, diagnostic = diag)
     }
 
+    // ===== v4.6.x — Network bandwidth (network-bandwidth-total-app) ==========
+
+    // Per-device network probe cache. Mirrors the v4.5.0 GPU pattern:
+    // `winningMethod` is set after the first successful binder/dumpsys probe.
+    // `lastRxTxBytes` keeps the previous-tick cumulative bytes (Phase 5 wiring
+    // will use this for delta math; Phase 4 only persists baseline values).
+    // `firstProbeFailed=true` short-circuits subsequent ticks to a cached
+    // diagnostic (sticky terminal-unavailable, NET-008) so we don't spam
+    // shells for devices that can't expose `service call netstats` at all.
+    // Cleared by [resetSessionState].
+    private data class NetworkDeviceState(
+        val winningMethod: String? = null,
+        val lastRxTxBytes: Pair<Long, Long>? = null,
+        val firstProbeFailed: Boolean = false,
+        val terminalDiagnostic: NetworkDiagnostic? = null,
+    )
+    private val networkLock = Any()
+    private val networkStateMap: MutableMap<String, NetworkDeviceState> = mutableMapOf()
+
+    /** Shell timeout for the binder catalog walk (cold probe). */
+    private const val NETWORK_BINDER_SHELL_TIMEOUT_MS: Long = 2000L
+
+    /** Shell timeout for the dumpsys fallback (can be 1-2s on devices with long history). */
+    private const val NETWORK_DUMPSYS_SHELL_TIMEOUT_MS: Long = 3000L
+
+    /**
+     * v4.6.x — Capture a [NetworkSnapshot] of cumulative RX/TX bytes for the
+     * game UID via per-device probe-once-then-cache (mirrors the v4.5.0 GPU
+     * pattern).
+     *
+     * State machine per device (cleared by [resetSessionState]):
+     *  1. **Sticky terminal failure** (`firstProbeFailed=true`) → return the
+     *     cached diagnostic without re-shelling (NET-008). Devices that
+     *     cannot expose `service call netstats` won't spam adb for the rest
+     *     of the session.
+     *  2. **Steady-state** (cached `winningMethod`) → exactly ONE shell call
+     *     using the cached method (NET-007). Binder methods invoke
+     *     `service call netstats <code> i32 <uid> i32 0`; the dumpsys
+     *     fallback invokes `dumpsys netstats detail --uid <uid>`.
+     *  3. **Cold probe** — walk binder candidates `[11, 12, 14, 15]` from
+     *     [NetworkVendorCatalog.PROBE_CANDIDATES]; first parsed result wins
+     *     and caches the method. If every binder candidate returns garbage
+     *     try the dumpsys fallback once.
+     *  4. **All probes fail** → cache `firstProbeFailed=true` +
+     *     terminalDiagnostic, all subsequent ticks return the cached
+     *     snapshot with ZERO further shell calls (NET-008).
+     *
+     * Plausibility (NET-010): parsed `rxBytes` / `txBytes` MUST be in
+     * `[0, 100 GB]`. Out-of-range values yield `IMPLAUSIBLE_VALUE` terminal
+     * diagnostic (also sticky-cached).
+     *
+     * Entire body wrapped in try/catch → `CAPTURE_THREW` snapshot (NET-009,
+     * mirrors [captureGpuUsage] resilience).
+     *
+     * See `sdd/network-bandwidth-total-app/spec` NET-007 / NET-008 /
+     * NET-009 / NET-010.
+     *
+     * @since v4.6.x
+     */
+    fun captureNetworkBandwidth(deviceId: String, pkg: String, uid: Int): NetworkSnapshot {
+        return try {
+            captureNetworkBandwidthImpl(deviceId, pkg, uid)
+        } catch (_: Exception) {
+            NetworkSnapshot(
+                rxBytes = -1L,
+                txBytes = -1L,
+                networkAvailable = false,
+                diagnostic = NetworkDiagnostic(
+                    probedSources = emptyList(),
+                    detectedMethod = null,
+                    failedBinderCodes = emptyList(),
+                    reason = NetworkUnavailableReason.CAPTURE_THREW,
+                ),
+            )
+        }
+    }
+
+    /**
+     * v4.6.x — Resolve Android UID for [pkg] on [deviceId] via
+     * `cmd package list packages -U <pkg>`. Returns null on lookup failure
+     * (package missing, permission denied, parse error, shell timeout).
+     *
+     * Sample output (single line, one entry per match):
+     * `package:com.example.game uid:10234`
+     *
+     * Matches the first `uid:NNN` token. Caller is responsible for caching;
+     * UID is stable for the install lifetime so the AppViewModel resolves it
+     * once and threads the integer into every [captureNetworkBandwidth] call
+     * for that session.
+     *
+     * @since v4.6.x (`network-bandwidth-total-app` Phase 5.0)
+     */
+    fun getUidForPackage(deviceId: String, pkg: String): Int? {
+        if (!isValidPackageName(pkg)) return null
+        return try {
+            val output = shell(deviceId, "cmd package list packages -U $pkg", timeoutMs = 2000)
+            UID_FROM_PACKAGE_LIST.find(output)?.groupValues?.get(1)?.toIntOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    private fun captureNetworkBandwidthImpl(
+        deviceId: String,
+        pkg: String,
+        uid: Int,
+    ): NetworkSnapshot {
+        val cached = synchronized(networkLock) { networkStateMap[deviceId] }
+        // Step 1 — sticky terminal failure (NET-008).
+        if (cached?.firstProbeFailed == true) {
+            val diag = cached.terminalDiagnostic ?: NetworkDiagnostic(
+                probedSources = NetworkVendorCatalog.PROBE_CANDIDATES.map { it.method },
+                detectedMethod = null,
+                failedBinderCodes = NetworkVendorCatalog.PROBE_CANDIDATES
+                    .mapNotNull { it.binderCode },
+                reason = NetworkUnavailableReason.ALL_PROBES_FAILED,
+            )
+            return NetworkSnapshot(
+                rxBytes = -1L,
+                txBytes = -1L,
+                networkAvailable = false,
+                diagnostic = diag,
+            )
+        }
+        // Step 2 — steady-state cached method (NET-007: exactly 1 shell).
+        if (cached?.winningMethod != null) {
+            return steadyStateNetwork(deviceId, uid, cached.winningMethod)
+        }
+        // Step 3 — cold probe.
+        return coldProbeNetwork(deviceId, uid)
+    }
+
+    /**
+     * NET-007 steady-state read: exactly 1 shell call using the cached
+     * winning method.
+     */
+    private fun steadyStateNetwork(
+        deviceId: String,
+        uid: Int,
+        method: String,
+    ): NetworkSnapshot {
+        val raw: String
+        val parsed: Pair<Long, Long>?
+        if (method == "DUMPSYS") {
+            raw = shell(
+                deviceId,
+                "${NetworkVendorCatalog.DUMPSYS_NETSTATS_COMMAND} $uid",
+                timeoutMs = NETWORK_DUMPSYS_SHELL_TIMEOUT_MS,
+            )
+            parsed = NetworkBandwidthParser.parseDumpsysNetstats(raw, uid)
+        } else {
+            val code = method.substringAfter("BINDER:").toIntOrNull()
+                ?: return implausibleNetworkSnapshot(method)
+            raw = shell(
+                deviceId,
+                "service call netstats $code i32 $uid i32 0",
+                timeoutMs = NETWORK_BINDER_SHELL_TIMEOUT_MS,
+            )
+            parsed = NetworkBandwidthParser.parseServiceCallResponse(raw)
+        }
+        return resolveNetworkParsed(parsed, method)
+    }
+
+    /**
+     * NET-007 cold probe: walk binder catalog then dumpsys fallback. Caches
+     * winning method or sticky-failure diagnostic.
+     */
+    private fun coldProbeNetwork(deviceId: String, uid: Int): NetworkSnapshot {
+        val probed = mutableListOf<String>()
+        val failedCodes = mutableListOf<Int>()
+        for (candidate in NetworkVendorCatalog.PROBE_CANDIDATES) {
+            val code = candidate.binderCode ?: continue
+            probed += candidate.method
+            val raw = shell(
+                deviceId,
+                "service call netstats $code i32 $uid i32 0",
+                timeoutMs = NETWORK_BINDER_SHELL_TIMEOUT_MS,
+            )
+            val parsed = NetworkBandwidthParser.parseServiceCallResponse(raw)
+            if (parsed != null) {
+                return cacheWinningProbe(
+                    deviceId = deviceId,
+                    method = candidate.method,
+                    rx = parsed.first,
+                    tx = parsed.second,
+                    probedSources = probed,
+                    failedBinderCodes = failedCodes,
+                )
+            }
+            failedCodes += code
+        }
+        // Dumpsys fallback (cold only).
+        probed += "DUMPSYS"
+        val dumpRaw = shell(
+            deviceId,
+            "${NetworkVendorCatalog.DUMPSYS_NETSTATS_COMMAND} $uid",
+            timeoutMs = NETWORK_DUMPSYS_SHELL_TIMEOUT_MS,
+        )
+        val dumpParsed = NetworkBandwidthParser.parseDumpsysNetstats(dumpRaw, uid)
+        if (dumpParsed != null) {
+            return cacheWinningProbe(
+                deviceId = deviceId,
+                method = "DUMPSYS",
+                rx = dumpParsed.first,
+                tx = dumpParsed.second,
+                probedSources = probed,
+                failedBinderCodes = failedCodes,
+            )
+        }
+        // All probes failed — pick the most specific reason.
+        val reason = when {
+            dumpRaw.contains("Permission", ignoreCase = true) ||
+                dumpRaw.contains("denied", ignoreCase = true) ->
+                NetworkUnavailableReason.DUMPSYS_PERMISSION_DENIED
+            failedCodes.isNotEmpty() -> NetworkUnavailableReason.BINDER_UNAVAILABLE
+            else -> NetworkUnavailableReason.ALL_PROBES_FAILED
+        }
+        return cacheTerminalNetworkFailure(deviceId, probed, failedCodes, reason)
+    }
+
+    /**
+     * Common cache-on-success path for both binder and dumpsys winners.
+     * Applies NET-010 plausibility window and caches sticky failure on reject.
+     */
+    private fun cacheWinningProbe(
+        deviceId: String,
+        method: String,
+        rx: Long,
+        tx: Long,
+        probedSources: List<String>,
+        failedBinderCodes: List<Int>,
+    ): NetworkSnapshot {
+        if (!NetworkBandwidthParser.isPlausibleBytes(rx) ||
+            !NetworkBandwidthParser.isPlausibleBytes(tx)
+        ) {
+            return cacheTerminalNetworkFailure(
+                deviceId = deviceId,
+                probedSources = probedSources,
+                failedBinderCodes = failedBinderCodes,
+                reason = NetworkUnavailableReason.IMPLAUSIBLE_VALUE,
+            )
+        }
+        synchronized(networkLock) {
+            networkStateMap[deviceId] = NetworkDeviceState(
+                winningMethod = method,
+                lastRxTxBytes = rx to tx,
+                firstProbeFailed = false,
+            )
+        }
+        return NetworkSnapshot(
+            rxBytes = rx,
+            txBytes = tx,
+            networkAvailable = true,
+            diagnostic = null,
+        )
+    }
+
+    /** Cache + emit a sticky terminal failure snapshot (NET-008). */
+    private fun cacheTerminalNetworkFailure(
+        deviceId: String,
+        probedSources: List<String>,
+        failedBinderCodes: List<Int>,
+        reason: NetworkUnavailableReason,
+    ): NetworkSnapshot {
+        val diag = NetworkDiagnostic(
+            probedSources = probedSources.take(NETWORK_DIAGNOSTIC_CAP),
+            detectedMethod = null,
+            failedBinderCodes = failedBinderCodes.take(NETWORK_DIAGNOSTIC_CAP),
+            reason = reason,
+        )
+        synchronized(networkLock) {
+            networkStateMap[deviceId] = NetworkDeviceState(
+                winningMethod = null,
+                lastRxTxBytes = null,
+                firstProbeFailed = true,
+                terminalDiagnostic = diag,
+            )
+        }
+        return NetworkSnapshot(
+            rxBytes = -1L,
+            txBytes = -1L,
+            networkAvailable = false,
+            diagnostic = diag,
+        )
+    }
+
+    private fun resolveNetworkParsed(
+        parsed: Pair<Long, Long>?,
+        method: String,
+    ): NetworkSnapshot {
+        if (parsed == null) {
+            return NetworkSnapshot(
+                rxBytes = -1L,
+                txBytes = -1L,
+                networkAvailable = false,
+                diagnostic = NetworkDiagnostic(
+                    probedSources = listOf(method),
+                    detectedMethod = method,
+                    failedBinderCodes = emptyList(),
+                    reason = NetworkUnavailableReason.ALL_PROBES_FAILED,
+                ),
+            )
+        }
+        val (rx, tx) = parsed
+        if (!NetworkBandwidthParser.isPlausibleBytes(rx) ||
+            !NetworkBandwidthParser.isPlausibleBytes(tx)
+        ) {
+            return implausibleNetworkSnapshot(method)
+        }
+        return NetworkSnapshot(
+            rxBytes = rx,
+            txBytes = tx,
+            networkAvailable = true,
+            diagnostic = null,
+        )
+    }
+
+    private fun implausibleNetworkSnapshot(method: String): NetworkSnapshot =
+        NetworkSnapshot(
+            rxBytes = -1L,
+            txBytes = -1L,
+            networkAvailable = false,
+            diagnostic = NetworkDiagnostic(
+                probedSources = listOf(method),
+                detectedMethod = method,
+                failedBinderCodes = emptyList(),
+                reason = NetworkUnavailableReason.IMPLAUSIBLE_VALUE,
+            ),
+        )
+
+    /** Mirror of [GPU_DIAGNOSTIC_CAP] to keep failed-session payload bounded. */
+    private const val NETWORK_DIAGNOSTIC_CAP: Int = 10
+
     /**
      * Build the multi-path single-shell probe command. Pure data → no user
      * input → no injection risk (CLAUDE.md shell() rule satisfied).
@@ -1918,6 +2261,12 @@ internal fun parseConnectStderr(stderr: String, timedOut: Boolean): ConnectFailu
  * line. Pure: no IO.
  */
 private val RE_ADB_VER = Regex("Version (\\d+)\\.(\\d+)\\.(\\d+)")
+
+// v4.6.x — `cmd package list packages -U <pkg>` emits lines of the shape:
+//   "package:com.example.game uid:10234"
+// We match the first `uid:NNN` token. Top-level compiled `Regex` so the hot
+// path doesn't re-compile per call (CLAUDE.md performance rule).
+private val UID_FROM_PACKAGE_LIST = Regex("uid:(\\d+)")
 
 internal fun parseAdbVersion(output: String): AdbVersion? {
     val match = RE_ADB_VER.find(output) ?: return null

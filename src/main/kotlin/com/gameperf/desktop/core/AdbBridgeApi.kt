@@ -6,6 +6,7 @@ import com.gameperf.desktop.core.model.FPowerSnapshot
 import com.gameperf.desktop.core.model.FrameSnapshot
 import com.gameperf.desktop.core.model.GpuSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
+import com.gameperf.desktop.core.model.NetworkSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
 import java.io.File
 
@@ -111,6 +112,56 @@ interface AdbBridgeApi {
      * @since v4.5.0
      */
     fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot
+
+    /**
+     * v4.6.x — Capture a [NetworkSnapshot] of cumulative RX/TX bytes for the
+     * game UID via per-device probe-once-then-cache (mirrors the v4.5.0 GPU
+     * pattern).
+     *
+     * The bridge maintains a per-device probe-cache (`winningMethod`,
+     * `lastRxTxBytes`, `firstProbeFailed`, `terminalDiagnostic`) cleared by
+     * [resetSessionState]. First call walks the binder catalog
+     * ([NetworkVendorCatalog.PROBE_CANDIDATES] codes `[11, 12, 14, 15]`) with a
+     * single multi-call shell, falling back to `dumpsys netstats detail --uid`
+     * if every binder candidate returns empty. Subsequent calls issue at most
+     * 1 shell command using the cached winning method.
+     *
+     * Returned `rxBytes` / `txBytes` MUST be in `[0, 100 GB]` per NET-010.
+     * Out-of-range values yield `networkAvailable=false,
+     * diagnostic.reason=IMPLAUSIBLE_VALUE`. All-probes-fail caches
+     * `firstProbeFailed=true` and short-circuits subsequent ticks to the
+     * cached diagnostic with ZERO further shell calls (NET-008).
+     *
+     * The entire body is wrapped in try/catch; any thrown exception is
+     * captured and returned as `NetworkSnapshot(networkAvailable=false,
+     * diagnostic.reason=CAPTURE_THREW)` (NET-009).
+     *
+     * [uid] must be resolved upfront by the caller — used by BOTH the binder
+     * `service call netstats <code> i32 <uid> i32 0` and the dumpsys
+     * `--uid <uid>` filter. iOS callers SHOULD NOT invoke this (out of scope v1).
+     *
+     * See `sdd/network-bandwidth-total-app/spec` NET-007 / NET-008 / NET-009.
+     *
+     * @since v4.6.x
+     */
+    fun captureNetworkBandwidth(deviceId: String, pkg: String, uid: Int): NetworkSnapshot
+
+    /**
+     * v4.6.x — Resolve the Android UID for [pkg] on [deviceId]. Returns null
+     * when the lookup fails (package not installed, permission denied, parse
+     * error). Production runs `cmd package list packages -U <pkg>` and parses
+     * the `uid:NNN` field. UID is stable for the install lifetime of a
+     * package; callers SHOULD cache the result (e.g. on [AppViewModel.CaptureAccumulators])
+     * so repeated polls don't pay the shell round-trip.
+     *
+     * Used by [captureNetworkBandwidth] callers — the network bridge takes
+     * the UID as a parameter so this helper is invoked once at the start of
+     * the capture loop and the result is threaded into every subsequent
+     * tick.
+     *
+     * @since v4.6.x (`network-bandwidth-total-app`)
+     */
+    fun getUidForPackage(deviceId: String, pkg: String): Int?
 
     fun startScreenRecord(
         deviceId: String,
@@ -219,6 +270,12 @@ class RealAdbBridge : AdbBridgeApi {
 
     override fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot =
         AdbBridge.captureFPower(deviceId, currentFps)
+
+    override fun captureNetworkBandwidth(deviceId: String, pkg: String, uid: Int): NetworkSnapshot =
+        AdbBridge.captureNetworkBandwidth(deviceId, pkg, uid)
+
+    override fun getUidForPackage(deviceId: String, pkg: String): Int? =
+        AdbBridge.getUidForPackage(deviceId, pkg)
 
     override fun startScreenRecord(
         deviceId: String, sessionId: String, segment: Int,

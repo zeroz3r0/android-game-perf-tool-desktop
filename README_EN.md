@@ -45,6 +45,7 @@ You don't need to know ADB or touch a terminal. If you've ever plugged a phone i
 - **Real-time metrics** during the session: FPS, frame time (p1% / p50% / p99%), CPU, memory (total / native / java), temperature (CPU / GPU / battery / skin), and battery level
 - **FPower (mW per frame, v4.5.0)**: industry-first metric popularized by PerfDog measuring battery consumption normalized by FPS. Detects energy efficiency regressions that FPS or total power alone don't reveal. No root, read via battery sysfs
 - **GPU usage % (v4.5.0, Android)**: closes the #1 gap in our "GameBench parity" roadmap. Captures the GPU usage percentage on devices with Mali (ARM) and Adreno (Qualcomm) chipsets by reading the kernel sysfs via adb — no root, no embedded SDK. GameBench reads driver-level perfcounters through their Pro SDK embedded in the game (more precise, requires their Pro plan and modifying the game); we read from the kernel (zero-touch, coarser granularity). On PowerVR devices or where the OEM has locked the sysfs, the report shows an explanatory banner instead of an empty field
+- **Network bandwidth (v4.6.0, Android)**: closes the #2 gap in our "GameBench parity" roadmap. Measures the total RX (download) and TX (upload) bytes consumed by the game during capture. Read via `service call netstats` (binder, fast) with automatic fallback to `dumpsys netstats detail --uid` when binder is unavailable - no root, no embedded SDK. GameBench breaks down traffic per endpoint (api.unity3d.com:443 separately from api.facebook.com:443) using libc hooks or eBPF, which requires instrumenting the game; we measure the total app aggregate, which is what usually matters to detect bandwidth leaks, heavy ads, or unplanned uploads. On devices where we can't read (older Android without binder, dumpsys permission denied), the report shows a banner with the reason
 - **Video recording** of the gameplay in parallel, using the phone's hardware encoder (doesn't affect the FPS of the game you're measuring)
 - **Markers during the session**: press a button to flag the exact moment something happens (an interstitial ad, a scene transition, a heavy asset load, etc.). You can review them later in the report
 
@@ -70,6 +71,12 @@ You don't need to know ADB or touch a terminal. If you've ever plugged a phone i
 ---
 
 ## Instrumented mode (opt-in)
+
+> **Who uses this?** The **game developer** (NOT QA). Instrumented mode requires adding log calls to the game's source code, so it only applies if you have access to the game repo, or if you work in QA and can ask the dev team to add them.
+>
+> **As QA without source code access**, GamePerf already does a lot automatically:
+> - **Automatic detection** of ads (AdMob, Unity Ads, IronSource, AppLovin, Meta Audience), IAP (Google Play Billing), loading screens (Unity, Unreal, Cocos2d), ANRs, screen transitions, VR sessions (Oculus Quest, OpenXR) and rate-us prompts. Without touching the game, without an SDK, without anything.
+> - **Manual markers**: press a button in the GamePerf UI while recording to mark key moments of your test session.
 
 If you have access to the game's source code, you can label the segments you care about **yourself**. GamePerf listens to the `GamePerf` logcat tag and recognises four fixed phases with the syntax `<TAG>.Start` / `<TAG>.Stop`:
 

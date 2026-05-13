@@ -45,6 +45,7 @@ No hace falta saber ADB ni usar la terminal. Si alguna vez has conectado un tel�
 - **Métricas en tiempo real** durante la sesión: FPS, frame time (p1% / p50% / p99%), CPU, memoria (total / native / java), temperatura (CPU / GPU / batería / piel del dispositivo) y nivel de batería
 - **FPower (mW por frame, v4.5.0)**: métrica industria-first popularizada por PerfDog que mide el consumo de batería normalizado por FPS. Detecta regresiones de eficiencia energética que el FPS o el consumo total NO muestran. Sin root, lectura vía sysfs de batería
 - **Uso de GPU % (v4.5.0, Android)**: cierra el primer gap del roadmap «GameBench parity». Captura el porcentaje de uso de la GPU en dispositivos con chipsets Mali (ARM) y Adreno (Qualcomm) leyendo el kernel sysfs por adb — sin root, sin SDK embebido. GameBench lee los perfcounters del driver gráfico vía su SDK Pro embebido en el juego (más preciso, requiere plan Pro y tocar el código); nosotros leemos del kernel (zero-touch, granularidad gruesa). En dispositivos PowerVR o con sysfs bloqueado por el OEM, el reporte muestra un banner explicando el motivo en vez de un campo vacío
+- **Ancho de banda de red (v4.6.0, Android)**: cierra el segundo gap del roadmap «GameBench parity». Mide el total de bytes RX (descarga) y TX (subida) que consume el juego durante la captura. Lectura vía `service call netstats` (binder, rápido) con fallback automático a `dumpsys netstats detail --uid` cuando el binder no responde — sin root, sin SDK embebido. GameBench separa el tráfico por endpoint (api.unity3d.com:443 separado de api.facebook.com:443) usando hook libc o eBPF, lo cual requiere instrumentar el juego; nosotros medimos el total agregado de la app, que es lo que suele importar para detectar fugas de bandwidth, anuncios pesados o uploads no planeados. En dispositivos donde no podemos leer (Android viejo sin binder, dumpsys con permisos denegados), el reporte muestra un banner en castellano con el motivo
 - **Grabación de vídeo** del gameplay en paralelo, mediante el codificador de hardware del teléfono (no afecta al FPS del juego que estás midiendo)
 - **Marcadores durante la sesión**: pulsa un botón para marcar el instante exacto en el que ocurre algo (aparece un anuncio intersticial, cambia la escena, se carga algo pesado, etc.). Luego los puedes revisar en el informe
 
@@ -70,6 +71,12 @@ No hace falta saber ADB ni usar la terminal. Si alguna vez has conectado un tel�
 ---
 
 ## Modo instrumentado (opt-in)
+
+> **¿Quién usa esto?** El **desarrollador del juego** (NO el QA). El modo instrumentado requiere agregar líneas de log al código fuente del juego, así que solo aplica si tienes acceso al repo del juego, o si trabajas en QA y puedes pedirle al equipo de desarrollo que las agregue.
+>
+> **Como QA sin acceso al código**, GamePerf ya hace mucho automáticamente:
+> - **Detección automática** de anuncios (AdMob, Unity Ads, IronSource, AppLovin, Meta Audience), IAP (Google Play Billing), pantallas de carga (Unity, Unreal, Cocos2d), ANRs, transiciones de pantalla, sesiones VR (Oculus Quest, OpenXR) y prompts de rate us. Sin tocar el juego, sin SDK, sin nada.
+> - **Marcadores manuales**: pulsa un botón en la UI de GamePerf mientras grabas para marcar momentos clave de tu sesión de prueba.
 
 Si tienes acceso al código fuente del juego, puedes etiquetar **tú mismo** los tramos que te interesa medir. GamePerf escucha el tag `GamePerf` de logcat y reconoce cuatro fases fijas con sintaxis `<TAG>.Start` / `<TAG>.Stop`:
 
