@@ -5,6 +5,7 @@ import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -292,6 +293,105 @@ class SdkSignatureCatalogTest {
         )
         assertNotNull(sig)
         assertEquals("Google Play Billing", sig.sdk)
+    }
+
+    // ═══════ IAP hardening (Issue #2 task D.9, audit obs #399) ═══════
+    //
+    // Two theoretical risks from the iap-coverage-audit explore:
+    //  - Risk #1: `onBillingServiceConnected` fires at app boot / billing
+    //    client reconnect — NOT only on a real purchase flow. If left as an
+    //    open pattern it produces phantom IAP_FLOW events whenever the SDK
+    //    reconnects (post-resume, post-network-restore). The launchBillingFlow
+    //    pattern remains as the SOLE open signal — it is emitted only when
+    //    the game actually invokes `BillingClient.launchBillingFlow()`.
+    //  - Risk #2: User-cancelled purchases (BillingResult code=1
+    //    USER_CANCELED) historically left the IAP_FLOW event without an
+    //    explicit close, relying on `stop()` to force-close with
+    //    endInferred=true. The added USER_CANCELED close pattern lets the
+    //    detector pair the cancellation explicitly so the report can render
+    //    a precise endMs and avoid the "(cierre inferido)" tag.
+
+    @Test
+    fun `onBillingServiceConnected does NOT trigger IAP open (Issue #2 D9 - phantom reconnect guard)`() {
+        // BillingClient.onBillingServiceConnected fires on every reconnect
+        // (app resume, network restore, billing service rebind) — NOT only
+        // when a purchase flow is launched. Keeping it as an open pattern
+        // produced phantom IAP_FLOW events at app boot. Only
+        // `launchBillingFlow` (the real flow-launch API) must open IAP_FLOW.
+        val line = lineFor(tag = "BillingClient", msg = "onBillingServiceConnected")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNull(
+            result,
+            "onBillingServiceConnected must NOT open IAP_FLOW — it fires at boot/reconnect, not on a real purchase",
+        )
+    }
+
+    @Test
+    fun `USER_CANCELED line closes a Play Billing IAP flow`() {
+        // BillingResult code=1 (USER_CANCELED) is what Play Billing surfaces
+        // when the user backs out of the purchase sheet without buying.
+        // Before the Issue #2 D.9 hardening this line was not a close
+        // signature → the cancelled-flow event relied on `stop()` to
+        // force-close with `endInferred=true`. The added close pattern makes
+        // the close explicit and avoids the "(cierre inferido)" tag in the
+        // report for the common "user dismissed the sheet" case.
+        val sig = SdkSignatureCatalog.ALL.first { it.sdk == "Google Play Billing" }
+        val line = lineFor(
+            tag = "BillingClient",
+            msg = "BillingResult: responseCode=1 debugMessage=USER_CANCELED",
+        )
+        assertNotNull(
+            SdkSignatureCatalog.matchClose(line, sig),
+            "USER_CANCELED BillingResult must match a Play Billing close pattern",
+        )
+    }
+
+    @Test
+    fun `cancelled-flow fixture produces ONE IAP open closed by USER_CANCELED, not by purchase success`() {
+        // Replay the cancelled-flow fixture line by line against the catalog.
+        // Acceptance criteria (audit obs #399 hardening):
+        //   - Exactly ONE open match for Play Billing (the launchBillingFlow
+        //     line). The earlier `onBillingServiceConnected` open is gone, so
+        //     the cancelled fixture must NOT produce two opens.
+        //   - The first close that pairs with the open is a USER_CANCELED /
+        //     responseCode=1 BillingResult — NOT `onPurchasesUpdated` (which
+        //     never appears in a cancelled flow).
+        val sig = SdkSignatureCatalog.ALL.first { it.sdk == "Google Play Billing" }
+        val lines = readFixture("logcat-fixtures/iap-cancelled-flow.log")
+
+        var openCount = 0
+        var sawOpen = false
+        var firstCloseMsg: String? = null
+        for (raw in lines) {
+            val parsed = LogcatLineParser.parse(raw) ?: continue
+            val open = SdkSignatureCatalog.matchOpen(parsed)
+            if (open != null && open.sig.sdk == "Google Play Billing") {
+                openCount += 1
+                sawOpen = true
+                continue
+            }
+            if (sawOpen && firstCloseMsg == null) {
+                if (SdkSignatureCatalog.matchClose(parsed, sig) != null) {
+                    firstCloseMsg = parsed.msg
+                }
+            }
+        }
+
+        assertEquals(
+            1, openCount,
+            "cancelled fixture must produce exactly ONE Play Billing open (launchBillingFlow); " +
+                "more than one means a phantom open pattern leaked back in",
+        )
+        assertNotNull(firstCloseMsg, "cancelled fixture must produce a close match after the open")
+        assertTrue(
+            firstCloseMsg.contains("USER_CANCELED", ignoreCase = true) ||
+                firstCloseMsg.contains("responseCode=1"),
+            "first close after the open must be the USER_CANCELED BillingResult — got: $firstCloseMsg",
+        )
+        assertFalse(
+            firstCloseMsg.contains("onPurchasesUpdated", ignoreCase = true),
+            "cancelled flow must NOT close on onPurchasesUpdated (no successful purchase happened)",
+        )
     }
 
     // ═══════ cross-SDK negative: SDK A close line should NOT match SDK B ═══════

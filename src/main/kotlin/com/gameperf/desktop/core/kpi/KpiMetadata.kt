@@ -1,5 +1,7 @@
 package com.gameperf.desktop.core.kpi
 
+import kotlinx.serialization.Serializable
+
 /**
  * Foundation data types for the KPI scoring framework
  * (Issue #2 Block E, `sdd/kpi-scoring-framework`).
@@ -156,6 +158,7 @@ data class Kpi(
  *   the KPI's [Direction].
  * @property band trichotomy band per spec.
  */
+@Serializable
 data class KpiScore(
     val id: KpiId,
     val phase: Phase,
@@ -166,6 +169,7 @@ data class KpiScore(
 )
 
 /** Per-phase aggregate, with the underlying per-KPI scores attached for drill-down. */
+@Serializable
 data class PhaseScore(
     val phase: Phase,
     val score: Int,
@@ -174,6 +178,7 @@ data class PhaseScore(
 )
 
 /** Per-category aggregate (cross-phase). */
+@Serializable
 data class CategoryScore(
     val category: Category,
     val score: Int,
@@ -185,7 +190,13 @@ data class CategoryScore(
  *
  * `null` is returned by `KpiScoringFacade.compute(...)` when the internal
  * feature flag is OFF (see design D5).
+ *
+ * `@Serializable` because the shareable HTML report (`sdd/shareable-html-report`)
+ * embeds a base64 JSON copy as a downloadable data URL. The download must
+ * round-trip back through `kotlinx-serialization` to the same value
+ * (asserted by `KpiMetadataSerializationTest`).
  */
+@Serializable
 data class KpiScoreReport(
     val sessionScore: Int,
     val sessionBand: Band,

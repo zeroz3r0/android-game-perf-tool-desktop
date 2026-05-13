@@ -178,6 +178,29 @@ internal object SdkSignatureCatalog {
             ),
         ),
         // ── Google Play Billing (IAP) ───────────────────────────────────
+        //
+        // Scope: Google Play Billing only; alt-stores (Amazon Appstore /
+        // Samsung Galaxy Store / Huawei AppGallery / direct sideload billing
+        // SDKs) NOT covered — track via a separate change if a real use case
+        // appears.
+        //
+        // Open: `launchBillingFlow` is the ONLY open pattern — it is emitted
+        // exactly when the game invokes `BillingClient.launchBillingFlow()`,
+        // so it pairs 1:1 with a real purchase intent. The earlier draft also
+        // included `onBillingServiceConnected`, but that callback fires on
+        // every billing-client reconnect (app boot, post-resume, network
+        // restore) and would emit phantom IAP_FLOW events outside any actual
+        // purchase. Removed in the Issue #2 D.9 hardening pass (audit obs
+        // #399).
+        //
+        // Close: `onPurchasesUpdated` (successful purchase + the SUCCESS path
+        // of cancelled flows on older clients), `billing flow finished`
+        // (Play Store sheet dismissed regardless of outcome), and
+        // `USER_CANCELED` / `responseCode=1` which is what Google Play
+        // Billing v5+ surfaces when the user backs out of the purchase sheet
+        // without buying anything. Without the USER_CANCELED close pattern
+        // the cancelled-flow event used to rely on `stop()` to force-close
+        // with `endInferred=true` — added in the same hardening pass.
         SdkSignature(
             sdk = "Google Play Billing",
             defaultType = EventType.IAP,
@@ -188,11 +211,13 @@ internal object SdkSignatureCatalog {
             logcatTags = listOf("BillingClient", "Billing"),
             openPatterns = listOf(
                 Regex("""(?i)\blaunchBillingFlow\b""") to EventType.IAP,
-                Regex("""(?i)\bonBillingServiceConnected\b""") to EventType.IAP,
             ),
             closePatterns = listOf(
                 Regex("""(?i)\bonPurchasesUpdated\b"""),
                 Regex("""(?i)\bbilling flow finished\b"""),
+                // USER_CANCELED close (Issue #2 D.9 hardening, audit obs #399)
+                Regex("""(?i)\bUSER_CANCELED\b"""),
+                Regex("""(?i)\bresponseCode=1\b"""),
             ),
         ),
         // ── Unity Engine (scene/asset loading) — v4.4.1 quickfix (audit obs #308) ─
