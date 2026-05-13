@@ -188,6 +188,24 @@ internal class EventDetectorImpl(
 
     /** Process a single parsed logcat line. */
     internal fun handleLogLine(line: LogLine) {
+        // instrumented-event-mode (Sprint 3) — opt-in fast path.
+        //
+        // The `GamePerf` tag is dedicated to the instrumented protocol; any
+        // line on this tag is routed to [handleInstrumentedLine] and the
+        // generic SDK match flow is skipped. This is intentional per design
+        // table (Routing in detector → "Special-case branch on sig.sdk ==
+        // \"GamePerf\""): generic per-pattern keying for all SDKs would alter
+        // close-matching semantics for AdMob/Unity/etc and risk regressions
+        // in 17 existing entries. Targeted branch is surgical.
+        //
+        // The branch fires BEFORE the `am_proc_start` cold-start check
+        // because the `GamePerf` tag cannot legitimately carry an AMS atom
+        // — no ambiguity, early return is safe.
+        if (line.tag == "GamePerf") {
+            handleInstrumentedLine(line)
+            return
+        }
+
         // Sprint 1 — APP_STARTUP via `am_proc_start` atom (logcat fast path).
         //
         // ActivityManager polls the activity stack at 1 Hz which can miss
@@ -413,6 +431,83 @@ internal class EventDetectorImpl(
         openEvents.clear()
         openEvents.putAll(downgraded)
         replaceEvents(downgraded.values.toList())
+    }
+
+    // ───────────────────────── Instrumented opt-in (Sprint 3) ─────────────────────────
+    //
+    // The `GamePerf` tag is dedicated to the instrumented protocol. These
+    // helpers implement the per-tag-keyed lifecycle described by spec
+    // IEM-004 — each of the four allowlisted phase tags has its own slot in
+    // [openEvents] so `TUTORIAL.Stop` cannot accidentally close a still-open
+    // CINEMATIC event.
+
+    /**
+     * Process a logcat line whose tag is exactly `GamePerf`.
+     *
+     * Delegates pure parsing to [InstrumentedLineParser.parse] (which
+     * enforces the case-sensitive 4-tag allowlist per IEM-002 / IEM-003),
+     * then routes opens to [openInstrumented] and closes to
+     * [closeInstrumented]. A `null` parse result is silently dropped — no
+     * warning surfaced — covering both "unknown tag" (IEM-002) and the
+     * implicit "noise on dedicated tag" scenarios.
+     */
+    private fun handleInstrumentedLine(line: LogLine) {
+        val hit = InstrumentedLineParser.parse(line.msg) ?: return
+        if (hit.isStart) {
+            openInstrumented(hit.tag, line.tsMs)
+        } else {
+            closeInstrumented(hit.tag, line.tsMs)
+        }
+    }
+
+    /**
+     * Open a new INSTRUMENTED event for [tag] at [tsMs].
+     *
+     * Key shape `"GamePerf:instrumented:$tag"` (per design IEM-004) gives
+     * each phase tag its own slot in [openEvents]. If a slot for [tag] is
+     * already occupied this is a no-op — spec IEM-006 (re-entrant Start
+     * keeps the original `startMs`).
+     *
+     * Foreground-guard bypass per IEM-008: the game is, by definition, in
+     * foreground when emitting from its own process, so the
+     * `FOREGROUND_GUARD_MS` proximity check is skipped. The global
+     * [MAX_EVENTS] cap still applies.
+     */
+    private fun openInstrumented(tag: String, tsMs: Long) {
+        val key = "GamePerf:instrumented:$tag"
+        if (openEvents.containsKey(key)) return // IEM-006: nested Start no-op
+        if (totalEventCount() >= MAX_EVENTS) {
+            ensureWarning(
+                "Se alcanzó el tope de $MAX_EVENTS eventos detectados; el reporte " +
+                    "usará un histograma agregado."
+            )
+            return
+        }
+        val event = DetectedEvent(
+            type = EventType.INSTRUMENTED,
+            sdkSource = "GamePerf",
+            startMs = tsMs,
+            endMs = null,
+            confidence = Confidence.HIGH,
+            signatureMatched = "instrumented:$tag.Start",
+            metadata = mapOf("source" to "logcat", "tag" to tag),
+        )
+        openEvents[key] = event
+        appendEvent(event)
+    }
+
+    /**
+     * Close the still-open INSTRUMENTED event keyed by [tag], if any.
+     *
+     * Looks up `"GamePerf:instrumented:$tag"`; if no event is open for that
+     * specific tag the call is a no-op — spec IEM-005 (orphan Stop silent,
+     * no warning). Otherwise delegates to [tryClose] which stamps `endMs`
+     * and removes the slot.
+     */
+    private fun closeInstrumented(tag: String, tsMs: Long) {
+        val key = "GamePerf:instrumented:$tag"
+        val open = openEvents[key] ?: return // IEM-005: orphan Stop silent
+        tryClose(open, tsMs, "instrumented-stop")
     }
 
     // ───────────────────────── Internal helpers ─────────────────────────

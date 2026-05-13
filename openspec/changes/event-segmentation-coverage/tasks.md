@@ -228,9 +228,11 @@ Sprints 1, 2a, 2b, 3, 4a, 5 are mutually independent after Sprint 0 lands. They 
 
 ## Sprint 3 — INSTRUMENTED opt-in protocol
 
-**Estimated effort: 1.0d.**
+> **STATUS: ✅ SHIPPED & ARCHIVED 2026-05-13.** Sprint 3 was implemented as a separate, stricter change `instrumented-event-mode` (archived at `openspec/archive/2026-05-13-instrumented-event-mode/`). The implemented protocol uses a FIXED 4-tag allowlist (`CINEMATIC`, `TUTORIAL`, `GAMEPLAY_DENSE`, `SPECIAL_EVENT`) with CASE-SENSITIVE matching and per-tag-keyed lifecycle. The `name=` / `group=` parameter capture from the original Sprint 3 plan was intentionally DROPPED in favour of a minimal protocol. See archive folder for proposal/spec/design/tasks/apply-progress/verify-report. The 3.1.x and 3.2.x batches below are retained for historical traceability ONLY — do NOT execute them; the work is done. Real implementation tasks (1.1.R..6.3) live in `openspec/archive/2026-05-13-instrumented-event-mode/tasks.md`.
 
-### Batch 3.1 — GamePerf catalog + parsing
+**Estimated effort: 1.0d.** *(superseded — actual effort ~0.5d on the archived change)*
+
+### Batch 3.1 — GamePerf catalog + parsing (SUPERSEDED)
 
 - [ ] 3.1.1 RED: create `core/events/InstrumentedProtocolTest.kt`. Test `\`GamePerf CINEMATIC.Start opens INSTRUMENTED event\``: line `tag="GamePerf", msg="CINEMATIC.Start name=\"intro_cutscene\""` at t=1000 → 1 INSTRUMENTED event with metadata `phase=CINEMATIC, name=intro_cutscene`. [ESC-INSTR-001]
 - [ ] 3.1.2 GREEN: add "GamePerf" entry to `SdkSignatureCatalog.ALL` per §2.4. Open pattern is the named-capture regex. Close pattern is the Stop variant.
@@ -250,7 +252,7 @@ Sprints 1, 2a, 2b, 3, 4a, 5 are mutually independent after Sprint 0 lands. They 
 - [ ] 3.1.16 RED: fixture-driven smoke test.
 - [ ] 3.1.17 GREEN.
 
-### Batch 3.2 — README + docs
+### Batch 3.2 — README + docs (SUPERSEDED)
 
 - [ ] 3.2.1 Update `README.md` (Spanish): new section "Marcadores instrumentados (opt-in)" with Kotlin/Java + Unity C# + Unreal C++ code snippets emitting `Log.i("GamePerf", "CINEMATIC.Start name=\"intro\"")` etc. Document the supported phases (CINEMATIC, TUTORIAL, GAMEPLAY_DENSE, SPECIAL_EVENT) but note arbitrary phases are accepted.
 - [ ] 3.2.2 Update `README_EN.md` mirror section.

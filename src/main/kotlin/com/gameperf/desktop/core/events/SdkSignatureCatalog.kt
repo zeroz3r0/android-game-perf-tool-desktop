@@ -391,6 +391,43 @@ internal object SdkSignatureCatalog {
             closePatterns = emptyList(), // instantaneous event
         ),
         // ────────────────────────────────────────────────────────────────
+        //  instrumented-event-mode (Sprint 3) — GamePerf opt-in
+        // ────────────────────────────────────────────────────────────────
+        //
+        // Opt-in instrumented protocol on logcat tag `GamePerf` (level `I`).
+        // The game emits `Log.i("GamePerf", "<TAG>.Start")` and
+        // `<TAG>.Stop` for one of four fixed phase names. The catalog entry
+        // exists for two reasons only:
+        //  - Spec IEM-007: keep `GamePerf:D` in `logcatTagArgs()` so the
+        //    `adb logcat` filter passes these lines to the detector.
+        //  - Catalog invariants in `SdkSignatureCatalogTest` require every
+        //    entry to declare at least one open + close pattern.
+        //
+        // ACTUAL classification and per-tag routing happens in
+        // [EventDetectorImpl]'s instrumented branch, which delegates to
+        // [InstrumentedLineParser] for case-sensitive matching against the
+        // 4-tag allowlist. The patterns below are intentionally NOT used by
+        // the generic `matchOpen` first-match-wins path for these lines —
+        // the detector special-cases `line.tag == "GamePerf"` BEFORE the
+        // generic scan so this entry is effectively dormant in production.
+        //
+        // The patterns therefore use a permissive `[A-Z_]+` shape (matches
+        // any upper-snake tag) — the real allowlist check lives in
+        // [InstrumentedLineParser.ALLOWED_TAGS]. This is the single source
+        // of truth per CLAUDE.md anti-duplication rule.
+        SdkSignature(
+            sdk = "GamePerf",
+            defaultType = EventType.INSTRUMENTED,
+            activityClasses = emptyList(),
+            logcatTags = listOf("GamePerf"),
+            openPatterns = listOf(
+                Regex("""^[A-Z_]+\.Start$""") to EventType.INSTRUMENTED,
+            ),
+            closePatterns = listOf(
+                Regex("""^[A-Z_]+\.Stop$"""),
+            ),
+        ),
+        // ────────────────────────────────────────────────────────────────
         //  Sprint 1 — ANR (Android system "Application Not Responding")
         // ────────────────────────────────────────────────────────────────
         //
