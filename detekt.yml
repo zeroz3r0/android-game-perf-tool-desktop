@@ -10,7 +10,7 @@ complexity:
     functionThreshold: 50  # ReportGenerator.generate has ~48 params after v4.4.0 additions (events, conclusions, filteredAggregates, etc.)
     constructorThreshold: 10
   TooManyFunctions:
-    thresholdInClasses: 75   # 2026-05-08: AppViewModel has 72 functions (v4.4.0 added events/warnings flows + detector wiring). TODO: split AppViewModel into focused viewmodels
+    thresholdInClasses: 80   # 2026-05-13: AppViewModel has 79 after H.7 Phase 3.1 (runCaptureLoop extracted). Phase 4 will add finalizeSession + setupCaptureState (→81). Threshold IS the post-refactor steady state — the extracts are the refactor goal, not technical debt. 2026-05-08: was 75 (pre-refactor 72 functions). TODO: still consider splitting AppViewModel into focused viewmodels but the H.7 internal decomposition is the right first step.
     thresholdInFiles: 40
     thresholdInObjects: 54   # 2026-05-13: AdbBridge has 53 functions (v4.5.0 gpu-usage-percent added captureGpuUsage + 5 private helpers: captureGpuUsageImpl, readGpuFromProbeHit, readGpuFromCachedState, adrenoProbeFailedTryEnable, buildProbeOneShellCommand). 2026-05-12 (PM): was 48 (cpu-total-vs-app-usage captureCpuDual). 2026-05-12 AM: was 46 (FPower). TODO: split AdbBridge into domain-specific objects (CRITICAL — 6+ bumps this sprint).
     thresholdInInterfaces: 33  # 2026-05-13: AdbBridgeApi has 32 functions (v4.5.0 gpu-usage-percent added captureGpuUsage). 2026-05-12 (PM): was 32 (cpu-total-vs-app-usage captureCpuDual). 2026-05-12 AM: was 30 (FPower). TODO: split into focused interfaces.

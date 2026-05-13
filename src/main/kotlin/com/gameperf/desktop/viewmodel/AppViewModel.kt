@@ -915,6 +915,390 @@ class AppViewModel(
         }
     }
 
+    /**
+     * v4.5.0 — Main capture sampling loop (H.7 Phase 3.1 extract).
+     *
+     * Runs the per-tick metrics sampling pipeline until [shouldStop] flips true or
+     * [durationSeconds] elapses. Per iteration:
+     *   1. FAST tier (every ~500ms): FPS, CPU, battery
+     *   2. MEDIUM tier (every ~2s, Android only): thermals, FPower, GPU usage
+     *   3. SLOW tier (every ~5s, Android only): memory
+     *   4. Append per-tick histories to [acc] under per-metric `> 0` guards
+     *   5. Emit a [LiveMetrics] tick on `_liveMetrics` (scalars every iteration,
+     *      history list snapshots at 0.5 Hz)
+     *
+     * All mutated state lives on [acc] (passed by reference — [CaptureAccumulators]
+     * is a class, not a data class) plus the AppViewModel fields [shouldStop] and
+     * [_captureError] / [_liveMetrics]. Behavior identical to the inline `while`
+     * loop that lived in [startCapture] prior to v4.5.0.
+     */
+    private suspend fun runCaptureLoop(
+        deviceId: String,
+        pkg: String,
+        isIosDevice: Boolean,
+        acc: CaptureAccumulators,
+        startTime: Long,
+        durationSeconds: Int,
+    ) {
+        while (!shouldStop) {
+            val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+            if (durationSeconds > 0 && elapsed >= durationSeconds) break
+            if (shouldStop) break
+
+            // Small delay between sampling cycles — the fast tier (FPS + CPU + battery)
+            // takes ~30-50ms on a mid-range device, so real cadence is ~0.5-0.6s.
+            delay(500)
+            if (shouldStop) break
+
+            // === METRICS CAPTURE ===
+            // v4.1.0: both AdbBridgeApi and IosBridge now return core.model.FrameSnapshot
+            // directly — no conversion needed.
+            val frame: com.gameperf.desktop.core.model.FrameSnapshot?
+            val cpu: Int
+            val battery: Int
+
+            if (isIosDevice) {
+                // iOS: all metrics come from the sidecar via iosBridge (single HTTP call per method)
+                frame = iosBridge?.captureFrames(deviceId, pkg)
+                if (shouldStop) break
+                cpu = iosBridge?.captureCpuPercent(deviceId) ?: 0
+                if (shouldStop) break
+                battery = iosBridge?.getBatteryLevel(deviceId) ?: 0
+                if (shouldStop) break
+
+                // iOS: thermal + memory on every iteration (sidecar caches, HTTP is cheap)
+                val iosTherm = iosBridge?.captureTemperature(deviceId)
+                if (iosTherm != null) {
+                    acc.lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(iosTherm.cpu, iosTherm.gpu, iosTherm.battery, iosTherm.skin)
+                }
+                val iosMem = iosBridge?.captureMemory(deviceId, pkg)
+                if (iosMem != null) {
+                    acc.lastMem = com.gameperf.desktop.core.model.MemSnapshot(iosMem.totalMb, iosMem.nativeMb, iosMem.javaMb)
+                }
+            } else {
+                // Android: tiered cadence to reduce overhead
+                // FAST TIER (every 500ms): FPS, CPU, battery
+                frame = adb.captureFrames(deviceId, pkg)
+                if (shouldStop) break
+                // v4.5.0 — GameBench-inspired dual CPU capture
+                // (`cpu-total-vs-app-usage`, spec CDU-005). [captureCpuDual]
+                // is a thin convenience over the existing two
+                // [captureCpuPercent] overloads — composes BOTH device-wide
+                // total AND per-process app CPU in one call. The app channel
+                // (`cpu`) keeps the v4.2.5 semantics (the value the user
+                // grades against). The total channel feeds the new dual-line
+                // chart so the dev can distinguish "device saturated by OS /
+                // other apps" from "my app saturating the device".
+                val cpuDual = adb.captureCpuDual(deviceId, pkg)
+                cpu = cpuDual.appCpuPct
+                acc.lastCpuTotalPct = cpuDual.totalDeviceCpuPct
+                if (shouldStop) break
+                battery = adb.getBatteryLevel(deviceId)
+                if (shouldStop) break
+
+                // MEDIUM TIER (every ~2s): thermals
+                val runThermal = acc.iterCount % 4 == 0
+                if (runThermal) {
+                    val t = adb.captureTemperature(deviceId)
+                    if (shouldStop) break
+                    // v4.4.1 (temperature-not-shown, Q1): convert from positional to named args.
+                    // The 4-positional form silently dropped t.dieCpu (added in v4.3.6) AND
+                    // would also drop the new t.thermalAvailable / t.diagnostic fields landed
+                    // in T1 of this change. Named-args makes every field explicit so future
+                    // ThermalSnapshot widenings stay propagated automatically. ADDITIVE only —
+                    // no surrounding refactor (the enclosing startCapture body is detekt-baseline).
+                    acc.lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(
+                        cpu = t.cpu,
+                        gpu = t.gpu,
+                        battery = t.battery,
+                        skin = t.skin,
+                        dieCpu = t.dieCpu,
+                        thermalAvailable = t.thermalAvailable,
+                        diagnostic = t.diagnostic,
+                    )
+                    // v4.5.0 — FPower poll co-located with thermal at the medium tier
+                    // (~2s cadence at the 500ms loop, design §9c + ADR-6). The bridge
+                    // owns the per-device path cache so steady-state cost is ~2 shell
+                    // reads. We pass [frame?.fps] as the per-tick honest reading per
+                    // ADR-3 (FPS = same per-tick value, NOT smoothed). On `fps <= 0`
+                    // the parser raises FPS_ZERO and the tick is dropped by the
+                    // history-append guard below.
+                    val rawFpsForFpower = (frame?.fps ?: 0).toDouble()
+                    val fpowerSnap = adb.captureFPower(deviceId, currentFps = rawFpsForFpower)
+                    if (shouldStop) break
+                    acc.lastFPower = fpowerSnap
+                    // v4.5.0 — GPU usage poll co-located with thermal at the medium tier
+                    // (`gpu-usage-percent` Sprint 1, design §6 wiring map). Cadence
+                    // `acc.iterCount % 4 == 0` ≈ every 2 s (mirrors thermal/fpower). The
+                    // bridge owns vendor cache + perfcounter lifecycle so steady-state
+                    // cost is 1 cat per tick. iOS branch above does NOT call this —
+                    // iOS GPU is out of Sprint 1 scope. Result lands in acc.lastGpu and is
+                    // appended to acc.gpuUsageHistory by the record-cadence block below.
+                    acc.lastGpu = adb.captureGpuUsage(deviceId)
+                    if (shouldStop) break
+                }
+
+                // SLOW TIER (every ~5s): memory
+                val runMem = acc.iterCount % 10 == 0
+                if (runMem) {
+                    val m = adb.captureMemory(deviceId, pkg)
+                    if (shouldStop) break
+                    if (m != null) acc.lastMem = com.gameperf.desktop.core.model.MemSnapshot(m.totalMb, m.nativeMb, m.javaMb)
+                }
+            }
+
+            acc.iterCount++
+
+            // Device disconnect detection: if the fast tier returned all null/0/empty
+            // the device is likely disconnected. We only need the fast-tier results
+            // for this heuristic — the slow tiers may legitimately be idle.
+            val allFailed = frame == null && cpu == 0 && battery == 0
+            if (allFailed) {
+                acc.consecutiveAdbFailures++
+                if (acc.consecutiveAdbFailures >= 3) {
+                    shouldStop = true
+                    _captureError.value = "Dispositivo desconectado durante la captura"
+                    break
+                }
+            } else {
+                acc.consecutiveAdbFailures = 0
+            }
+
+            // v4.3.5 — FPS resume after ad / interstitial.
+            // Track null FrameSnapshots specifically (not the broader allFailed
+            // heuristic). When we hit the threshold, force the layer cache to
+            // drop so the next captureFrames does a fresh dumpsys --list and
+            // re-ranks candidates. Reset on any non-null frame so transient
+            // single-frame nulls don't trigger unnecessary re-discovery.
+            if (!isIosDevice) {
+                if (frame == null) {
+                    acc.consecutiveNullFrames++
+                    if (acc.consecutiveNullFrames >= FORCED_LAYER_REDISCOVERY_THRESHOLD) {
+                        adb.invalidateLayerCache(deviceId, pkg)
+                        acc.consecutiveNullFrames = 0  // give re-discovery a fresh window
+                    }
+                } else {
+                    acc.consecutiveNullFrames = 0
+                }
+            }
+
+            val sampleSecond = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+            val fps = frame?.fps ?: 0
+            // v4.3.5 — last-known FPS fallback (sticky HUD across ad close).
+            // History/report fields use the raw [fps]; only [displayFps]
+            // (consumed by the live LiveMetrics emission) goes through the
+            // sticky tracker. See [LastKnownFpsTracker] for details.
+            val displayFps: Int = acc.lastKnownFpsTracker.update(
+                rawFps = fps,
+                nowMs = System.currentTimeMillis(),
+            )
+            if (fps > 0) {
+                acc.fpsHistory.add(fps)
+                acc.fpsTimed.add(TimedSample(sampleSecond, fps.toDouble()))
+                // H-2: cap to prevent unbounded growth
+                if (acc.fpsHistory.size > MAX_HISTORY_SIZE) acc.fpsHistory.removeFirst()
+                if (acc.fpsTimed.size > MAX_HISTORY_SIZE) acc.fpsTimed.removeFirst()
+            }
+            val memNow = acc.lastMem
+            // v4.0.0: iOS captures mem/thermal every iteration; Android uses tiered cadence
+            val shouldRecordMem = isIosDevice || (acc.iterCount % 10 == 1) // align with runMem above
+            if (shouldRecordMem && memNow != null) {
+                acc.memHistory.add(memNow.totalMb)
+                acc.nativeHistory.add(memNow.nativeMb)
+                acc.javaHistory.add(memNow.javaMb)
+                // v4.4.0: timestamped memory twins for FilteredMetricsCalculator.
+                acc.memTimed.add(TimedSample(sampleSecond, memNow.totalMb.toDouble()))
+                acc.nativeTimed.add(TimedSample(sampleSecond, memNow.nativeMb.toDouble()))
+                acc.javaTimed.add(TimedSample(sampleSecond, memNow.javaMb.toDouble()))
+                if (acc.memHistory.size > MAX_HISTORY_SIZE) acc.memHistory.removeFirst()
+                if (acc.nativeHistory.size > MAX_HISTORY_SIZE) acc.nativeHistory.removeFirst()
+                if (acc.javaHistory.size > MAX_HISTORY_SIZE) acc.javaHistory.removeFirst()
+                if (acc.memTimed.size > MAX_HISTORY_SIZE) acc.memTimed.removeFirst()
+                if (acc.nativeTimed.size > MAX_HISTORY_SIZE) acc.nativeTimed.removeFirst()
+                if (acc.javaTimed.size > MAX_HISTORY_SIZE) acc.javaTimed.removeFirst()
+            }
+            if (cpu > 0) {
+                acc.cpuHistory.add(cpu)
+                acc.cpuTimed.add(TimedSample(sampleSecond, cpu.toDouble()))
+                if (acc.cpuHistory.size > MAX_HISTORY_SIZE) acc.cpuHistory.removeFirst()
+                if (acc.cpuTimed.size > MAX_HISTORY_SIZE) acc.cpuTimed.removeFirst()
+            }
+            // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-005). Append the
+            // total-device CPU% sample whenever the Android branch produced
+            // a non-sentinel value. The gate is independent of the app
+            // channel above — both channels share the same `> 0` filter
+            // but neither blocks the other (e.g. app process not running
+            // yet ⇒ app=-1 but total still valid).
+            if (acc.lastCpuTotalPct > 0) {
+                acc.cpuTotalHistory.add(acc.lastCpuTotalPct)
+                if (acc.cpuTotalHistory.size > MAX_HISTORY_SIZE) acc.cpuTotalHistory.removeFirst()
+            }
+            val shouldRecordThermal = isIosDevice || (acc.iterCount % 4 == 1) // align with runThermal above
+            // v4.1.0: thermal fields use NaN as sentinel. NaN > 0 is false in IEEE 754,
+            // so the guard works identically, but we use !isNaN() for clarity.
+            if (shouldRecordThermal) {
+                // v4.3.6: prefer skin for the user-facing `acc.tempCpuHistory`
+                // when skin is available. Falls back to die when no skin
+                // sensor exists. Old `.gameperf` exports stay readable
+                // because the field type didn't change.
+                //
+                // v4.4.1 (temperature-not-shown): make the "no thermal data" path
+                // EXPLICIT instead of silently falling through the three-branch
+                // when() to NaN. AdbThermalParser flips acc.lastThermal.thermalAvailable
+                // to false when no CPU/SKIN zone classifies (unsupported vendor,
+                // permission denied, all temps OOR). Short-circuiting here keeps
+                // acc.tempCpuHistory empty so the post-loop maxOrNull stays at 0.0 AND
+                // the persisted thermalAvailable=false propagates downstream — the
+                // report will render "N/D" + diagnostic banner instead of "0°C".
+                val userFacingTemp = if (!acc.lastThermal.thermalAvailable) {
+                    Double.NaN
+                } else when {
+                    !acc.lastThermal.skin.isNaN() && acc.lastThermal.skin > 0 -> acc.lastThermal.skin
+                    !acc.lastThermal.dieCpu.isNaN() && acc.lastThermal.dieCpu > 0 -> acc.lastThermal.dieCpu
+                    !acc.lastThermal.cpu.isNaN() && acc.lastThermal.cpu > 0 -> acc.lastThermal.cpu
+                    else -> Double.NaN
+                }
+                if (!userFacingTemp.isNaN()) {
+                    acc.tempCpuHistory.add(userFacingTemp)
+                    acc.tempCpuTimed.add(TimedSample(sampleSecond, userFacingTemp))
+                    if (acc.tempCpuHistory.size > MAX_HISTORY_SIZE) acc.tempCpuHistory.removeFirst()
+                    if (acc.tempCpuTimed.size > MAX_HISTORY_SIZE) acc.tempCpuTimed.removeFirst()
+                }
+                if (!acc.lastThermal.gpu.isNaN() && acc.lastThermal.gpu > 0) {
+                    acc.tempGpuHistory.add(acc.lastThermal.gpu)
+                    acc.tempGpuTimed.add(TimedSample(sampleSecond, acc.lastThermal.gpu))
+                    if (acc.tempGpuHistory.size > MAX_HISTORY_SIZE) acc.tempGpuHistory.removeFirst()
+                    if (acc.tempGpuTimed.size > MAX_HISTORY_SIZE) acc.tempGpuTimed.removeFirst()
+                }
+                if (!acc.lastThermal.skin.isNaN() && acc.lastThermal.skin > 0) {
+                    acc.tempSkinHistory.add(acc.lastThermal.skin)
+                    acc.tempSkinTimed.add(TimedSample(sampleSecond, acc.lastThermal.skin))
+                    if (acc.tempSkinHistory.size > MAX_HISTORY_SIZE) acc.tempSkinHistory.removeFirst()
+                    if (acc.tempSkinTimed.size > MAX_HISTORY_SIZE) acc.tempSkinTimed.removeFirst()
+                }
+                if (!acc.lastThermal.dieCpu.isNaN() && acc.lastThermal.dieCpu > 0) {
+                    acc.tempDieCpuHistory.add(acc.lastThermal.dieCpu)
+                    acc.tempDieCpuTimed.add(TimedSample(sampleSecond, acc.lastThermal.dieCpu))
+                    if (acc.tempDieCpuHistory.size > MAX_HISTORY_SIZE) acc.tempDieCpuHistory.removeFirst()
+                    if (acc.tempDieCpuTimed.size > MAX_HISTORY_SIZE) acc.tempDieCpuTimed.removeFirst()
+                }
+                // v4.5.0 — FPower history append (design §9d). Co-located with thermal
+                // recording at the same `acc.iterCount % 4 == 1` cadence (one tick AFTER
+                // the poll above so the freshest read lands here). Guards both on the
+                // availability flag AND `> 0` so the sentinel -1.0 from a pre-first-poll
+                // [FPowerSnapshot] AND the parser's `IMPLAUSIBLE_VALUE` fallback both
+                // stay out of the persisted timeline.
+                if (acc.lastFPower.fpowerAvailable && acc.lastFPower.fpowerMwPerFrame > 0) {
+                    acc.fpowerHistory.add(acc.lastFPower.fpowerMwPerFrame)
+                    acc.fpowerTimed.add(TimedSample(sampleSecond, acc.lastFPower.fpowerMwPerFrame))
+                    if (acc.fpowerHistory.size > MAX_HISTORY_SIZE) acc.fpowerHistory.removeFirst()
+                    if (acc.fpowerTimed.size > MAX_HISTORY_SIZE) acc.fpowerTimed.removeFirst()
+                }
+                // v4.5.0 — GPU usage history append (`gpu-usage-percent` Sprint 1,
+                // spec GPU-015 / GPU-016 / design §6). Co-located with thermal +
+                // fpower at the same `acc.iterCount % 4 == 1` cadence so all three
+                // medium-tier metrics land together. The gate enforces BOTH the
+                // availability flag AND `usagePct >= 0` so neither the unavailable
+                // sentinel (-1) NOR the Adreno gpubusy warm-up baseline tick
+                // (returns gpuAvailable=false even when probe succeeded — see
+                // design §4) contaminate the persisted timeline.
+                if (acc.lastGpu.gpuAvailable && acc.lastGpu.usagePct >= 0) {
+                    acc.gpuUsageHistory.add(acc.lastGpu.usagePct)
+                    acc.gpuUsageTimed.add(TimedSample(sampleSecond, acc.lastGpu.usagePct.toDouble()))
+                    if (acc.gpuUsageHistory.size > MAX_HISTORY_SIZE) acc.gpuUsageHistory.removeFirst()
+                    if (acc.gpuUsageTimed.size > MAX_HISTORY_SIZE) acc.gpuUsageTimed.removeFirst()
+                }
+            }
+            if (frame != null && frame.avgFrameTime > 0) {
+                acc.frameTimeAvgHistory.add(frame.avgFrameTime)
+                acc.allFrameTimes.add(frame.avgFrameTime)
+                acc.frameTimeTimed.add(TimedSample(sampleSecond, frame.avgFrameTime))
+                if (acc.frameTimeAvgHistory.size > MAX_HISTORY_SIZE) acc.frameTimeAvgHistory.removeFirst()
+                if (acc.allFrameTimes.size > MAX_FRAME_TIMES_SIZE) acc.allFrameTimes.removeFirst()
+                if (acc.frameTimeTimed.size > MAX_HISTORY_SIZE) acc.frameTimeTimed.removeFirst()
+            }
+            acc.totalJank += frame?.jankCount ?: 0
+            acc.totalStutter += frame?.stutterCount ?: 0
+            // v4.4.0: timestamped jank/stutter twins (cumulative) for FilteredMetricsCalculator.
+            acc.jankTimed.add(TimedSample(sampleSecond, acc.totalJank.toDouble()))
+            acc.stutterTimed.add(TimedSample(sampleSecond, acc.totalStutter.toDouble()))
+            if (acc.jankTimed.size > MAX_HISTORY_SIZE) acc.jankTimed.removeFirst()
+            if (acc.stutterTimed.size > MAX_HISTORY_SIZE) acc.stutterTimed.removeFirst()
+
+            val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+            // v4.1.0-perf: snapshot history lists only every 2 seconds (4 iterations)
+            // instead of every 500ms. The scalar fields (fps, cpu, temps, etc.) still
+            // update every cycle for responsive UI, but the heavy list copies that the
+            // graphs consume only refresh at 0.5 Hz — imperceptible to the user.
+            val snapshotHistories = acc.iterCount % 4 == 0
+            val prev = _liveMetrics.value
+            _liveMetrics.value = LiveMetrics(
+                // v4.3.5: HUD shows the sticky last-known FPS during the
+                // ad-close transient (≤1.5s). Outside the window
+                // displayFps falls back to 0 and the HUD shows "--".
+                // History/report fields below intentionally use the raw
+                // [fps] so persisted data stays truthful.
+                elapsed = currentElapsed, fps = displayFps,
+                avgFps = if (acc.fpsHistory.isNotEmpty()) acc.fpsHistory.average() else 0.0,
+                frameTime = frame?.avgFrameTime ?: 0.0,
+                cpu = cpu,
+                memMb = acc.lastMem?.totalMb ?: 0,
+                nativeMb = acc.lastMem?.nativeMb ?: 0,
+                javaMb = acc.lastMem?.javaMb ?: 0,
+                // v4.3.6: HUD `tempCpu` shows the user-facing temp. Prefer
+                // skin (case temp the user feels) over die (silicon, often
+                // alarming-looking 80-95°C under load but normal). Falls
+                // back to die or legacy `cpu` when skin is unavailable.
+                tempCpu = when {
+                    !acc.lastThermal.skin.isNaN() && acc.lastThermal.skin > 0 -> acc.lastThermal.skin
+                    !acc.lastThermal.dieCpu.isNaN() && acc.lastThermal.dieCpu > 0 -> acc.lastThermal.dieCpu
+                    else -> acc.lastThermal.cpu
+                },
+                tempGpu = acc.lastThermal.gpu,
+                tempBattery = acc.lastThermal.battery,
+                tempSkin = acc.lastThermal.skin,
+                jankCount = acc.totalJank, stutterCount = acc.totalStutter,
+                battery = battery,
+                // v3.1.10: frameDrops live counter replaced by acc.totalJank. The final
+                // report number is computed post-loop from missedEnd - missedStart so
+                // precision is preserved; the live counter is now "jank count" which
+                // comes for free from the per-frame analysis in captureFrames.
+                frameDrops = acc.totalJank,
+                fpsHistory = if (snapshotHistories) acc.fpsHistory.toList() else prev.fpsHistory,
+                fpsTimed = if (snapshotHistories) acc.fpsTimed.toList() else prev.fpsTimed,
+                memHistory = if (snapshotHistories) acc.memHistory.toList() else prev.memHistory,
+                nativeHistory = if (snapshotHistories) acc.nativeHistory.toList() else prev.nativeHistory,
+                javaHistory = if (snapshotHistories) acc.javaHistory.toList() else prev.javaHistory,
+                cpuHistory = if (snapshotHistories) acc.cpuHistory.toList() else prev.cpuHistory,
+                // v4.5.0 — `cpu-total-vs-app-usage` (CDU-002). Same 0.5 Hz
+                // snapshot gate as the surrounding history fields so the
+                // dual-line chart redraws at the same cadence as acc.cpuHistory.
+                cpuTotalHistory = if (snapshotHistories) acc.cpuTotalHistory.toList() else prev.cpuTotalHistory,
+                tempCpuHistory = if (snapshotHistories) acc.tempCpuHistory.toList() else prev.tempCpuHistory,
+                tempGpuHistory = if (snapshotHistories) acc.tempGpuHistory.toList() else prev.tempGpuHistory,
+                tempSkinHistory = if (snapshotHistories) acc.tempSkinHistory.toList() else prev.tempSkinHistory,
+                frameTimeHistory = if (snapshotHistories) acc.frameTimeAvgHistory.toList() else prev.frameTimeHistory,
+                allFrameTimes = if (snapshotHistories) acc.allFrameTimes.toList() else prev.allFrameTimes,
+                // v4.5.0 — FPower live tile + history (design §9e). The scalar follows
+                // the same "0.0 when unavailable" convention as the legacy thermal
+                // tiles: HUD reads as "--" instead of a misleading numeric value. List
+                // snapshots mirror the `snapshotHistories` 0.5 Hz gate so the graphs
+                // refresh at the same cadence as the thermal histories.
+                fpower = if (acc.lastFPower.fpowerAvailable) acc.lastFPower.fpowerMwPerFrame else 0.0,
+                fpowerHistory = if (snapshotHistories) acc.fpowerHistory.toList() else prev.fpowerHistory,
+                fpowerTimed = if (snapshotHistories) acc.fpowerTimed.toList() else prev.fpowerTimed,
+                // v4.5.0 — GPU usage live tile (design §6). The HUD field uses the
+                // -1 sentinel when unavailable (NOT 0.0 like fpower) so a real 0%
+                // reading stays distinguishable from "no sensor" (a flat 0% Adreno
+                // load is a legitimate idle frame, not a sensor failure). The HUD
+                // renderer reads [gpuAvailable] to decide between "--" and "0%".
+                gpuUsage = if (acc.lastGpu.gpuAvailable) acc.lastGpu.usagePct else -1,
+                gpuAvailable = acc.lastGpu.gpuAvailable,
+                gpuUsageHistory = if (snapshotHistories) acc.gpuUsageHistory.toList() else prev.gpuUsageHistory,
+            )
+        }
+    }
+
     fun init() {
         // Startup file-system cleanup runs on IO before the rest of init touches the
         // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
@@ -1260,363 +1644,9 @@ class AppViewModel(
             // without exploding parameter lists. See `sdd/startcapture-phase-extract/design`.
             val acc = CaptureAccumulators()
 
-            while (!shouldStop) {
-                val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
-                if (durationSeconds > 0 && elapsed >= durationSeconds) break
-                if (shouldStop) break
-
-                // Small delay between sampling cycles — the fast tier (FPS + CPU + battery)
-                // takes ~30-50ms on a mid-range device, so real cadence is ~0.5-0.6s.
-                delay(500)
-                if (shouldStop) break
-
-                // === METRICS CAPTURE ===
-                // v4.1.0: both AdbBridgeApi and IosBridge now return core.model.FrameSnapshot
-                // directly — no conversion needed.
-                val frame: com.gameperf.desktop.core.model.FrameSnapshot?
-                val cpu: Int
-                val battery: Int
-
-                if (isIosDevice) {
-                    // iOS: all metrics come from the sidecar via iosBridge (single HTTP call per method)
-                    frame = iosBridge?.captureFrames(device.id, pkg)
-                    if (shouldStop) break
-                    cpu = iosBridge?.captureCpuPercent(device.id) ?: 0
-                    if (shouldStop) break
-                    battery = iosBridge?.getBatteryLevel(device.id) ?: 0
-                    if (shouldStop) break
-
-                    // iOS: thermal + memory on every iteration (sidecar caches, HTTP is cheap)
-                    val iosTherm = iosBridge?.captureTemperature(device.id)
-                    if (iosTherm != null) {
-                        acc.lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(iosTherm.cpu, iosTherm.gpu, iosTherm.battery, iosTherm.skin)
-                    }
-                    val iosMem = iosBridge?.captureMemory(device.id, pkg)
-                    if (iosMem != null) {
-                        acc.lastMem = com.gameperf.desktop.core.model.MemSnapshot(iosMem.totalMb, iosMem.nativeMb, iosMem.javaMb)
-                    }
-                } else {
-                    // Android: tiered cadence to reduce overhead
-                    // FAST TIER (every 500ms): FPS, CPU, battery
-                    frame = adb.captureFrames(device.id, pkg)
-                    if (shouldStop) break
-                    // v4.5.0 — GameBench-inspired dual CPU capture
-                    // (`cpu-total-vs-app-usage`, spec CDU-005). [captureCpuDual]
-                    // is a thin convenience over the existing two
-                    // [captureCpuPercent] overloads — composes BOTH device-wide
-                    // total AND per-process app CPU in one call. The app channel
-                    // (`cpu`) keeps the v4.2.5 semantics (the value the user
-                    // grades against). The total channel feeds the new dual-line
-                    // chart so the dev can distinguish "device saturated by OS /
-                    // other apps" from "my app saturating the device".
-                    val cpuDual = adb.captureCpuDual(device.id, pkg)
-                    cpu = cpuDual.appCpuPct
-                    acc.lastCpuTotalPct = cpuDual.totalDeviceCpuPct
-                    if (shouldStop) break
-                    battery = adb.getBatteryLevel(device.id)
-                    if (shouldStop) break
-
-                    // MEDIUM TIER (every ~2s): thermals
-                    val runThermal = acc.iterCount % 4 == 0
-                    if (runThermal) {
-                        val t = adb.captureTemperature(device.id)
-                        if (shouldStop) break
-                        // v4.4.1 (temperature-not-shown, Q1): convert from positional to named args.
-                        // The 4-positional form silently dropped t.dieCpu (added in v4.3.6) AND
-                        // would also drop the new t.thermalAvailable / t.diagnostic fields landed
-                        // in T1 of this change. Named-args makes every field explicit so future
-                        // ThermalSnapshot widenings stay propagated automatically. ADDITIVE only —
-                        // no surrounding refactor (the enclosing startCapture body is detekt-baseline).
-                        acc.lastThermal = com.gameperf.desktop.core.model.ThermalSnapshot(
-                            cpu = t.cpu,
-                            gpu = t.gpu,
-                            battery = t.battery,
-                            skin = t.skin,
-                            dieCpu = t.dieCpu,
-                            thermalAvailable = t.thermalAvailable,
-                            diagnostic = t.diagnostic,
-                        )
-                        // v4.5.0 — FPower poll co-located with thermal at the medium tier
-                        // (~2s cadence at the 500ms loop, design §9c + ADR-6). The bridge
-                        // owns the per-device path cache so steady-state cost is ~2 shell
-                        // reads. We pass [frame?.fps] as the per-tick honest reading per
-                        // ADR-3 (FPS = same per-tick value, NOT smoothed). On `fps <= 0`
-                        // the parser raises FPS_ZERO and the tick is dropped by the
-                        // history-append guard below.
-                        val rawFpsForFpower = (frame?.fps ?: 0).toDouble()
-                        val fpowerSnap = adb.captureFPower(device.id, currentFps = rawFpsForFpower)
-                        if (shouldStop) break
-                        acc.lastFPower = fpowerSnap
-                        // v4.5.0 — GPU usage poll co-located with thermal at the medium tier
-                        // (`gpu-usage-percent` Sprint 1, design §6 wiring map). Cadence
-                        // `acc.iterCount % 4 == 0` ≈ every 2 s (mirrors thermal/fpower). The
-                        // bridge owns vendor cache + perfcounter lifecycle so steady-state
-                        // cost is 1 cat per tick. iOS branch above does NOT call this —
-                        // iOS GPU is out of Sprint 1 scope. Result lands in acc.lastGpu and is
-                        // appended to acc.gpuUsageHistory by the record-cadence block below.
-                        acc.lastGpu = adb.captureGpuUsage(device.id)
-                        if (shouldStop) break
-                    }
-
-                    // SLOW TIER (every ~5s): memory
-                    val runMem = acc.iterCount % 10 == 0
-                    if (runMem) {
-                        val m = adb.captureMemory(device.id, pkg)
-                        if (shouldStop) break
-                        if (m != null) acc.lastMem = com.gameperf.desktop.core.model.MemSnapshot(m.totalMb, m.nativeMb, m.javaMb)
-                    }
-                }
-
-                acc.iterCount++
-
-                // Device disconnect detection: if the fast tier returned all null/0/empty
-                // the device is likely disconnected. We only need the fast-tier results
-                // for this heuristic — the slow tiers may legitimately be idle.
-                val allFailed = frame == null && cpu == 0 && battery == 0
-                if (allFailed) {
-                    acc.consecutiveAdbFailures++
-                    if (acc.consecutiveAdbFailures >= 3) {
-                        shouldStop = true
-                        _captureError.value = "Dispositivo desconectado durante la captura"
-                        break
-                    }
-                } else {
-                    acc.consecutiveAdbFailures = 0
-                }
-
-                // v4.3.5 — FPS resume after ad / interstitial.
-                // Track null FrameSnapshots specifically (not the broader allFailed
-                // heuristic). When we hit the threshold, force the layer cache to
-                // drop so the next captureFrames does a fresh dumpsys --list and
-                // re-ranks candidates. Reset on any non-null frame so transient
-                // single-frame nulls don't trigger unnecessary re-discovery.
-                if (!isIosDevice) {
-                    if (frame == null) {
-                        acc.consecutiveNullFrames++
-                        if (acc.consecutiveNullFrames >= FORCED_LAYER_REDISCOVERY_THRESHOLD) {
-                            adb.invalidateLayerCache(device.id, pkg)
-                            acc.consecutiveNullFrames = 0  // give re-discovery a fresh window
-                        }
-                    } else {
-                        acc.consecutiveNullFrames = 0
-                    }
-                }
-
-                val sampleSecond = ((System.currentTimeMillis() - startTime) / 1000).toInt()
-                val fps = frame?.fps ?: 0
-                // v4.3.5 — last-known FPS fallback (sticky HUD across ad close).
-                // History/report fields use the raw [fps]; only [displayFps]
-                // (consumed by the live LiveMetrics emission) goes through the
-                // sticky tracker. See [LastKnownFpsTracker] for details.
-                val displayFps: Int = acc.lastKnownFpsTracker.update(
-                    rawFps = fps,
-                    nowMs = System.currentTimeMillis(),
-                )
-                if (fps > 0) {
-                    acc.fpsHistory.add(fps)
-                    acc.fpsTimed.add(TimedSample(sampleSecond, fps.toDouble()))
-                    // H-2: cap to prevent unbounded growth
-                    if (acc.fpsHistory.size > MAX_HISTORY_SIZE) acc.fpsHistory.removeFirst()
-                    if (acc.fpsTimed.size > MAX_HISTORY_SIZE) acc.fpsTimed.removeFirst()
-                }
-                val memNow = acc.lastMem
-                // v4.0.0: iOS captures mem/thermal every iteration; Android uses tiered cadence
-                val shouldRecordMem = isIosDevice || (acc.iterCount % 10 == 1) // align with runMem above
-                if (shouldRecordMem && memNow != null) {
-                    acc.memHistory.add(memNow.totalMb)
-                    acc.nativeHistory.add(memNow.nativeMb)
-                    acc.javaHistory.add(memNow.javaMb)
-                    // v4.4.0: timestamped memory twins for FilteredMetricsCalculator.
-                    acc.memTimed.add(TimedSample(sampleSecond, memNow.totalMb.toDouble()))
-                    acc.nativeTimed.add(TimedSample(sampleSecond, memNow.nativeMb.toDouble()))
-                    acc.javaTimed.add(TimedSample(sampleSecond, memNow.javaMb.toDouble()))
-                    if (acc.memHistory.size > MAX_HISTORY_SIZE) acc.memHistory.removeFirst()
-                    if (acc.nativeHistory.size > MAX_HISTORY_SIZE) acc.nativeHistory.removeFirst()
-                    if (acc.javaHistory.size > MAX_HISTORY_SIZE) acc.javaHistory.removeFirst()
-                    if (acc.memTimed.size > MAX_HISTORY_SIZE) acc.memTimed.removeFirst()
-                    if (acc.nativeTimed.size > MAX_HISTORY_SIZE) acc.nativeTimed.removeFirst()
-                    if (acc.javaTimed.size > MAX_HISTORY_SIZE) acc.javaTimed.removeFirst()
-                }
-                if (cpu > 0) {
-                    acc.cpuHistory.add(cpu)
-                    acc.cpuTimed.add(TimedSample(sampleSecond, cpu.toDouble()))
-                    if (acc.cpuHistory.size > MAX_HISTORY_SIZE) acc.cpuHistory.removeFirst()
-                    if (acc.cpuTimed.size > MAX_HISTORY_SIZE) acc.cpuTimed.removeFirst()
-                }
-                // v4.5.0 — `cpu-total-vs-app-usage` (spec CDU-005). Append the
-                // total-device CPU% sample whenever the Android branch produced
-                // a non-sentinel value. The gate is independent of the app
-                // channel above — both channels share the same `> 0` filter
-                // but neither blocks the other (e.g. app process not running
-                // yet ⇒ app=-1 but total still valid).
-                if (acc.lastCpuTotalPct > 0) {
-                    acc.cpuTotalHistory.add(acc.lastCpuTotalPct)
-                    if (acc.cpuTotalHistory.size > MAX_HISTORY_SIZE) acc.cpuTotalHistory.removeFirst()
-                }
-                val shouldRecordThermal = isIosDevice || (acc.iterCount % 4 == 1) // align with runThermal above
-                // v4.1.0: thermal fields use NaN as sentinel. NaN > 0 is false in IEEE 754,
-                // so the guard works identically, but we use !isNaN() for clarity.
-                if (shouldRecordThermal) {
-                    // v4.3.6: prefer skin for the user-facing `acc.tempCpuHistory`
-                    // when skin is available. Falls back to die when no skin
-                    // sensor exists. Old `.gameperf` exports stay readable
-                    // because the field type didn't change.
-                    //
-                    // v4.4.1 (temperature-not-shown): make the "no thermal data" path
-                    // EXPLICIT instead of silently falling through the three-branch
-                    // when() to NaN. AdbThermalParser flips acc.lastThermal.thermalAvailable
-                    // to false when no CPU/SKIN zone classifies (unsupported vendor,
-                    // permission denied, all temps OOR). Short-circuiting here keeps
-                    // acc.tempCpuHistory empty so the post-loop maxOrNull stays at 0.0 AND
-                    // the persisted thermalAvailable=false propagates downstream — the
-                    // report will render "N/D" + diagnostic banner instead of "0°C".
-                    val userFacingTemp = if (!acc.lastThermal.thermalAvailable) {
-                        Double.NaN
-                    } else when {
-                        !acc.lastThermal.skin.isNaN() && acc.lastThermal.skin > 0 -> acc.lastThermal.skin
-                        !acc.lastThermal.dieCpu.isNaN() && acc.lastThermal.dieCpu > 0 -> acc.lastThermal.dieCpu
-                        !acc.lastThermal.cpu.isNaN() && acc.lastThermal.cpu > 0 -> acc.lastThermal.cpu
-                        else -> Double.NaN
-                    }
-                    if (!userFacingTemp.isNaN()) {
-                        acc.tempCpuHistory.add(userFacingTemp)
-                        acc.tempCpuTimed.add(TimedSample(sampleSecond, userFacingTemp))
-                        if (acc.tempCpuHistory.size > MAX_HISTORY_SIZE) acc.tempCpuHistory.removeFirst()
-                        if (acc.tempCpuTimed.size > MAX_HISTORY_SIZE) acc.tempCpuTimed.removeFirst()
-                    }
-                    if (!acc.lastThermal.gpu.isNaN() && acc.lastThermal.gpu > 0) {
-                        acc.tempGpuHistory.add(acc.lastThermal.gpu)
-                        acc.tempGpuTimed.add(TimedSample(sampleSecond, acc.lastThermal.gpu))
-                        if (acc.tempGpuHistory.size > MAX_HISTORY_SIZE) acc.tempGpuHistory.removeFirst()
-                        if (acc.tempGpuTimed.size > MAX_HISTORY_SIZE) acc.tempGpuTimed.removeFirst()
-                    }
-                    if (!acc.lastThermal.skin.isNaN() && acc.lastThermal.skin > 0) {
-                        acc.tempSkinHistory.add(acc.lastThermal.skin)
-                        acc.tempSkinTimed.add(TimedSample(sampleSecond, acc.lastThermal.skin))
-                        if (acc.tempSkinHistory.size > MAX_HISTORY_SIZE) acc.tempSkinHistory.removeFirst()
-                        if (acc.tempSkinTimed.size > MAX_HISTORY_SIZE) acc.tempSkinTimed.removeFirst()
-                    }
-                    if (!acc.lastThermal.dieCpu.isNaN() && acc.lastThermal.dieCpu > 0) {
-                        acc.tempDieCpuHistory.add(acc.lastThermal.dieCpu)
-                        acc.tempDieCpuTimed.add(TimedSample(sampleSecond, acc.lastThermal.dieCpu))
-                        if (acc.tempDieCpuHistory.size > MAX_HISTORY_SIZE) acc.tempDieCpuHistory.removeFirst()
-                        if (acc.tempDieCpuTimed.size > MAX_HISTORY_SIZE) acc.tempDieCpuTimed.removeFirst()
-                    }
-                    // v4.5.0 — FPower history append (design §9d). Co-located with thermal
-                    // recording at the same `acc.iterCount % 4 == 1` cadence (one tick AFTER
-                    // the poll above so the freshest read lands here). Guards both on the
-                    // availability flag AND `> 0` so the sentinel -1.0 from a pre-first-poll
-                    // [FPowerSnapshot] AND the parser's `IMPLAUSIBLE_VALUE` fallback both
-                    // stay out of the persisted timeline.
-                    if (acc.lastFPower.fpowerAvailable && acc.lastFPower.fpowerMwPerFrame > 0) {
-                        acc.fpowerHistory.add(acc.lastFPower.fpowerMwPerFrame)
-                        acc.fpowerTimed.add(TimedSample(sampleSecond, acc.lastFPower.fpowerMwPerFrame))
-                        if (acc.fpowerHistory.size > MAX_HISTORY_SIZE) acc.fpowerHistory.removeFirst()
-                        if (acc.fpowerTimed.size > MAX_HISTORY_SIZE) acc.fpowerTimed.removeFirst()
-                    }
-                    // v4.5.0 — GPU usage history append (`gpu-usage-percent` Sprint 1,
-                    // spec GPU-015 / GPU-016 / design §6). Co-located with thermal +
-                    // fpower at the same `acc.iterCount % 4 == 1` cadence so all three
-                    // medium-tier metrics land together. The gate enforces BOTH the
-                    // availability flag AND `usagePct >= 0` so neither the unavailable
-                    // sentinel (-1) NOR the Adreno gpubusy warm-up baseline tick
-                    // (returns gpuAvailable=false even when probe succeeded — see
-                    // design §4) contaminate the persisted timeline.
-                    if (acc.lastGpu.gpuAvailable && acc.lastGpu.usagePct >= 0) {
-                        acc.gpuUsageHistory.add(acc.lastGpu.usagePct)
-                        acc.gpuUsageTimed.add(TimedSample(sampleSecond, acc.lastGpu.usagePct.toDouble()))
-                        if (acc.gpuUsageHistory.size > MAX_HISTORY_SIZE) acc.gpuUsageHistory.removeFirst()
-                        if (acc.gpuUsageTimed.size > MAX_HISTORY_SIZE) acc.gpuUsageTimed.removeFirst()
-                    }
-                }
-                if (frame != null && frame.avgFrameTime > 0) {
-                    acc.frameTimeAvgHistory.add(frame.avgFrameTime)
-                    acc.allFrameTimes.add(frame.avgFrameTime)
-                    acc.frameTimeTimed.add(TimedSample(sampleSecond, frame.avgFrameTime))
-                    if (acc.frameTimeAvgHistory.size > MAX_HISTORY_SIZE) acc.frameTimeAvgHistory.removeFirst()
-                    if (acc.allFrameTimes.size > MAX_FRAME_TIMES_SIZE) acc.allFrameTimes.removeFirst()
-                    if (acc.frameTimeTimed.size > MAX_HISTORY_SIZE) acc.frameTimeTimed.removeFirst()
-                }
-                acc.totalJank += frame?.jankCount ?: 0
-                acc.totalStutter += frame?.stutterCount ?: 0
-                // v4.4.0: timestamped jank/stutter twins (cumulative) for FilteredMetricsCalculator.
-                acc.jankTimed.add(TimedSample(sampleSecond, acc.totalJank.toDouble()))
-                acc.stutterTimed.add(TimedSample(sampleSecond, acc.totalStutter.toDouble()))
-                if (acc.jankTimed.size > MAX_HISTORY_SIZE) acc.jankTimed.removeFirst()
-                if (acc.stutterTimed.size > MAX_HISTORY_SIZE) acc.stutterTimed.removeFirst()
-
-                val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
-                // v4.1.0-perf: snapshot history lists only every 2 seconds (4 iterations)
-                // instead of every 500ms. The scalar fields (fps, cpu, temps, etc.) still
-                // update every cycle for responsive UI, but the heavy list copies that the
-                // graphs consume only refresh at 0.5 Hz — imperceptible to the user.
-                val snapshotHistories = acc.iterCount % 4 == 0
-                val prev = _liveMetrics.value
-                _liveMetrics.value = LiveMetrics(
-                    // v4.3.5: HUD shows the sticky last-known FPS during the
-                    // ad-close transient (≤1.5s). Outside the window
-                    // displayFps falls back to 0 and the HUD shows "--".
-                    // History/report fields below intentionally use the raw
-                    // [fps] so persisted data stays truthful.
-                    elapsed = currentElapsed, fps = displayFps,
-                    avgFps = if (acc.fpsHistory.isNotEmpty()) acc.fpsHistory.average() else 0.0,
-                    frameTime = frame?.avgFrameTime ?: 0.0,
-                    cpu = cpu,
-                    memMb = acc.lastMem?.totalMb ?: 0,
-                    nativeMb = acc.lastMem?.nativeMb ?: 0,
-                    javaMb = acc.lastMem?.javaMb ?: 0,
-                    // v4.3.6: HUD `tempCpu` shows the user-facing temp. Prefer
-                    // skin (case temp the user feels) over die (silicon, often
-                    // alarming-looking 80-95°C under load but normal). Falls
-                    // back to die or legacy `cpu` when skin is unavailable.
-                    tempCpu = when {
-                        !acc.lastThermal.skin.isNaN() && acc.lastThermal.skin > 0 -> acc.lastThermal.skin
-                        !acc.lastThermal.dieCpu.isNaN() && acc.lastThermal.dieCpu > 0 -> acc.lastThermal.dieCpu
-                        else -> acc.lastThermal.cpu
-                    },
-                    tempGpu = acc.lastThermal.gpu,
-                    tempBattery = acc.lastThermal.battery,
-                    tempSkin = acc.lastThermal.skin,
-                    jankCount = acc.totalJank, stutterCount = acc.totalStutter,
-                    battery = battery,
-                    // v3.1.10: frameDrops live counter replaced by acc.totalJank. The final
-                    // report number is computed post-loop from missedEnd - missedStart so
-                    // precision is preserved; the live counter is now "jank count" which
-                    // comes for free from the per-frame analysis in captureFrames.
-                    frameDrops = acc.totalJank,
-                    fpsHistory = if (snapshotHistories) acc.fpsHistory.toList() else prev.fpsHistory,
-                    fpsTimed = if (snapshotHistories) acc.fpsTimed.toList() else prev.fpsTimed,
-                    memHistory = if (snapshotHistories) acc.memHistory.toList() else prev.memHistory,
-                    nativeHistory = if (snapshotHistories) acc.nativeHistory.toList() else prev.nativeHistory,
-                    javaHistory = if (snapshotHistories) acc.javaHistory.toList() else prev.javaHistory,
-                    cpuHistory = if (snapshotHistories) acc.cpuHistory.toList() else prev.cpuHistory,
-                    // v4.5.0 — `cpu-total-vs-app-usage` (CDU-002). Same 0.5 Hz
-                    // snapshot gate as the surrounding history fields so the
-                    // dual-line chart redraws at the same cadence as acc.cpuHistory.
-                    cpuTotalHistory = if (snapshotHistories) acc.cpuTotalHistory.toList() else prev.cpuTotalHistory,
-                    tempCpuHistory = if (snapshotHistories) acc.tempCpuHistory.toList() else prev.tempCpuHistory,
-                    tempGpuHistory = if (snapshotHistories) acc.tempGpuHistory.toList() else prev.tempGpuHistory,
-                    tempSkinHistory = if (snapshotHistories) acc.tempSkinHistory.toList() else prev.tempSkinHistory,
-                    frameTimeHistory = if (snapshotHistories) acc.frameTimeAvgHistory.toList() else prev.frameTimeHistory,
-                    allFrameTimes = if (snapshotHistories) acc.allFrameTimes.toList() else prev.allFrameTimes,
-                    // v4.5.0 — FPower live tile + history (design §9e). The scalar follows
-                    // the same "0.0 when unavailable" convention as the legacy thermal
-                    // tiles: HUD reads as "--" instead of a misleading numeric value. List
-                    // snapshots mirror the `snapshotHistories` 0.5 Hz gate so the graphs
-                    // refresh at the same cadence as the thermal histories.
-                    fpower = if (acc.lastFPower.fpowerAvailable) acc.lastFPower.fpowerMwPerFrame else 0.0,
-                    fpowerHistory = if (snapshotHistories) acc.fpowerHistory.toList() else prev.fpowerHistory,
-                    fpowerTimed = if (snapshotHistories) acc.fpowerTimed.toList() else prev.fpowerTimed,
-                    // v4.5.0 — GPU usage live tile (design §6). The HUD field uses the
-                    // -1 sentinel when unavailable (NOT 0.0 like fpower) so a real 0%
-                    // reading stays distinguishable from "no sensor" (a flat 0% Adreno
-                    // load is a legitimate idle frame, not a sensor failure). The HUD
-                    // renderer reads [gpuAvailable] to decide between "--" and "0%".
-                    gpuUsage = if (acc.lastGpu.gpuAvailable) acc.lastGpu.usagePct else -1,
-                    gpuAvailable = acc.lastGpu.gpuAvailable,
-                    gpuUsageHistory = if (snapshotHistories) acc.gpuUsageHistory.toList() else prev.gpuUsageHistory,
-                )
-            }
+            // v4.5.0 — Main sampling loop extracted to runCaptureLoop (H.7 Phase 3.1).
+            // See design `sdd/startcapture-phase-extract/design` §runCaptureLoop.
+            runCaptureLoop(device.id, pkg, isIosDevice, acc, startTime, durationSeconds)
 
             // Capture actual session duration BEFORE cleanup
             val finalElapsed = if (durationSeconds > 0) {
