@@ -900,6 +900,21 @@ class AppViewModel(
         }
     }
 
+    /**
+     * H.7 Phase 2.4 — Independent UI elapsed-second timer.
+     *
+     * Returns the [Job] so the caller can cancel it in the finalize block. Updates
+     * `_liveMetrics.elapsed` once per second. Runs independently of the ADB sampling
+     * loop, which takes 2-3s per tick and would otherwise produce a jittery counter.
+     */
+    private fun launchUiTimer(startTime: Long): Job = scope.launch {
+        while (!shouldStop) {
+            delay(1000)
+            val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+            _liveMetrics.value = _liveMetrics.value.copy(elapsed = currentElapsed)
+        }
+    }
+
     fun init() {
         // Startup file-system cleanup runs on IO before the rest of init touches the
         // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
@@ -1238,15 +1253,7 @@ class AppViewModel(
 
             launchChainedRecording(device.id, sessionId, isIosDevice)
 
-            // Independent timer that updates elapsed every second (smooth UI counter)
-            // This runs independently of ADB commands which can take 2-3s each
-            val timerJob = scope.launch {
-                while (!shouldStop) {
-                    delay(1000)
-                    val currentElapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
-                    _liveMetrics.value = _liveMetrics.value.copy(elapsed = currentElapsed)
-                }
-            }
+            val timerJob = launchUiTimer(startTime)
 
             // v4.5.0 — Capture loop accumulators. Hoisted from local vals/vars to a
             // single holder so Phase 2 can extract per-temporal-phase helper methods
