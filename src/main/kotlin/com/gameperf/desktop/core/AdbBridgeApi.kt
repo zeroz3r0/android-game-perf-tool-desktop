@@ -4,6 +4,7 @@ import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.core.model.FPowerSnapshot
 import com.gameperf.desktop.core.model.FrameSnapshot
+import com.gameperf.desktop.core.model.GpuSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
 import java.io.File
@@ -64,6 +65,34 @@ interface AdbBridgeApi {
 
     fun captureMemory(deviceId: String, pkg: String): MemSnapshot?
     fun captureTemperature(deviceId: String): ThermalSnapshot
+
+    /**
+     * v4.5.0 — Capture a [GpuSnapshot] from Android sysfs probes.
+     *
+     * The bridge maintains a per-device probe-cache (`vendor`, `winningPath`,
+     * `lastBusyTotal`, `perfcounterEnabledByUs`, `firstProbeFailed`) cleared by
+     * [resetSessionState]. First call issues a single multi-path `for p in …;
+     * cat $p` probe against [GpuVendorCatalog.PROBE_CANDIDATES]; subsequent
+     * calls issue at most one `cat <winningPath>` per tick. The Adreno
+     * `gpubusy` path requires one warm-up tick (baseline) before the second
+     * tick returns a delta-computed percent.
+     *
+     * On Adreno when both probes return empty, the bridge SHALL attempt
+     * `echo 1 > /sys/class/kgsl/kgsl-3d0/perfcounter` exactly once. Success
+     * sets `perfcounterEnabledByUs=true` and re-probes on the next tick;
+     * failure marks the device terminal-unavailable with
+     * `ADRENO_PERFCOUNTER_DISABLED` and never retries.
+     *
+     * The entire body is wrapped in try/catch; any thrown exception is
+     * captured and returned as `GpuSnapshot(usagePct=-1, gpuAvailable=false,
+     * diagnostic.reason=CAPTURE_THREW)`. iOS callers SHOULD NOT invoke this
+     * (out of Sprint 1 scope) — iOS sessions persist `gpuAvailable=false`.
+     *
+     * See `sdd/gpu-usage-percent/design` §2.5 + §3 + §4, spec GPU-001..GPU-022.
+     *
+     * @since v4.5.0
+     */
+    fun captureGpuUsage(deviceId: String): GpuSnapshot
 
     /**
      * v4.5.0 — Capture an [FPowerSnapshot] (battery power normalised by FPS).
@@ -184,6 +213,9 @@ class RealAdbBridge : AdbBridgeApi {
 
     override fun captureTemperature(deviceId: String): ThermalSnapshot =
         AdbBridge.captureTemperature(deviceId)
+
+    override fun captureGpuUsage(deviceId: String): GpuSnapshot =
+        AdbBridge.captureGpuUsage(deviceId)
 
     override fun captureFPower(deviceId: String, currentFps: Double): FPowerSnapshot =
         AdbBridge.captureFPower(deviceId, currentFps)

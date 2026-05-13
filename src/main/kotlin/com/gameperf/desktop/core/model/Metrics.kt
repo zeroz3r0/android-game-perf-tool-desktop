@@ -98,3 +98,28 @@ data class FPowerSnapshot(
     val fpowerAvailable: Boolean = true,
     val diagnostic: FPowerDiagnostic? = null,
 )
+
+/**
+ * v4.5.0 -- Platform-agnostic GPU usage snapshot (Android sysfs probe).
+ *
+ * Sentinel semantics:
+ *  - [usagePct] is `[0, 100]` when [gpuAvailable] is `true`; `-1` otherwise.
+ *  - [gpuAvailable] defaults to `false` (NOT `true` like [ThermalSnapshot]).
+ *    Pre-v4.5.0 `.gameperf` exports never captured GPU, so deserialising one
+ *    of those files into this class must report "no data" — opposite default
+ *    from thermal (which DID exist pre-v4.4.1).
+ *  - [diagnostic] is `null` on the happy path; populated by
+ *    [com.gameperf.desktop.core.AdbBridge] when the probe pipeline fails, so
+ *    the report HTML can surface a Spanish tuteo-formal banner instead of
+ *    rendering a misleading "0%".
+ *
+ * iOS sessions always persist [gpuAvailable] = `false` (out of Sprint 1 scope).
+ *
+ * See `sdd/gpu-usage-percent/design` §2.3 + spec GPU-010.
+ */
+@Serializable
+data class GpuSnapshot(
+    val usagePct: Int = -1,
+    val gpuAvailable: Boolean = false,
+    val diagnostic: GpuDiagnostic? = null,
+)

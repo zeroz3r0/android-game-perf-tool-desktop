@@ -7,14 +7,22 @@ import com.gameperf.desktop.core.ConnectFailureReason
 import com.gameperf.desktop.core.ConnectResult
 import com.gameperf.desktop.core.FPowerParser
 import com.gameperf.desktop.core.FPowerVendorCatalog
+import com.gameperf.desktop.core.GpuProbeResult
+import com.gameperf.desktop.core.GpuUsageParser
+import com.gameperf.desktop.core.GpuVendor
+import com.gameperf.desktop.core.GpuVendorCatalog
 import com.gameperf.desktop.core.MdnsService
 import com.gameperf.desktop.core.PairFailureReason
 import com.gameperf.desktop.core.PairResult
+import com.gameperf.desktop.core.ProbeFormat
 import com.gameperf.desktop.core.model.Device
 import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.core.model.DevicePlatform
 import com.gameperf.desktop.core.model.FPowerSnapshot
 import com.gameperf.desktop.core.model.FrameSnapshot
+import com.gameperf.desktop.core.model.GpuDiagnostic
+import com.gameperf.desktop.core.model.GpuSnapshot
+import com.gameperf.desktop.core.model.GpuUnavailableReason
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
 import java.io.ByteArrayInputStream
@@ -85,6 +93,22 @@ open class FakeAdbBridge(
         // so a fresh probe re-walks ORDERED_PATHS. Without this the cache
         // contract (FPW-006, design ADR-7) would not be testable via the fake.
         fpowerStateMap.clear()
+        // v4.5.0 (gpu-usage-percent) — best-effort `echo 0 > perfcounter` for
+        // every device where WE flipped the bit, then clear the GPU probe
+        // cache (spec GPU-007.3 + GPU-014). Mirrors AdbBridge.resetSessionState.
+        gpuStateMap.entries
+            .filter { it.value.perfcounterEnabledByUs }
+            .forEach { (deviceId, _) ->
+                // Best-effort — swallow failures (spec GPU-007.3 + GPU-014).
+                try {
+                    shell(
+                        deviceId,
+                        "echo 0 > ${GpuVendorCatalog.ADRENO_PERFCOUNTER_NODE}",
+                        timeoutMs = 2000,
+                    )
+                } catch (_: Exception) { /* swallow */ }
+            }
+        gpuStateMap.clear()
     }
 
     /** Records every [invalidateLayerCache] call so tests can assert the
@@ -246,9 +270,283 @@ open class FakeAdbBridge(
         )
     }
 
+    // ===== v4.5.0 — GPU usage (gpu-usage-percent) ============================
+
+    /**
+     * v4.5.0 — optional override for [captureGpuUsage]. When non-null, the
+     * fake returns this exact snapshot identity, short-circuiting BEFORE any
+     * [shell] reads or state-map mutation. Install via [setGpu] for tests
+     * that don't care about the probe cascade (e.g., ViewModel wiring tests).
+     *
+     * When null, [captureGpuUsage] simulates the production state machine end
+     * to end against [shellResponses] so wired probe-flow tests can drive it
+     * with substring-keyed responses.
+     */
+    @Volatile
+    private var scriptedGpu: GpuSnapshot? = null
+
+    /**
+     * v4.5.0 builder — install a [GpuSnapshot] fixture that [captureGpuUsage]
+     * returns identity. Lazy / unit-scope scenarios only. Tests exercising
+     * the per-device probe-cache (vendor caching, perfcounter enable, sticky
+     * failures) should leave this null and populate [shellResponses] with
+     * the catalog path keys instead.
+     */
+    fun setGpu(snapshot: GpuSnapshot): FakeAdbBridge {
+        scriptedGpu = snapshot
+        return this
+    }
+
+    /**
+     * v4.5.0 — per-device GPU probe-cache mirror of [AdbBridge.gpuStateMap].
+     * Cleared by [resetSessionState]. Mirrors the production state machine
+     * end-to-end so the spec GPU-001..GPU-022 + GPU-007 + GPU-014 lifecycle
+     * tests can be driven via [shellResponses] without spawning real adb.
+     */
+    private data class GpuDeviceState(
+        val vendor: GpuVendor?,
+        val winningPath: String?,
+        val format: ProbeFormat?,
+        val lastBusyTotal: Pair<Long, Long>?,
+        val perfcounterEnabledByUs: Boolean = false,
+        val firstProbeFailed: Boolean = false,
+        val terminalDiagnostic: GpuDiagnostic? = null,
+    )
+    private val gpuStateMap: MutableMap<String, GpuDeviceState> = mutableMapOf()
+
+    /**
+     * v4.5.0 — exception-injection hook. When the deviceId matches an entry
+     * here, [captureGpuUsage] throws the supplied exception so the
+     * try/catch CAPTURE_THREW resilience path (spec GPU-022) can be tested
+     * without subclassing.
+     */
+    val gpuThrowOn: MutableMap<String, Exception> = mutableMapOf()
+
+    override fun captureGpuUsage(deviceId: String): GpuSnapshot {
+        scriptedGpu?.let { return it }
+        return try {
+            gpuThrowOn[deviceId]?.let { throw it }
+            captureGpuUsageImpl(deviceId)
+        } catch (_: Exception) {
+            GpuSnapshot(
+                usagePct = -1,
+                gpuAvailable = false,
+                diagnostic = GpuDiagnostic(
+                    probedPaths = emptyList(),
+                    detectedVendor = null,
+                    reason = GpuUnavailableReason.CAPTURE_THREW,
+                ),
+            )
+        }
+    }
+
+    private fun captureGpuUsageImpl(deviceId: String): GpuSnapshot {
+        val cached = gpuStateMap[deviceId]
+        // Sticky terminal failure — return cached diagnostic without re-shelling.
+        if (cached?.firstProbeFailed == true) {
+            val diag = cached.terminalDiagnostic ?: GpuDiagnostic(
+                probedPaths = GpuVendorCatalog.PROBE_CANDIDATES.map { it.path }
+                    .take(GPU_FAKE_DIAGNOSTIC_CAP),
+                detectedVendor = cached.vendor?.name,
+                reason = GpuUnavailableReason.ALL_PROBES_FAILED,
+            )
+            return GpuSnapshot(usagePct = -1, gpuAvailable = false, diagnostic = diag)
+        }
+        // Probe (first call OR after a successful perfcounter-enable cleared winningPath).
+        if (cached == null || cached.winningPath == null) {
+            // Probe each catalog path individually against [shellResponses]
+            // so tests can drive per-path substring matches without colliding
+            // with multi-path probe shell strings (design §2.7 simulation
+            // convention; production AdbBridge still uses a single for-loop
+            // shell — the per-path fake is behaviour-equivalent because
+            // GpuUsageParser.parseProbeOutput just iterates the catalog in
+            // order looking for the first non-empty hit).
+            var hit: GpuProbeResult? = null
+            for (candidate in GpuVendorCatalog.PROBE_CANDIDATES) {
+                val raw = shell(deviceId, "cat ${candidate.path} 2>/dev/null", timeoutMs = 3000)
+                val payload = raw.trim()
+                if (payload.isEmpty()) continue
+                hit = GpuProbeResult(
+                    vendor = candidate.vendor,
+                    winningPath = candidate.path,
+                    format = candidate.format,
+                    rawPayload = payload,
+                )
+                break
+            }
+            if (hit == null) {
+                return handleGpuProbeMissed(deviceId, cached)
+            }
+            // First hit defines vendor + format. PowerVR → permanent unavailable.
+            if (hit.vendor == GpuVendor.POWERVR) {
+                val diag = GpuDiagnostic(
+                    probedPaths = GpuVendorCatalog.PROBE_CANDIDATES.map { it.path }
+                        .take(GPU_FAKE_DIAGNOSTIC_CAP),
+                    detectedVendor = "POWERVR",
+                    reason = GpuUnavailableReason.POWERVR_UNSUPPORTED,
+                )
+                gpuStateMap[deviceId] = GpuDeviceState(
+                    vendor = GpuVendor.POWERVR,
+                    winningPath = null,
+                    format = null,
+                    lastBusyTotal = null,
+                    perfcounterEnabledByUs = cached?.perfcounterEnabledByUs ?: false,
+                    firstProbeFailed = true,
+                    terminalDiagnostic = diag,
+                )
+                return GpuSnapshot(usagePct = -1, gpuAvailable = false, diagnostic = diag)
+            }
+            gpuStateMap[deviceId] = GpuDeviceState(
+                vendor = hit.vendor,
+                winningPath = hit.winningPath,
+                format = hit.format,
+                lastBusyTotal = null,
+                perfcounterEnabledByUs = cached?.perfcounterEnabledByUs ?: false,
+                firstProbeFailed = false,
+            )
+            return readGpuFromCached(deviceId, hit)
+        }
+        return readGpuFromCached(deviceId, cached)
+    }
+
+    /**
+     * Both Adreno probes empty (or vendor unknown / probe miss). Attempt
+     * `echo 1 > /sys/class/kgsl/kgsl-3d0/perfcounter` if we haven't yet AND
+     * the vendor cache hints at Adreno (or is unknown — A13+ may emit empty
+     * `gpu_busy_percentage` AND empty `gpubusy` before the enable). On
+     * success drop the winningPath so the next tick re-probes; on failure
+     * mark terminal-unavailable.
+     */
+    private fun handleGpuProbeMissed(deviceId: String, prev: GpuDeviceState?): GpuSnapshot {
+        if (prev?.perfcounterEnabledByUs != true && prev?.firstProbeFailed != true) {
+            val enableCmd = "echo 1 > ${GpuVendorCatalog.ADRENO_PERFCOUNTER_NODE} 2>&1; echo rc=$?"
+            val out = shell(deviceId, enableCmd, timeoutMs = 2000)
+            val ok = out.contains("rc=0") &&
+                !out.contains("Permission", ignoreCase = true) &&
+                !out.contains("denied", ignoreCase = true)
+            if (ok) {
+                gpuStateMap[deviceId] = GpuDeviceState(
+                    vendor = GpuVendor.ADRENO,
+                    winningPath = null,
+                    format = null,
+                    lastBusyTotal = null,
+                    perfcounterEnabledByUs = true,
+                    firstProbeFailed = false,
+                )
+                return GpuSnapshot(
+                    usagePct = -1,
+                    gpuAvailable = false,
+                    diagnostic = GpuDiagnostic(
+                        probedPaths = GpuVendorCatalog.PROBE_CANDIDATES
+                            .filter { it.vendor == GpuVendor.ADRENO }
+                            .map { it.path }
+                            .take(GPU_FAKE_DIAGNOSTIC_CAP),
+                        detectedVendor = "ADRENO",
+                        reason = GpuUnavailableReason.ALL_PROBES_FAILED,
+                    ),
+                )
+            }
+            // Enable failed — mark terminal.
+            val diag = GpuDiagnostic(
+                probedPaths = GpuVendorCatalog.PROBE_CANDIDATES
+                    .filter { it.vendor == GpuVendor.ADRENO }
+                    .map { it.path }
+                    .take(GPU_FAKE_DIAGNOSTIC_CAP),
+                detectedVendor = "ADRENO",
+                failedEnableCommand = enableCmd,
+                reason = GpuUnavailableReason.ADRENO_PERFCOUNTER_DISABLED,
+            )
+            gpuStateMap[deviceId] = GpuDeviceState(
+                vendor = GpuVendor.ADRENO,
+                winningPath = null,
+                format = null,
+                lastBusyTotal = null,
+                perfcounterEnabledByUs = false,
+                firstProbeFailed = true,
+                terminalDiagnostic = diag,
+            )
+            return GpuSnapshot(usagePct = -1, gpuAvailable = false, diagnostic = diag)
+        }
+        // Already enabled but probe STILL empty → ADRENO_BLOCKED terminal.
+        // Reaching here requires prev != null (Kotlin smart-cast confirms:
+        // both `firstProbeFailed=true` and `perfcounterEnabledByUs=false`
+        // branches above filtered the null case).
+        val diag = GpuDiagnostic(
+            probedPaths = GpuVendorCatalog.PROBE_CANDIDATES
+                .filter { it.vendor == GpuVendor.ADRENO }
+                .map { it.path }
+                .take(GPU_FAKE_DIAGNOSTIC_CAP),
+            detectedVendor = "ADRENO",
+            reason = GpuUnavailableReason.ADRENO_BLOCKED,
+        )
+        gpuStateMap[deviceId] = prev.copy(
+            firstProbeFailed = true,
+            terminalDiagnostic = diag,
+        )
+        return GpuSnapshot(usagePct = -1, gpuAvailable = false, diagnostic = diag)
+    }
+
+    private fun readGpuFromCached(deviceId: String, probeHit: GpuProbeResult): GpuSnapshot {
+        // Path freshly resolved on this tick — payload already in hand for
+        // MALI / ADRENO_GPU_BUSY_PERCENTAGE. For ADRENO_KGSL_BUSY_TOTAL the
+        // payload is the baseline; we store it and return UNAVAILABLE (next
+        // tick computes the delta via the cached-state branch).
+        return when (probeHit.format) {
+            ProbeFormat.MALI_INT_0_100 ->
+                GpuUsageParser.parseMali(probeHit.rawPayload)?.let {
+                    GpuSnapshot(it, gpuAvailable = true, diagnostic = null)
+                } ?: GpuSnapshot(-1, false, null)
+            ProbeFormat.ADRENO_GPU_BUSY_PERCENTAGE ->
+                GpuUsageParser.parseAdrenoGpuBusyPercentage(probeHit.rawPayload)?.let {
+                    GpuSnapshot(it, gpuAvailable = true, diagnostic = null)
+                } ?: GpuSnapshot(-1, false, null)
+            ProbeFormat.ADRENO_KGSL_BUSY_TOTAL -> {
+                val baseline = GpuUsageParser.parseAdrenoGpuBusy(probeHit.rawPayload)
+                if (baseline != null) {
+                    gpuStateMap[deviceId] = gpuStateMap[deviceId]!!.copy(lastBusyTotal = baseline)
+                }
+                GpuSnapshot(-1, false, null)
+            }
+            ProbeFormat.POWERVR_UNKNOWN -> GpuSnapshot(-1, false, null)
+        }
+    }
+
+    @Suppress("ReturnCount")
+    private fun readGpuFromCached(deviceId: String, st: GpuDeviceState): GpuSnapshot {
+        val path = st.winningPath ?: return GpuSnapshot(-1, false, null)
+        return when (st.format) {
+            ProbeFormat.MALI_INT_0_100 -> {
+                val raw = shell(deviceId, "cat $path 2>/dev/null", timeoutMs = 2000)
+                GpuUsageParser.parseMali(raw)?.let {
+                    GpuSnapshot(it, gpuAvailable = true, diagnostic = null)
+                } ?: GpuSnapshot(-1, false, null)
+            }
+            ProbeFormat.ADRENO_GPU_BUSY_PERCENTAGE -> {
+                val raw = shell(deviceId, "cat $path 2>/dev/null", timeoutMs = 2000)
+                GpuUsageParser.parseAdrenoGpuBusyPercentage(raw)?.let {
+                    GpuSnapshot(it, gpuAvailable = true, diagnostic = null)
+                } ?: GpuSnapshot(-1, false, null)
+            }
+            ProbeFormat.ADRENO_KGSL_BUSY_TOTAL -> {
+                val raw = shell(deviceId, "cat $path 2>/dev/null", timeoutMs = 2000)
+                val curr = GpuUsageParser.parseAdrenoGpuBusy(raw)
+                    ?: return GpuSnapshot(-1, false, null)
+                val prev = st.lastBusyTotal
+                gpuStateMap[deviceId] = st.copy(lastBusyTotal = curr)
+                if (prev == null) return GpuSnapshot(-1, false, null)
+                val pct = GpuUsageParser.computeAdrenoDelta(prev, curr)
+                    ?: return GpuSnapshot(-1, false, null)
+                GpuSnapshot(pct, gpuAvailable = true, diagnostic = null)
+            }
+            ProbeFormat.POWERVR_UNKNOWN, null -> GpuSnapshot(-1, false, null)
+        }
+    }
+
     private companion object {
         /** Mirror of [AdbBridge]'s diagnostic cap so test sizes track production. */
         const val FPOWER_FAKE_DIAGNOSTIC_CAP: Int = 10
+        /** GPU diagnostic cap — mirrors GpuDiagnostic spec GPU-011 (≤10 paths). */
+        const val GPU_FAKE_DIAGNOSTIC_CAP: Int = 10
     }
 
     override fun startScreenRecord(

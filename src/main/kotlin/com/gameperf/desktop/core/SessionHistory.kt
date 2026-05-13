@@ -5,6 +5,7 @@ import com.gameperf.desktop.core.devactions.DevActionBrief
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.FPowerDiagnostic
+import com.gameperf.desktop.core.model.GpuDiagnostic
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
@@ -221,6 +222,18 @@ object SessionHistory {
         // Defaulted empty so pre-cpu-dual history.json rows hydrate as the
         // legacy single-line CPU view via Json { ignoreUnknownKeys = true }.
         val cpuTotalHistory: List<Int> = emptyList(),
+        // v4.5.0 — `gpu-usage-percent` Sprint 1 (spec GPU-017). Mirrors the
+        // [thermalAvailable] / [fpowerAvailable] persistence pattern but the
+        // default flips to `false` because pre-v4.5.0 sessions NEVER captured
+        // GPU (legacy `.gameperf` rows hydrate as "no GPU data"). Sentinel for
+        // [maxGpuUsage] is `-1` matching [GpuSnapshot.usagePct]. Empty timed
+        // list flattens to `List<List<Int>>` of shape `[second, value]`
+        // mirroring [fpowerTimed] precedent. See design §6.
+        val gpuAvailable: Boolean = false,
+        val maxGpuUsage: Int = -1,
+        val gpuUsageHistory: List<Int> = emptyList(),
+        val gpuUsageTimed: List<List<Int>> = emptyList(),
+        val gpuDiagnostic: GpuDiagnostic? = null,
     )
 
     data class HistoryEntry(
@@ -288,6 +301,18 @@ object SessionHistory {
         // byte-equivalent to pre-cpu-dual behavior. The report generator
         // emits the dual chart only when this list is non-empty.
         val cpuTotalHistory: List<Int> = emptyList(),
+        // v4.5.0 — `gpu-usage-percent` Sprint 1 (spec GPU-017). Domain mirror of
+        // the [SerializableEntry] gpu* fields. [gpuUsageTimed] is the typed
+        // [TimedSample] form on the domain side; the wire form flattens each
+        // entry to `[second, value]` 2-list (mirrors fpowerTimed). Defaults
+        // align with the SerializableEntry side so a HistoryEntry constructed
+        // without naming these args stays semantically identical to a
+        // pre-v4.5.0 row (gpuAvailable=false, history empty, diagnostic null).
+        val gpuAvailable: Boolean = false,
+        val maxGpuUsage: Int = -1,
+        val gpuUsageHistory: List<Int> = emptyList(),
+        val gpuUsageTimed: List<TimedSample> = emptyList(),
+        val gpuDiagnostic: GpuDiagnostic? = null,
     )
 
     // ===== Conversion =====
@@ -326,6 +351,15 @@ object SessionHistory {
         devActionBrief = devActionBrief,
         // v4.5.0 — `cpu-total-vs-app-usage` forward through the wire format.
         cpuTotalHistory = cpuTotalHistory,
+        // v4.5.0 — `gpu-usage-percent` Sprint 1 (spec GPU-017). Mirrors the
+        // fpowerTimed wire flattening: `TimedSample(second, value)` →
+        // `[second, value]` Int 2-list. Defaults preserve "no GPU data" on
+        // domain → wire round-trip for legacy [HistoryEntry] call sites.
+        gpuAvailable = gpuAvailable,
+        maxGpuUsage = maxGpuUsage,
+        gpuUsageHistory = gpuUsageHistory,
+        gpuUsageTimed = gpuUsageTimed.map { listOf(it.second, it.value.toInt()) },
+        gpuDiagnostic = gpuDiagnostic,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -376,6 +410,17 @@ object SessionHistory {
         // and the report falls back to the single-line CPU chart (CDU-007
         // legacy branch).
         cpuTotalHistory = cpuTotalHistory,
+        // v4.5.0 — `gpu-usage-percent` Sprint 1 (spec GPU-017). Inverse of the
+        // toSerializable() flattening — accepts the `[second, value]` Int wire
+        // form and hydrates `TimedSample`. Skips malformed sub-arrays defensively
+        // (mirrors fpsTimed / fpowerTimed decoder hardening).
+        gpuAvailable = gpuAvailable,
+        maxGpuUsage = maxGpuUsage,
+        gpuUsageHistory = gpuUsageHistory,
+        gpuUsageTimed = gpuUsageTimed.mapNotNull {
+            if (it.size >= 2) TimedSample(it[0], it[1].toDouble()) else null
+        },
+        gpuDiagnostic = gpuDiagnostic,
     )
 
     // ===== Public API (unchanged contract) =====

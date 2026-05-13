@@ -14,6 +14,8 @@ import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.DeviceInfo
 import com.gameperf.desktop.core.model.FPowerDiagnostic
 import com.gameperf.desktop.core.model.FPowerUnavailableReason
+import com.gameperf.desktop.core.model.GpuDiagnostic
+import com.gameperf.desktop.core.model.GpuUnavailableReason
 import com.gameperf.desktop.core.model.ThermalDiagnostic
 import com.gameperf.desktop.core.model.ThermalUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
@@ -115,6 +117,18 @@ object ReportGenerator {
         // section gains a Spanish-tuteo-formal caveat about device
         // saturation (CPUDUAL-003).
         cpuTotalHistory: List<Int> = emptyList(),
+        // v4.5.0 -- GPU usage (`gpu-usage-percent` Sprint 1, spec GPU-018 /
+        // GPU-019 / GPU-020). All defaulted so legacy fixtures
+        // (ReportRenderingTest, ReportGradingTest) and pre-v4.5.0 history
+        // re-renders skip the new GPU section entirely. Card renders only
+        // when (gpuAvailable && gpuUsageHistory.isNotEmpty()) OR
+        // (!gpuAvailable && gpuDiagnostic != null) per design §7 (mirrors the
+        // v4.5.0 fpower precedent). [maxGpuUsage] uses the -1 sentinel from
+        // [GpuSnapshot.usagePct] when no samples were captured.
+        gpuAvailable: Boolean = false,
+        gpuDiagnostic: GpuDiagnostic? = null,
+        gpuUsageHistory: List<Int> = emptyList(),
+        maxGpuUsage: Int = -1,
         // SDD shareable-html-report Block F (v4.6) — KPI scoring sections.
         // All defaulted so legacy callers (UI, pre-v4.6 `.gameperf`
         // re-renders, every existing report test) produce byte-equivalent
@@ -249,6 +263,21 @@ object ReportGenerator {
             peak = fpowerPeak,
             available = fpowerAvailable,
             diagnostic = fpowerDiagnostic,
+        )
+
+        // v4.5.0 -- GPU usage section (`gpu-usage-percent` Sprint 1, spec
+        // GPU-018 / GPU-019 / GPU-020 + design §7). Empty string for legacy
+        // callers (gpuAvailable defaulted false AND no diagnostic) so
+        // pre-v4.5.0 fixtures (ReportRenderingTest) stay byte-equivalent.
+        // Render matrix mirrors fpowerSection at line 1781:
+        //  - !available && diagnostic != null -> N/D card + Spanish banner.
+        //  - available && history.isNotEmpty()  -> numeric card + chart canvas.
+        //  - everything else -> "".
+        val gpuSectionHtml = gpuSection(
+            history = gpuUsageHistory,
+            maxValue = maxGpuUsage,
+            available = gpuAvailable,
+            diagnostic = gpuDiagnostic,
         )
 
         // v4.5.0 Sprint 3 — DevActionBrief section (spec DAB-008, ADR-7).
@@ -639,6 +668,8 @@ $excessiveCalloutHtml
 </section>
 
 $fpowerSectionHtml
+
+$gpuSectionHtml
 
 <section class="card">
     <div class="card-header"><h2>&#128267; Bateria</h2></div>
@@ -1814,6 +1845,114 @@ $cards
         <div class="stat-pill"><span class="stat-pill-label">Pico</span><span class="stat-pill-value $peakBand">${fmtUS("%.1f", peak)} mW/frame</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">${history.size}</span></div>
     </div>
+</section>"""
+        }
+        return ""
+    }
+
+    /**
+     * v4.5.0 -- Spanish-tuteo-formal diagnostic banner for the GPU card.
+     * Mirrors [thermalDiagnosticBanner] / [fpowerDiagnosticBanner] exactly
+     * (design ADR-1, §7). Each [GpuUnavailableReason] maps to a distinct
+     * one-sentence reason copy + lists raw probedPaths and (when relevant)
+     * the failedEnableCommand.
+     *
+     * Voice register: tuteo-formal ("ten en cuenta", "tu dispositivo", NOT
+     * "tené" / "tu juego" voseo). Matches the README in-app castellano formal
+     * convention (CLAUDE.md "Convención de idiomas").
+     *
+     * Path strings are escaped via [esc] defensively in case a vendor exposes
+     * HTML-special chars in a sysfs node name; [probedPaths] is already capped
+     * at 10 at the source ([com.gameperf.desktop.core.model.GpuDiagnostic]).
+     */
+    private fun gpuDiagnosticBanner(diagnostic: GpuDiagnostic): String {
+        val reasonText = when (diagnostic.reason) {
+            GpuUnavailableReason.ALL_PROBES_FAILED ->
+                "No detectamos sensores GPU legibles en este dispositivo. Probamos los siguientes paths sysfs sin éxito; probablemente el vendor no está todavía en nuestro catálogo (Mali / Adreno / PowerVR)."
+            GpuUnavailableReason.ADRENO_BLOCKED ->
+                "El dispositivo expone sensores Adreno pero SELinux o el OEM bloquean el acceso a los contadores de rendimiento. No hay workaround sin root."
+            GpuUnavailableReason.ADRENO_PERFCOUNTER_DISABLED ->
+                "Tu dispositivo Adreno requiere habilitar los contadores de rendimiento. Intentamos hacerlo automáticamente pero el OEM nos bloqueó (típico en Adreno A13+ con OEM locked). Ten en cuenta que sin root no hay forma de leerlos."
+            GpuUnavailableReason.POWERVR_UNSUPPORTED ->
+                "Este chipset usa una GPU PowerVR (común en MediaTek y Unisoc). El catálogo Sprint 1 todavía no cubre PowerVR. Si quieres ayudarnos a soportarla, exporta esta sesión y abre un issue mencionando los paths listados debajo (Sprint 1.5 crowdsource)."
+            GpuUnavailableReason.CAPTURE_THREW ->
+                "Se produjo un error inesperado leyendo el sensor GPU. Repórtalo (modelo, marca, versión de Android) para que podamos investigarlo."
+        }
+        val pathItems = diagnostic.probedPaths.take(10).joinToString("") { p ->
+            "<li><code>${esc(p)}</code></li>"
+        }
+        val pathsBlock = if (pathItems.isEmpty()) "" else """
+        <p class="gpu-diag-paths-label">Paths probados:</p>
+        <ul class="gpu-diag-paths">$pathItems</ul>"""
+        val failedCmdBlock = diagnostic.failedEnableCommand?.let { cmd ->
+            """
+        <p class="gpu-diag-paths-label">Comando que falló:</p>
+        <p><code>${esc(cmd)}</code></p>"""
+        } ?: ""
+        return """
+    <div class="callout callout-warning gpu-diag-banner">
+        <strong>&#9888; Datos de GPU no disponibles.</strong>
+        <p>$reasonText</p>$pathsBlock$failedCmdBlock
+    </div>"""
+    }
+
+    /**
+     * v4.5.0 -- Build the GPU `<section>` HTML conditionally per spec
+     * GPU-018 / GPU-019 / GPU-020 (design §7). Returns the empty string when
+     * there's nothing to render so the caller can splat it unconditionally
+     * into the template (matches the fpowerSection precedent).
+     *
+     * Render matrix (parallel to fpowerSection):
+     *  - `!available && diagnostic != null` -> N/D card + diagnostic banner.
+     *  - `available && history.isNotEmpty()` -> numeric card with max / avg /
+     *    foreground-attribution caveat + Adreno warm-up footnote when the
+     *    diagnostic detectedVendor is ADRENO.
+     *  - everything else -> empty string (no card). Matches the v4.4.1 thermal
+     *    + v4.5.0 fpower precedent of "available=true + empty history" -> no
+     *    section rendered.
+     */
+    private fun gpuSection(
+        history: List<Int>,
+        maxValue: Int,
+        available: Boolean,
+        diagnostic: GpuDiagnostic?,
+    ): String {
+        if (!available && diagnostic != null) {
+            return """
+<section id="sec-gpu" class="card gpu-card gpu-unavailable">
+    <div class="card-header">
+        <h2>&#127918; GPU Usage</h2>
+    </div>
+    <p class="card-desc">Porcentaje de uso de la GPU leído desde sysfs (Mali / Adreno / PowerVR según el chipset).</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Pico</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">0</span></div>
+    </div>
+    ${gpuDiagnosticBanner(diagnostic)}
+</section>"""
+        }
+        if (available && history.isNotEmpty()) {
+            val avgPct = history.average().toInt()
+            val peakPct = if (maxValue >= 0) maxValue else (history.max())
+            val isAdreno = diagnostic?.detectedVendor == "ADRENO"
+            val adrenoFootnote = if (isAdreno) """
+    <p class="hint">&#8505; <strong>Adreno warm-up:</strong> los contadores Adreno necesitan ~4 s desde el primer poll antes de mostrar un valor estable. Los primeros 1-2 puntos del gráfico pueden aparecer en 0% por esta razón, no porque la GPU esté ociosa.</p>""" else ""
+            val gpuD = history.joinToString(",")
+            val gpuChartLabels = history.indices.joinToString(",") { "\"${it + 1}s\"" }
+            return """
+<section id="sec-gpu" class="card gpu-card">
+    <div class="card-header">
+        <h2>&#127918; GPU Usage</h2>
+    </div>
+    <p class="card-desc">Porcentaje de uso de la GPU leído desde sysfs. Útil para ver si la app está GPU-bound (clock alto y % alto sostenido) vs CPU-bound (% GPU bajo con FPS bajo).</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Pico</span><span class="stat-pill-value">${peakPct}%</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value">${avgPct}%</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Mediciones</span><span class="stat-pill-value">${history.size}</span></div>
+    </div>
+    <div class="chart-container"><canvas id="gpuChart" data-gpu-labels="$gpuChartLabels" data-gpu-data="$gpuD"></canvas></div>
+    <p class="hint">&#8505; <strong>Atribución foreground-app:</strong> sysfs reporta el uso TOTAL de la GPU; lo atribuimos al juego porque suele ser la única app en foreground bajo carga gráfica. Los picos pueden mostrarse más bajos de lo esperado porque el DVFS sube el clock para mantener el FPS objetivo (el porcentaje refleja "tiempo ocupado" no "potencia consumida").</p>$adrenoFootnote
 </section>"""
         }
         return ""
