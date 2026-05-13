@@ -115,6 +115,20 @@ object ReportGenerator {
         // section gains a Spanish-tuteo-formal caveat about device
         // saturation (CPUDUAL-003).
         cpuTotalHistory: List<Int> = emptyList(),
+        // SDD shareable-html-report Block F (v4.6) — KPI scoring sections.
+        // All defaulted so legacy callers (UI, pre-v4.6 `.gameperf`
+        // re-renders, every existing report test) produce byte-equivalent
+        // output (asserted by `KpiSectionsOffByDefaultTest`). When the
+        // user enables `Settings.kpiScoringInternalEnabled` AND a non-null
+        // [kpiReport] is passed, the 6 new sections + CSS bundle are wired
+        // in (see design §wiring map + ADR-1).
+        //
+        // [kpiTier] is the user-facing tier label (e.g. "TOP", "MID",
+        // "LOW") used by `renderCaveats` to disclose which thresholds
+        // produced the score. Null/blank → caveats render "MID (default)".
+        kpiReport: com.gameperf.desktop.core.kpi.KpiScoreReport? = null,
+        kpiInternalEnabled: Boolean = false,
+        kpiTier: String? = null,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -241,6 +255,49 @@ object ReportGenerator {
         // Rendered at TOP of body BEFORE the summary section. Empty string
         // when brief is null or has no items (backward compat DAB-010).
         val devActionBriefHtml = sectionDevActionBrief(devActionBrief)
+
+        // SDD shareable-html-report Block F (v4.6) — KPI scoring sections.
+        // Every block is "" unless (kpiInternalEnabled && kpiReport != null)
+        // so legacy callers stay byte-equivalent (asserted by
+        // `KpiSectionsOffByDefaultTest`). See design §wiring map.
+        val kpiOn = kpiInternalEnabled && kpiReport != null
+        val kpiScoreSectionHtml = if (kpiOn) {
+            com.gameperf.desktop.core.report.kpi.renderKpiScoreSection(kpiReport!!)
+        } else ""
+        val kpiVitalsBannerHtml = if (kpiOn) {
+            com.gameperf.desktop.core.report.kpi.renderVitalsBanner(kpiReport!!, duration)
+        } else ""
+        val kpiPhaseBreakdownHtml = if (kpiOn) {
+            com.gameperf.desktop.core.report.kpi.renderPhaseBreakdown(kpiReport!!)
+        } else ""
+        val kpiCaveatsHtml = if (kpiOn) {
+            com.gameperf.desktop.core.report.kpi.renderCaveats(kpiTier ?: deviceTier)
+        } else ""
+        val kpiExportButtonsHtml = if (kpiOn) {
+            com.gameperf.desktop.core.report.kpi.renderExportButtons(kpiReport!!, pkg)
+        } else ""
+        // Notebookcheck `Ø<avg> (<min>-<max>)` appended into the FPS stats row.
+        val kpiNotebookcheckFpsHtml = if (kpiOn) {
+            val nb = com.gameperf.desktop.core.report.kpi.Notebookcheck.format(avgFps, minFps, maxFps, decimals = 0)
+            """<div class="stat-pill kpi-notebookcheck"><span class="stat-pill-label">Notebookcheck</span><span class="stat-pill-value">$nb</span></div>"""
+        } else ""
+        // Frame-time p1 / p0.1 pills — only when there's enough data.
+        val kpiFrameTimeP1Html = if (kpiOn) {
+            val v = com.gameperf.desktop.core.report.kpi.FrameTimePercentiles.p1(allFrameTimes)
+            if (v != null) {
+                """<div class="stat-pill kpi-frametime-p1"><span class="stat-pill-label">P1 high</span><span class="stat-pill-value">${fmtUS("%.1f", v)}ms</span></div>"""
+            } else ""
+        } else ""
+        val kpiFrameTimeP01Html = if (kpiOn) {
+            val v = com.gameperf.desktop.core.report.kpi.FrameTimePercentiles.p01(allFrameTimes)
+            if (v != null) {
+                """<div class="stat-pill kpi-frametime-p01"><span class="stat-pill-label">P0.1 high</span><span class="stat-pill-value">${fmtUS("%.1f", v)}ms</span></div>"""
+            } else ""
+        } else ""
+        // CSS bundle appended to the existing `<style>` block ONLY when on.
+        val kpiCssBlock = if (kpiOn) {
+            "\n" + com.gameperf.desktop.core.report.kpi.KPI_CSS
+        } else ""
         val devActionBriefNavLink = if (devActionBriefHtml.isNotEmpty()) {
             """<a href="#sec-dev-action-brief" class="nav-link">Acción Dev</a>"""
         } else ""
@@ -308,7 +365,7 @@ object ReportGenerator {
 <script>${Assets.annotationPlugin}</script>
 <script>${Assets.zoomPlugin}</script>
 <style>
-$CSS
+$CSS$kpiCssBlock
 </style>
 </head>
 <body>
@@ -389,6 +446,12 @@ $devActionBriefHtml
 </section>
 
 $conclusionsHtml
+
+$kpiVitalsBannerHtml
+
+$kpiScoreSectionHtml
+
+$kpiPhaseBreakdownHtml
 
 $excessiveCalloutHtml
 
@@ -474,6 +537,7 @@ $excessiveCalloutHtml
         <div class="stat-pill"><span class="stat-pill-label">Max</span><span class="stat-pill-value good">${maxFps}</span></div>
         <div class="stat-pill stat-pill-accent"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value" style="color:$gc;font-size:1.2em">${avgFps}</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Estabilidad</span><span class="stat-pill-value ${if (stability < 70) "warn" else "good"}">${stability}%</span></div>
+        $kpiNotebookcheckFpsHtml
     </div>
     <p class="hint">P1 = el peor 1% de lecturas. Si P1 es bajo, hay tirones puntuales aunque el promedio sea bueno.</p>
     <div class="chart-container"><canvas id="fpsChart"></canvas></div>
@@ -492,6 +556,8 @@ $excessiveCalloutHtml
         <div class="stat-pill"><span class="stat-pill-label">P99</span><span class="stat-pill-value ${cls(p99FrameTime.toInt(), 50, 17, "r")}">${fmtUS("%.1f", p99FrameTime)}ms</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Jank (&gt;16ms)</span><span class="stat-pill-value warn">${jank}</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Stutter (&gt;100ms)</span><span class="stat-pill-value bad">${stutter}</span></div>
+        $kpiFrameTimeP1Html
+        $kpiFrameTimeP01Html
     </div>
     <div class="chart-container"><canvas id="ftChart"></canvas></div>
 </section>
@@ -595,6 +661,8 @@ $fpowerSectionHtml
 
 $eventsHtml
 
+$kpiExportButtonsHtml
+
 <section id="sec-stats" class="card">
     <div class="card-header"><h2>&#128200; Estadisticas Detalladas</h2></div>
     <div class="expandable open">
@@ -677,6 +745,7 @@ ${if (info?.platform == com.gameperf.desktop.core.model.DevicePlatform.IOS) """
     </div>
 </section>
 """ else ""}
+$kpiCaveatsHtml
 <footer class="report-footer">
     <div class="footer-logo">Game Performance Tool</div>
     <p>v${AppVersion.NAME} — Informe generado el ${SimpleDateFormat("dd/MM/yyyy 'a las' HH:mm:ss").format(Date())}</p>
