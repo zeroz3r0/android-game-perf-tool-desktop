@@ -20,6 +20,8 @@ import com.gameperf.desktop.core.model.NetworkDiagnostic
 import com.gameperf.desktop.core.model.NetworkUnavailableReason
 import com.gameperf.desktop.core.model.ThermalDiagnostic
 import com.gameperf.desktop.core.model.ThermalUnavailableReason
+import com.gameperf.desktop.core.model.WakeLocksDiagnostic
+import com.gameperf.desktop.core.model.WakeLocksUnavailableReason
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
@@ -31,6 +33,13 @@ import java.util.Locale
 import java.util.UUID
 
 object ReportGenerator {
+
+    /**
+     * v4.6.0 — Google Play Vitals 2024 wake-locks "bad behavior" floor in hours.
+     * Per engram #424 the gate is >2h in 24h screen-off. v1 single-session
+     * proxy uses this same threshold as an early-warning anchor.
+     */
+    private const val WAKE_LOCKS_VITALS_HOURS_FLOOR: Double = 2.0
 
     // ══════════ EMBEDDED ASSETS (offline Chart.js) ══════════
     // Loaded once per process via `by lazy` (thread-safe, SYNCHRONIZED mode by default).
@@ -148,6 +157,18 @@ object ReportGenerator {
         networkTxHistory: List<Long> = emptyList(),
         maxNetworkRxBytes: Long = -1L,
         maxNetworkTxBytes: Long = -1L,
+        // v4.6.0 — `vitals-rate-and-wakelocks` (spec WLK-001 + design §7).
+        // All defaulted so legacy callers (UI, pre-v4.6.0 `.gameperf`
+        // re-renders, every existing report test) produce byte-equivalent
+        // output. Card renders only when
+        //   (wakeLocksAvailable && wakeLocksScreenOffMs > 0)
+        // OR
+        //   (!wakeLocksAvailable && wakeLocksDiagnostic != null)
+        // per design §7 (mirrors the v4.6.x network precedent).
+        wakeLocksAvailable: Boolean = false,
+        wakeLocksDiagnostic: WakeLocksDiagnostic? = null,
+        wakeLocksScreenOffMs: Long = -1L,
+        wakeLocksScreenOnMs: Long = -1L,
         // SDD shareable-html-report Block F (v4.6) — KPI scoring sections.
         // All defaulted so legacy callers (UI, pre-v4.6 `.gameperf`
         // re-renders, every existing report test) produce byte-equivalent
@@ -311,6 +332,13 @@ object ReportGenerator {
         //  - !available && diagnostic != null -> N/D card + Spanish banner.
         //  - available && history.isNotEmpty()  -> numeric card + chart canvas.
         //  - everything else -> "".
+        val wakeLocksSectionHtml = wakeLocksSection(
+            screenOffMs = wakeLocksScreenOffMs,
+            screenOnMs = wakeLocksScreenOnMs,
+            available = wakeLocksAvailable,
+            diagnostic = wakeLocksDiagnostic,
+        )
+
         val networkSectionHtml = networkSection(
             rxHistory = networkRxHistory,
             txHistory = networkTxHistory,
@@ -714,6 +742,8 @@ $fpowerSectionHtml
 $gpuSectionHtml
 
 $networkSectionHtml
+
+$wakeLocksSectionHtml
 
 <section class="card">
     <div class="card-header"><h2>&#128267; Bateria</h2></div>
@@ -2133,6 +2163,100 @@ $cards
 </section>"""
         }
         return ""
+    }
+
+    /**
+     * v4.6.0 — Render the Wake Locks `<section>` HTML for the
+     * `vitals-rate-and-wakelocks` change. Returns the empty string when
+     * there's nothing to render (matches gpu/network/fpower precedent so the
+     * caller can splat unconditionally).
+     *
+     * Render matrix (mirrors networkSection / gpuSection):
+     *  - `!available && diagnostic != null` -> N/D card + diagnostic banner.
+     *  - `available && screenOffMs > 0` -> numeric card with h:m total +
+     *    Vitals caveat about single-session vs cross-session semantics.
+     *  - everything else -> empty string (no card).
+     *
+     * Voice register: castellano tuteo formal ("ten en cuenta",
+     * "tu juego") — matches the README in-app convention.
+     */
+    private fun wakeLocksSection(
+        screenOffMs: Long,
+        screenOnMs: Long,
+        available: Boolean,
+        diagnostic: WakeLocksDiagnostic?,
+    ): String {
+        if (!available && diagnostic != null) {
+            return """
+<section id="sec-wake-locks" class="card wake-locks-card wake-locks-unavailable">
+    <div class="card-header">
+        <h2>&#128268; Wake locks</h2>
+    </div>
+    <p class="card-desc">Tiempo acumulado de wake locks parciales con pantalla apagada (Google Play Vitals 2024 — penaliza ≥2h en 24h screen-off).</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Total screen-off</span><span class="stat-pill-value">N/D</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Total screen-on</span><span class="stat-pill-value">N/D</span></div>
+    </div>
+    ${wakeLocksDiagnosticBanner(diagnostic)}
+</section>"""
+        }
+        if (available && screenOffMs > 0L) {
+            val offHours = screenOffMs / 3_600_000.0
+            val onHours = if (screenOnMs > 0L) screenOnMs / 3_600_000.0 else 0.0
+            val offText = fmtUS("%.1fh", offHours)
+            val onText = if (onHours > 0.0) fmtUS("%.1fh", onHours) else "0.0h"
+            val vitalsBadge = if (offHours >= WAKE_LOCKS_VITALS_HOURS_FLOOR) {
+                """<div class="stat-pill"><span class="stat-pill-label">Vitals</span><span class="stat-pill-value bad">&#9888; &ge;2h</span></div>"""
+            } else ""
+            return """
+<section id="sec-wake-locks" class="card wake-locks-card">
+    <div class="card-header">
+        <h2>&#128268; Wake locks</h2>
+    </div>
+    <p class="card-desc">Tiempo acumulado de wake locks parciales atribuidos al paquete del juego (leído de <code>dumpsys batterystats --charged</code>).</p>
+    <div class="stats-row">
+        <div class="stat-pill"><span class="stat-pill-label">Total screen-off</span><span class="stat-pill-value">$offText</span></div>
+        <div class="stat-pill"><span class="stat-pill-label">Total screen-on</span><span class="stat-pill-value">$onText</span></div>
+        $vitalsBadge
+    </div>
+    <p class="hint">&#8505; <strong>Alerta temprana Vitals (v1):</strong> esta lectura corresponde a una única sesión. Google Play Vitals oficial mide el % de usuarios cross-session que cruzaron el umbral de 2h en 24h screen-off — la métrica que penaliza con throttling de descubrimiento. v1 te avisa cuando una sesión sola ya cruza 2h, así sabés que esa configuración va a generar penalizaciones en producción.</p>
+</section>"""
+        }
+        return ""
+    }
+
+    /**
+     * v4.6.0 — Spanish-tuteo-formal diagnostic copies for the 4
+     * [WakeLocksUnavailableReason] variants. Matches the README in-app
+     * castellano formal convention (CLAUDE.md "Convención de idiomas").
+     */
+    private fun wakeLocksDiagnosticBanner(diagnostic: WakeLocksDiagnostic): String {
+        val reasonText = when (diagnostic.reason) {
+            WakeLocksUnavailableReason.PKG_NOT_FOUND ->
+                "El paquete del juego no aparece en la salida de batterystats. " +
+                    "Es probable que el juego no se haya abierto entre el último " +
+                    "<code>adb shell am force-stop</code> y esta captura — sin ejecución no hay wake locks que reportar."
+            WakeLocksUnavailableReason.PARSE_FAILED ->
+                "No pudimos leer batterystats. Esto suele pasar en builds de usuario " +
+                    "donde dumpsys está restringido por permiso o el output viene truncado. " +
+                    "Probá una build userdebug o un dispositivo con dumpsys accesible."
+            WakeLocksUnavailableReason.OUT_OF_RANGE_VALUE ->
+                "Lectura fuera del rango razonable (0 a 24h). Suele ser un reset de " +
+                    "contadores mid-session o un formato inesperado de duración. El sistema " +
+                    "descartó las entradas anómalas para no contaminar los totales."
+            WakeLocksUnavailableReason.CAPTURE_THREW ->
+                "Error inesperado capturando wake locks. La métrica de FPS y el resto " +
+                    "de la sesión siguen siendo válidos — solo este probe falló. Reportá modelo + " +
+                    "versión de Android para que podamos investigarlo."
+        }
+        val probedBlock = if (diagnostic.probedCommand.isEmpty()) "" else """
+        <p class="wake-locks-diag-sources-label">Comando intentado:</p>
+        <p><code>${esc(diagnostic.probedCommand)}</code></p>"""
+        return """
+    <div class="callout callout-warning wake-locks-diag-banner">
+        <strong>&#9888; Wake locks no disponibles.</strong>
+        <p>$reasonText</p>$probedBlock
+    </div>"""
     }
 
     private fun gpuSection(

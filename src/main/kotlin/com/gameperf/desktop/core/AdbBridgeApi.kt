@@ -8,6 +8,7 @@ import com.gameperf.desktop.core.model.GpuSnapshot
 import com.gameperf.desktop.core.model.MemSnapshot
 import com.gameperf.desktop.core.model.NetworkSnapshot
 import com.gameperf.desktop.core.model.ThermalSnapshot
+import com.gameperf.desktop.core.model.WakeLocksSnapshot
 import java.io.File
 
 /**
@@ -163,6 +164,27 @@ interface AdbBridgeApi {
      */
     fun getUidForPackage(deviceId: String, pkg: String): Int?
 
+    /**
+     * v4.6.0 — Capture a [WakeLocksSnapshot] for the package [pkg] on
+     * [deviceId] via `adb shell dumpsys batterystats --charged <pkg>` parsed
+     * by [WakeLocksParser].
+     *
+     * Single source + try/catch resilience pattern: the entire body is
+     * wrapped in try/catch; any thrown exception is captured and returned as
+     * `WakeLocksSnapshot(wakeLocksAvailable=false,
+     * diagnostic.reason=CAPTURE_THREW)`. Mirrors the v4.5.0 GPU + v4.6.0
+     * Network precedent.
+     *
+     * Android-only by design: there is no iOS equivalent to `dumpsys
+     * batterystats`. iOS callers SHOULD NOT invoke this — the ViewModel wire
+     * gates on `!isIosDevice` before calling.
+     *
+     * See `sdd/vitals-rate-and-wakelocks/spec` WLK-001 + `design` §4.
+     *
+     * @since v4.6.0
+     */
+    fun captureWakeLocks(deviceId: String, pkg: String): WakeLocksSnapshot
+
     fun startScreenRecord(
         deviceId: String,
         sessionId: String,
@@ -276,6 +298,9 @@ class RealAdbBridge : AdbBridgeApi {
 
     override fun getUidForPackage(deviceId: String, pkg: String): Int? =
         AdbBridge.getUidForPackage(deviceId, pkg)
+
+    override fun captureWakeLocks(deviceId: String, pkg: String): WakeLocksSnapshot =
+        AdbBridge.captureWakeLocks(deviceId, pkg)
 
     override fun startScreenRecord(
         deviceId: String, sessionId: String, segment: Int,

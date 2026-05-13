@@ -265,6 +265,18 @@ data class SessionResult(
     val networkTxHistory: List<Long> = emptyList(),
     val maxNetworkRxBytes: Long = -1L,
     val maxNetworkTxBytes: Long = -1L,
+    // v4.6.0 -- Wake locks single-session totals (`vitals-rate-and-wakelocks`,
+    // spec WLK-001). Persisted on the SessionResult so the report generator
+    // (Phase 5) and the HistoryEntry builder both see the same source-of-truth
+    // values. The [wakeLocksAvailable] default is `false` (mirror GPU/network
+    // precedent — pre-v4.6.0 sessions never captured wake locks).
+    // [wakeLocksScreenOffMs] / [wakeLocksScreenOnMs] use the `-1L` sentinel
+    // matching [com.gameperf.desktop.core.model.WakeLocksSnapshot] so an empty
+    // capture round-trips cleanly through `.gameperf` JSON.
+    val wakeLocksAvailable: Boolean = false,
+    val wakeLocksScreenOffMs: Long = -1L,
+    val wakeLocksScreenOnMs: Long = -1L,
+    val wakeLocksDiagnostic: com.gameperf.desktop.core.model.WakeLocksDiagnostic? = null,
 )
 
 /**
@@ -307,6 +319,18 @@ class AppViewModel(
          * the user has visible feedback that something is wrong.
          */
         internal const val LAST_KNOWN_FPS_WINDOW_MS = 1_500L
+
+        /**
+         * v4.6.0 — Wake-locks cadence (`vitals-rate-and-wakelocks`).
+         *
+         * At the 500ms outer loop cadence, 30 ticks ≈ 15s. `dumpsys
+         * batterystats` is 200-500ms (much heavier than the medium-tier
+         * sysfs reads at <10ms) so we poll the slowest tier — wake locks
+         * are accumulator semantics where the FINAL value is what matters
+         * (Vitals gate is >2h absolute). See `sdd/vitals-rate-and-
+         * wakelocks/design` §5 cadence table.
+         */
+        internal const val WAKE_LOCKS_POLL_EVERY_N_TICKS = 30
 
         /**
          * v4.2.6: infer the game's intended target FPS from the observed avg + max.
@@ -428,6 +452,15 @@ class AppViewModel(
         var lastNetwork: com.gameperf.desktop.core.model.NetworkSnapshot =
             com.gameperf.desktop.core.model.NetworkSnapshot()
         var resolvedUid: Int = -1
+
+        // ===== Wake locks (v4.6.0, `vitals-rate-and-wakelocks`) =====
+        // Polled every 30 ticks (~15s) via [resolveWakeLocks]. Default =
+        // "unavailable" (wakeLocksAvailable=false, sentinel -1L ms, null
+        // diagnostic). Mirrors GPU / Network precedent — pre-v4.6.0 sessions
+        // never captured wake locks so this default is what an empty capture
+        // surfaces to the SessionResult builder below.
+        var lastWakeLocks: com.gameperf.desktop.core.model.WakeLocksSnapshot =
+            com.gameperf.desktop.core.model.WakeLocksSnapshot()
 
         // ===== Loop state =====
         var iterCount: Int = 0
@@ -989,6 +1022,25 @@ class AppViewModel(
     }
 
     /**
+     * v4.6.0 — Resolve the wake-locks snapshot for the medium-slow tier
+     * (every ~15s — 30 ticks at 500ms cadence). Extracted as a helper so the
+     * runCaptureLoop call-site stays a single statement, keeping the
+     * surrounding CCN flat. Mirrors [resolveNetworkUid] precedent.
+     *
+     * The bridge itself wraps any exception in a CAPTURE_THREW diagnostic
+     * (single source + try/catch resilience pattern) so this helper has no
+     * try/catch of its own — keeps it pure-ish (only acc mutation upstream).
+     *
+     * iOS gate lives at the call-site (the helper is never invoked from the
+     * iOS branch); duplicating it here would invite drift.
+     */
+    private fun resolveWakeLocks(
+        deviceId: String,
+        pkg: String,
+    ): com.gameperf.desktop.core.model.WakeLocksSnapshot =
+        adb.captureWakeLocks(deviceId, pkg)
+
+    /**
      * v4.5.0 — Main capture sampling loop (H.7 Phase 3.1 extract).
      *
      * Runs the per-tick metrics sampling pipeline until [shouldStop] flips true or
@@ -1120,6 +1172,21 @@ class AppViewModel(
                     // default unavailable state — zero shell calls for the
                     // rest of the session.
                     acc.lastNetwork = resolveNetworkUid(acc, deviceId, pkg)
+                    if (shouldStop) break
+                }
+
+                // MEDIUM-SLOW TIER (every ~15s): wake locks (v4.6.0,
+                // `vitals-rate-and-wakelocks`). `dumpsys batterystats` is
+                // 200-500ms vs the medium-tier sysfs reads at <10ms, so we
+                // poll the slowest tier — wake locks are accumulator
+                // semantics where the FINAL value is what matters (Vitals
+                // gate is >2h absolute). The bridge owns try/catch and
+                // returns CAPTURE_THREW on failure (mirror GPU/Network).
+                // Single source: ONE call site, ONE helper, ONE branch —
+                // detekt CCN of [runCaptureLoop] stays flat (D7 protection).
+                val runWakeLocks = acc.iterCount % WAKE_LOCKS_POLL_EVERY_N_TICKS == 0
+                if (runWakeLocks) {
+                    acc.lastWakeLocks = resolveWakeLocks(deviceId, pkg)
                     if (shouldStop) break
                 }
 
@@ -2204,6 +2271,18 @@ class AppViewModel(
                 networkTxHistory = acc.networkTxHistory.toList(),
                 maxNetworkRxBytes = if (acc.networkRxHistory.isNotEmpty()) acc.networkRxHistory.max() else -1L,
                 maxNetworkTxBytes = if (acc.networkTxHistory.isNotEmpty()) acc.networkTxHistory.max() else -1L,
+                // v4.6.0 — Wake locks (`vitals-rate-and-wakelocks`, spec
+                // WLK-001). Persist the latest snapshot's totals + diagnostic
+                // on SessionResult so the report generator (Phase 5) and the
+                // HistoryEntry builder both see the same source-of-truth
+                // values. Sentinels (-1L ms, false available) preserved on
+                // unavailable path mirror the GPU / Network precedent.
+                wakeLocksAvailable = acc.lastWakeLocks.wakeLocksAvailable,
+                wakeLocksScreenOffMs = if (acc.lastWakeLocks.wakeLocksAvailable)
+                    acc.lastWakeLocks.totalScreenOffMs else -1L,
+                wakeLocksScreenOnMs = if (acc.lastWakeLocks.wakeLocksAvailable)
+                    acc.lastWakeLocks.totalScreenOnMs else -1L,
+                wakeLocksDiagnostic = acc.lastWakeLocks.diagnostic,
             )
 
             // P95 frame time
@@ -2312,6 +2391,16 @@ class AppViewModel(
                 networkRxHistory = _result.value.networkRxHistory,
                 networkTxHistory = _result.value.networkTxHistory,
                 networkDiagnostic = _result.value.networkDiagnostic,
+                // v4.6.0 — `vitals-rate-and-wakelocks` (spec WLK-001).
+                // Mirror of [SessionResult.wakeLocks*] fields. Same single-
+                // source-of-truth pattern via _result.value so a future
+                // refactor that drops a field at the SessionResult build
+                // site is caught by the `.gameperf` round-trip test at the
+                // HistoryEntry boundary (mirrors v4.6.x network mirror).
+                wakeLocksAvailable = _result.value.wakeLocksAvailable,
+                wakeLocksScreenOffMs = _result.value.wakeLocksScreenOffMs,
+                wakeLocksScreenOnMs = _result.value.wakeLocksScreenOnMs,
+                wakeLocksDiagnostic = _result.value.wakeLocksDiagnostic,
             )
             val deferredForDialog = analyzePendingEviction(pendingEntry)
             if (!deferredForDialog) {

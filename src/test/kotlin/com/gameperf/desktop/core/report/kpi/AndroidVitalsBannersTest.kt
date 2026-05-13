@@ -121,4 +121,83 @@ class AndroidVitalsBannersTest {
         )
         assertEquals("", renderVitalsBanner(report, durationSec = 60))
     }
+
+    // ===== v4.6.0 — vitals-rate-and-wakelocks =====
+
+    @Test
+    fun `crash count above zero renders crash rate breach`() {
+        val report = reportOf(kpi(KpiId.CRASH_COUNT, 1.0))
+        val html = renderVitalsBanner(report, durationSec = 60)
+        assertTrue(
+            html.contains("Crash") || html.contains("crash"),
+            "expected breach to mention crash; got:\n$html",
+        )
+        assertTrue(
+            html.contains("1.09%"),
+            "expected Vitals 1.09% floor citation; got:\n$html",
+        )
+    }
+
+    @Test
+    fun `crash count zero does not render crash rate breach`() {
+        val report = reportOf(kpi(KpiId.CRASH_COUNT, 0.0))
+        val html = renderVitalsBanner(report, durationSec = 60)
+        assertFalse(
+            html.contains("Crash") || html.contains("crash rate"),
+            "expected zero crashes to NOT emit a crash banner; got:\n$html",
+        )
+    }
+
+    @Test
+    fun `anr count above zero renders ANR rate users breach line`() {
+        val report = reportOf(kpi(KpiId.ANR_COUNT, 1.0))
+        val html = renderVitalsBanner(report, durationSec = 60)
+        // Existing "ANR ≥0.47%" line (rate-based) STILL fires; this new line
+        // adds the single-session users-rate proxy citation.
+        assertTrue(
+            html.contains("0.47%"),
+            "expected Vitals 0.47% ANR floor citation; got:\n$html",
+        )
+    }
+
+    @Test
+    fun `wake locks screen-off above 2h renders wake locks breach`() {
+        val report = reportOf()  // no kpiScores needed — uses SessionResult-level data
+        val html = renderVitalsBanner(
+            report,
+            durationSec = 600,
+            wakeLocksScreenOffMs = 7_500_000L,  // ~2h 5m, above floor
+        )
+        assertTrue(html.isNotEmpty(), "expected non-empty banner; got empty")
+        assertTrue(
+            html.contains("wake locks", ignoreCase = true) || html.contains("Wake locks"),
+            "expected wake-locks line; got:\n$html",
+        )
+        assertTrue(
+            html.contains("2h") || html.contains("2 h") || html.contains("2.0h"),
+            "expected '2h' threshold citation; got:\n$html",
+        )
+    }
+
+    @Test
+    fun `wake locks screen-off below 2h does not breach`() {
+        val report = reportOf()
+        val html = renderVitalsBanner(
+            report,
+            durationSec = 600,
+            wakeLocksScreenOffMs = 3_600_000L,  // exactly 1h — below floor
+        )
+        assertFalse(
+            html.contains("wake locks", ignoreCase = true),
+            "expected NO wake-locks banner below 2h floor; got:\n$html",
+        )
+    }
+
+    @Test
+    fun `wake locks default minus one ms does not breach`() {
+        // Default sentinel propagates from SessionResult when capture failed.
+        val report = reportOf()
+        val html = renderVitalsBanner(report, durationSec = 60, wakeLocksScreenOffMs = -1L)
+        assertEquals("", html, "no banner when wake locks unavailable")
+    }
 }

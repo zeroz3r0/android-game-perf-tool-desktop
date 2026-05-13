@@ -1,0 +1,32 @@
+Battery History (15% used, 1234 used of 8201, 64 pos):
+  ...elided history block...
+
+Statistics since last charge:
+  System starts: 1, currently on battery: false
+  Estimated battery capacity: 5000 mAh
+  Time on battery: 2h 30m 15s 100% (1.2x) realtime, 2h 25m 12s (96.7%) uptime
+  Time on battery screen off: 1h 50m 20s (73.4%) realtime, 1h 48m 1s uptime
+  Screen brightnesses:
+    dark 14m 12s (9.5%)
+    dim 0ms (0.0%)
+    medium 1h 35m 0s (78.2%)
+    light 25m 3s (12.3%)
+    bright 0ms (0.0%)
+
+  All kernel wake locks:
+  Kernel Wake lock PowerManagerService.WakeLocks: 1m 5s (32 times) realtime
+
+  All partial wake locks:
+  Wake lock 10123 *job*/com.example.game/com.example.game.bg.AnalyticsJob: 1h 22m 17s partial realtime (45 times) max=15m 12s
+  Wake lock 10123 com.example.game:AnalyticsLock: 23m 8s partial realtime (12 times) max=5m 30s
+  Wake lock 10123 com.example.game:NetworkSyncLock: 7m 45s partial realtime (3 times) max=4m
+  Wake lock 10456 com.unrelated.app:OtherLock: 3m 2s partial realtime (1 times) max=3m 2s
+  Wake lock 1000 *job*/android/com.android.server.task.NetworkScheduler: 30m 12s partial realtime
+  Wake lock 10789 com.another.app:BackgroundFetch: 12m 45s partial realtime (8 times)
+
+  Process com.example.game:
+    CPU: 12m 8s usr + 4m 21s krn
+    Foreground services: 1h 5m 12s
+
+  Per-PID Stats:
+    PID 4521 wake time: 1m 32s

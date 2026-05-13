@@ -1,0 +1,15 @@
+Battery History (4% used, 412 used of 8200, 32 pos):
+  ...elided low-tier history block (Android 11)...
+
+Statistics since last charge:
+  System starts: 1, currently on battery: false
+  Estimated battery capacity: 7040 mAh
+  Time on battery: 50m 15s 95% (0.9x) realtime
+
+  All kernel wake locks:
+  Kernel Wake lock PowerManagerService.WakeLocks: 8s (4 times) realtime
+
+  All partial wake locks:
+  Wake lock 10333 com.example.game:LowTierLock: 15m 30s partial realtime (3 times)
+  Wake lock 10333 *job*/com.example.game/.BackgroundJob: 8m 12s partial realtime (2 times)
+  Wake lock 10100 com.somethingelse:Foo: 1m partial realtime

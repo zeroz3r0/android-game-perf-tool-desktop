@@ -7,6 +7,7 @@ import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.FPowerDiagnostic
 import com.gameperf.desktop.core.model.GpuDiagnostic
 import com.gameperf.desktop.core.model.NetworkDiagnostic
+import com.gameperf.desktop.core.model.WakeLocksDiagnostic
 import com.gameperf.desktop.viewmodel.DetectionMode
 import com.gameperf.desktop.viewmodel.MarkerType
 import com.gameperf.desktop.viewmodel.SessionMarker
@@ -251,6 +252,18 @@ object SessionHistory {
         val networkRxHistory: List<Long> = emptyList(),
         val networkTxHistory: List<Long> = emptyList(),
         val networkDiagnostic: NetworkDiagnostic? = null,
+        // v4.6.0 — `vitals-rate-and-wakelocks`. Single-session absolute wake-locks
+        // totals captured via `dumpsys batterystats --charged <pkg>`. Mirrors the
+        // GPU / network v4.5/v4.6 persistence pattern: `wakeLocksAvailable=false`
+        // is the safe default because pre-v4.6.0 sessions never captured wake
+        // locks (a pre-v4.6.0 `.gameperf` row hydrates as "no data"). Sentinels
+        // for [wakeLocksScreenOffMs] / [wakeLocksScreenOnMs] are `-1L` matching
+        // [com.gameperf.desktop.core.model.WakeLocksSnapshot]. The diagnostic
+        // payload nests through `Json { ignoreUnknownKeys = true }`.
+        val wakeLocksAvailable: Boolean = false,
+        val wakeLocksScreenOffMs: Long = -1L,
+        val wakeLocksScreenOnMs: Long = -1L,
+        val wakeLocksDiagnostic: WakeLocksDiagnostic? = null,
     )
 
     data class HistoryEntry(
@@ -343,6 +356,15 @@ object SessionHistory {
         val networkRxHistory: List<Long> = emptyList(),
         val networkTxHistory: List<Long> = emptyList(),
         val networkDiagnostic: NetworkDiagnostic? = null,
+        // v4.6.0 — `vitals-rate-and-wakelocks`. Domain mirror of the
+        // [SerializableEntry] wakeLocks* fields. Defaults align with the
+        // SerializableEntry side so a HistoryEntry constructed without naming
+        // these args stays semantically identical to a pre-v4.6.0 row
+        // (`wakeLocksAvailable=false`, sentinel `-1L` ms, null diagnostic).
+        val wakeLocksAvailable: Boolean = false,
+        val wakeLocksScreenOffMs: Long = -1L,
+        val wakeLocksScreenOnMs: Long = -1L,
+        val wakeLocksDiagnostic: WakeLocksDiagnostic? = null,
     )
 
     // ===== Conversion =====
@@ -399,6 +421,13 @@ object SessionHistory {
         networkRxHistory = networkRxHistory,
         networkTxHistory = networkTxHistory,
         networkDiagnostic = networkDiagnostic,
+        // v4.6.0 — `vitals-rate-and-wakelocks` domain → wire pass-through.
+        // Defaults preserve "no wake-locks data" for legacy HistoryEntry call
+        // sites that don't name these args (mirrors GPU / network precedent).
+        wakeLocksAvailable = wakeLocksAvailable,
+        wakeLocksScreenOffMs = wakeLocksScreenOffMs,
+        wakeLocksScreenOnMs = wakeLocksScreenOnMs,
+        wakeLocksDiagnostic = wakeLocksDiagnostic,
     )
 
     private fun SerializableEntry.toHistoryEntry() = HistoryEntry(
@@ -470,6 +499,14 @@ object SessionHistory {
         networkRxHistory = networkRxHistory,
         networkTxHistory = networkTxHistory,
         networkDiagnostic = networkDiagnostic,
+        // v4.6.0 — `vitals-rate-and-wakelocks` wire → domain pass-through.
+        // Missing keys on pre-v4.6.0 `.gameperf` rows hydrate as the
+        // SerializableEntry defaults (`wakeLocksAvailable=false`, etc.) via
+        // Json { ignoreUnknownKeys = true }.
+        wakeLocksAvailable = wakeLocksAvailable,
+        wakeLocksScreenOffMs = wakeLocksScreenOffMs,
+        wakeLocksScreenOnMs = wakeLocksScreenOnMs,
+        wakeLocksDiagnostic = wakeLocksDiagnostic,
     )
 
     // ===== Public API (unchanged contract) =====

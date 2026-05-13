@@ -242,6 +242,20 @@ object KpiCatalog {
             ),
             sourceCitation = "docs §3.6 PerfDog FPower <50 excellent / 50-65 acceptable / >65 bad",
         ),
+        Kpi(
+            id = KpiId.WAKE_LOCKS_RATE,
+            unit = "h",
+            category = Category.Resource,
+            direction = Direction.LOWER_IS_BETTER,
+            thresholds = mapOf(
+                DeviceTier.TOP to Threshold(target = 0.5, floor = 2.0),
+                DeviceTier.MID to Threshold(target = 0.5, floor = 2.0),
+                DeviceTier.LOW to Threshold(target = 0.5, floor = 2.0),
+            ),
+            sourceCitation = "Google Play Vitals 2024 — excessive partial wake locks >2h in 24h" +
+                " screen-off = bad behavior (engram #424). v1 single-session absolute hours" +
+                " proxy; v2 cross-session.",
+        ),
 
         // ══════════════════════════ Thermal ══════════════════════════
         Kpi(
@@ -317,6 +331,32 @@ object KpiCatalog {
                 DeviceTier.LOW to Threshold(target = 15.0, floor = 25.0),
             ),
             sourceCitation = "docs §3.1 Vitals slow-session-rate >25% bad (FPS-target-aware)",
+        ),
+        Kpi(
+            id = KpiId.CRASH_RATE_USERS,
+            unit = "%",
+            category = Category.Stability,
+            direction = Direction.LOWER_IS_BETTER,
+            thresholds = mapOf(
+                DeviceTier.TOP to Threshold(target = 0.0, floor = 1.09),
+                DeviceTier.MID to Threshold(target = 0.0, floor = 1.09),
+                DeviceTier.LOW to Threshold(target = 0.0, floor = 1.09),
+            ),
+            sourceCitation = "Google Play Vitals 2024 — user-perceived crash rate ≥1.09% = bad behavior" +
+                " (engram #424). v1 single-session proxy; v2 cross-session.",
+        ),
+        Kpi(
+            id = KpiId.ANR_RATE_USERS,
+            unit = "%",
+            category = Category.Stability,
+            direction = Direction.LOWER_IS_BETTER,
+            thresholds = mapOf(
+                DeviceTier.TOP to Threshold(target = 0.0, floor = 0.47),
+                DeviceTier.MID to Threshold(target = 0.0, floor = 0.47),
+                DeviceTier.LOW to Threshold(target = 0.0, floor = 0.47),
+            ),
+            sourceCitation = "Google Play Vitals 2024 — user-perceived ANR rate ≥0.47% = bad behavior" +
+                " (engram #424). v1 single-session proxy; v2 cross-session.",
         ),
 
         // ══════════════════════════ Responsiveness ══════════════════════════

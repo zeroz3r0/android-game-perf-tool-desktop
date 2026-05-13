@@ -30,6 +30,9 @@ import com.gameperf.desktop.core.model.NetworkDiagnostic
 import com.gameperf.desktop.core.model.NetworkSnapshot
 import com.gameperf.desktop.core.model.NetworkUnavailableReason
 import com.gameperf.desktop.core.model.ThermalSnapshot
+import com.gameperf.desktop.core.model.WakeLocksDiagnostic
+import com.gameperf.desktop.core.model.WakeLocksSnapshot
+import com.gameperf.desktop.core.model.WakeLocksUnavailableReason
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -847,6 +850,65 @@ open class FakeAdbBridge(
             diagnostic = diag,
         )
     }
+
+    // ===== v4.6.0 — Wake locks (vitals-rate-and-wakelocks) ==================
+
+    /**
+     * v4.6.0 — optional override for [captureWakeLocks]. When non-null, the
+     * fake returns this exact snapshot identity short-circuiting BEFORE any
+     * parser walk. Install via [installWakeLocksSnapshot] for tests that
+     * don't care about end-to-end parser flow (ViewModel wiring tests).
+     */
+    @Volatile
+    private var scriptedWakeLocks: WakeLocksSnapshot? = null
+
+    /**
+     * v4.6.0 builder — install a [WakeLocksSnapshot] fixture that
+     * [captureWakeLocks] returns identity. Mirrors [setGpu] / [setNetwork]
+     * precedent.
+     */
+    fun installWakeLocksSnapshot(snapshot: WakeLocksSnapshot): FakeAdbBridge {
+        scriptedWakeLocks = snapshot
+        return this
+    }
+
+    /**
+     * v4.6.0 — exception-injection hook. When the deviceId matches an entry
+     * here, [captureWakeLocks] throws the supplied exception so the
+     * try/catch CAPTURE_THREW resilience path can be tested without
+     * subclassing. Mirrors `networkThrowOn` / `gpuThrowOn`.
+     */
+    val wakeLocksThrowOn: MutableMap<String, Throwable> = mutableMapOf()
+
+    override fun captureWakeLocks(deviceId: String, pkg: String): WakeLocksSnapshot {
+        return try {
+            wakeLocksThrowOn[deviceId]?.let { throw it }
+            scriptedWakeLocks ?: defaultUnavailableWakeLocks(pkg)
+        } catch (_: Throwable) {
+            WakeLocksSnapshot(
+                totalScreenOffMs = -1L,
+                totalScreenOnMs = -1L,
+                partialLockCount = 0,
+                wakeLocksAvailable = false,
+                diagnostic = WakeLocksDiagnostic(
+                    probedCommand = "dumpsys batterystats --charged $pkg",
+                    reason = WakeLocksUnavailableReason.CAPTURE_THREW,
+                ),
+            )
+        }
+    }
+
+    private fun defaultUnavailableWakeLocks(pkg: String): WakeLocksSnapshot =
+        WakeLocksSnapshot(
+            totalScreenOffMs = -1L,
+            totalScreenOnMs = -1L,
+            partialLockCount = 0,
+            wakeLocksAvailable = false,
+            diagnostic = WakeLocksDiagnostic(
+                probedCommand = "dumpsys batterystats --charged $pkg",
+                reason = WakeLocksUnavailableReason.PKG_NOT_FOUND,
+            ),
+        )
 
     private companion object {
         /** Mirror of [AdbBridge]'s diagnostic cap so test sizes track production. */

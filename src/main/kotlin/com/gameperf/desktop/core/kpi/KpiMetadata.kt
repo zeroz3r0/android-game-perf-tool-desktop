@@ -48,6 +48,10 @@ enum class KpiId {
     NETWORK_TOTAL,
     BATTERY_DRAIN,
     FPOWER,
+    // v4.6.0 — single-session absolute hours of partial wake locks accumulated
+    // with the screen off, as a proxy for Google Play Vitals's "excessive partial
+    // wake locks" gate (>2h in any 24h window). Single source: KpiCatalog.ALL.
+    WAKE_LOCKS_RATE,
 
     // Thermal
     TEMP_AVG,
@@ -58,6 +62,12 @@ enum class KpiId {
     ANR_COUNT,
     CRASH_COUNT,
     SLOW_SESSION_RATE,
+    // v4.6.0 — Vitals-aware single-session proxies (sdd/vitals-rate-and-wakelocks).
+    // Naming matches Google Play Vitals semantics (cross-session user-perceived rate);
+    // v1 measures a single-session count/total as a proxy. v2 will roll up
+    // SessionHistory entries to compute the real rate.
+    CRASH_RATE_USERS,
+    ANR_RATE_USERS,
 
     // Responsiveness
     COLD_START_MS,

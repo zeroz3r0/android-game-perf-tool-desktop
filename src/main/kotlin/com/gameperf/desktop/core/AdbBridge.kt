@@ -13,6 +13,9 @@ import com.gameperf.desktop.core.model.NetworkDiagnostic
 import com.gameperf.desktop.core.model.NetworkSnapshot
 import com.gameperf.desktop.core.model.NetworkUnavailableReason
 import com.gameperf.desktop.core.model.ThermalSnapshot
+import com.gameperf.desktop.core.model.WakeLocksDiagnostic
+import com.gameperf.desktop.core.model.WakeLocksSnapshot
+import com.gameperf.desktop.core.model.WakeLocksUnavailableReason
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
@@ -1177,6 +1180,14 @@ object AdbBridge {
     private const val NETWORK_DUMPSYS_SHELL_TIMEOUT_MS: Long = 3000L
 
     /**
+     * v4.6.0 — Shell timeout for `dumpsys batterystats --charged <pkg>`.
+     * Empirically ~200-500ms on Pixel 8 with a fresh `--reset`; up to ~2s on
+     * older devices with a long battery history. Wake-locks parser is pure +
+     * cheap so the shell time dominates.
+     */
+    private const val WAKE_LOCKS_SHELL_TIMEOUT_MS: Long = 3000L
+
+    /**
      * v4.6.x — Capture a [NetworkSnapshot] of cumulative RX/TX bytes for the
      * game UID via per-device probe-once-then-cache (mirrors the v4.5.0 GPU
      * pattern).
@@ -1250,6 +1261,55 @@ object AdbBridge {
             UID_FROM_PACKAGE_LIST.find(output)?.groupValues?.get(1)?.toIntOrNull()
         } catch (_: Exception) {
             null
+        }
+    }
+
+    /**
+     * v4.6.0 — Capture a [WakeLocksSnapshot] for [pkg] on [deviceId] via
+     * `adb shell dumpsys batterystats --charged <pkg>`. Output is fed to
+     * [WakeLocksParser] (pure) which returns the snapshot.
+     *
+     * Single source + try/catch resilience pattern (mirrors v4.5.0 GPU +
+     * v4.6.0 Network). The whole body is wrapped in try/catch so that any
+     * adb spawn failure, process exception or OOM during parsing yields a
+     * [WakeLocksUnavailableReason.CAPTURE_THREW] snapshot — the rest of the
+     * capture loop keeps going.
+     *
+     * See `sdd/vitals-rate-and-wakelocks/design` §4.
+     *
+     * @since v4.6.0
+     */
+    fun captureWakeLocks(deviceId: String, pkg: String): WakeLocksSnapshot {
+        return try {
+            if (!isValidPackageName(pkg)) {
+                return WakeLocksSnapshot(
+                    totalScreenOffMs = -1L,
+                    totalScreenOnMs = -1L,
+                    partialLockCount = 0,
+                    wakeLocksAvailable = false,
+                    diagnostic = WakeLocksDiagnostic(
+                        probedCommand = "dumpsys batterystats --charged $pkg",
+                        reason = WakeLocksUnavailableReason.PARSE_FAILED,
+                    ),
+                )
+            }
+            val output = shell(
+                deviceId,
+                "dumpsys batterystats --charged $pkg",
+                timeoutMs = WAKE_LOCKS_SHELL_TIMEOUT_MS,
+            )
+            WakeLocksParser.parse(output, pkg)
+        } catch (_: Exception) {
+            WakeLocksSnapshot(
+                totalScreenOffMs = -1L,
+                totalScreenOnMs = -1L,
+                partialLockCount = 0,
+                wakeLocksAvailable = false,
+                diagnostic = WakeLocksDiagnostic(
+                    probedCommand = "dumpsys batterystats --charged $pkg",
+                    reason = WakeLocksUnavailableReason.CAPTURE_THREW,
+                ),
+            )
         }
     }
 

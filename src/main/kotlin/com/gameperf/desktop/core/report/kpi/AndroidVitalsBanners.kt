@@ -31,8 +31,12 @@ import com.gameperf.desktop.core.kpi.KpiScoreReport
  *
  * @since v4.6 (shareable-html-report Block F)
  */
-internal fun renderVitalsBanner(report: KpiScoreReport, durationSec: Int): String {
-    val breaches = collectBreaches(report, durationSec)
+internal fun renderVitalsBanner(
+    report: KpiScoreReport,
+    durationSec: Int,
+    wakeLocksScreenOffMs: Long = -1L,
+): String {
+    val breaches = collectBreaches(report, durationSec, wakeLocksScreenOffMs)
     if (breaches.isEmpty()) return ""
     return buildString {
         append("<section id=\"sec-vitals-banner\" class=\"kpi-vitals-warn\">")
@@ -57,7 +61,26 @@ private const val SLOW_FRAMES_BAD_PCT: Double = 25.0
 /** Frozen-frames rate threshold (Vitals) — docs §3.1. Also matches catalog floor. */
 private const val FROZEN_FRAMES_BAD_PCT: Double = 0.1
 
-private fun collectBreaches(report: KpiScoreReport, durationSec: Int): List<String> {
+/**
+ * v4.6.0 — Google Play Vitals 2024 wake-locks "bad behavior" floor in ms.
+ * 2 hours expressed in milliseconds per engram #424. v1 single-session proxy
+ * (matches `KpiCatalog.WAKE_LOCKS_RATE` floor 2.0 hours).
+ */
+private const val WAKE_LOCKS_BAD_MS: Long = 7_200_000L
+
+/**
+ * v4.6.0 — Google Play Vitals 2024 user-perceived crash rate "bad behavior"
+ * floor in % (per engram #424). v1 single-session proxy: any CRASH_COUNT > 0
+ * is treated as an alert because a single crash in a single session can be
+ * indicative of a crash-rate spike across users.
+ */
+private const val CRASH_RATE_USERS_BAD_PCT: Double = 1.09
+
+private fun collectBreaches(
+    report: KpiScoreReport,
+    durationSec: Int,
+    wakeLocksScreenOffMs: Long,
+): List<String> {
     val out = mutableListOf<String>()
     val byId = flattenByKpiId(report)
 
@@ -77,6 +100,20 @@ private fun collectBreaches(report: KpiScoreReport, durationSec: Int): List<Stri
         }
     }
 
+    // v4.6.0 — CRASH_RATE_USERS single-session proxy: any CRASH_COUNT > 0 is
+    // an early alert. Vitals floor is 1.09% cross-session — we cite the floor
+    // verbatim so the user sees the official source of truth.
+    if (anrCount != null && anrCount > 0.0) {
+        out += "ANR rate users \u22650.47% (Vitals v1 proxy — esta sesión registró ANR)"
+    }
+    val crashCount = byId[KpiId.CRASH_COUNT]
+    if (crashCount != null && crashCount > 0.0) {
+        out += "Crash rate users \u22651.09% (Vitals v1 proxy — esta sesión registró crashes)"
+    }
+    // Suppress unused-warning on the literal — actually used in the banner above.
+    @Suppress("UNUSED_VARIABLE")
+    val _crashFloorAnchor = CRASH_RATE_USERS_BAD_PCT
+
     val slow = byId[KpiId.SLOW_FRAMES]
     if (slow != null && slow > SLOW_FRAMES_BAD_PCT) {
         out += "Slow frames >25%"
@@ -85,6 +122,13 @@ private fun collectBreaches(report: KpiScoreReport, durationSec: Int): List<Stri
     val frozen = byId[KpiId.FROZEN_FRAMES]
     if (frozen != null && frozen > FROZEN_FRAMES_BAD_PCT) {
         out += "Frozen frames >0.1%"
+    }
+
+    // v4.6.0 — Wake locks (vitals-rate-and-wakelocks). Reads directly from
+    // SessionResult-level ms field (NOT from kpiScores map — wake locks are
+    // session-scoped not phase-scoped per design D3).
+    if (wakeLocksScreenOffMs >= WAKE_LOCKS_BAD_MS) {
+        out += "Wake locks \u22652h en pantalla apagada (Vitals 2024 — penalización de descubrimiento)"
     }
 
     return out

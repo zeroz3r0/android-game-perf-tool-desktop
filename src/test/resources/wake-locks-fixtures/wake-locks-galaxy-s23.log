@@ -1,0 +1,22 @@
+Battery History (8% used, 654 used of 8210, 88 pos):
+  ...elided Samsung-flavored history block...
+
+Statistics since last charge (Samsung One UI 6.1):
+  System starts: 2, currently on battery: false
+  Estimated battery capacity: 3900 mAh
+  Time on battery: 1h 5m 30s 70% (1.0x) realtime
+  Time on battery screen off: 35m 12s (53.7%) realtime
+
+  All kernel wake locks:
+  Kernel Wake lock PowerManagerService.WakeLocks: 32s (12 times) realtime
+  Kernel Wake lock event0-2188: 14s (3 times) realtime
+
+  All partial wake locks:
+   Wake lock 10892 *job*/com.example.game/com.example.game.firebase.FCMService: 45m 22s partial realtime (8 times) max=20m 12s
+   Wake lock 10892 com.example.game:CrashlyticsLock: 18m 33s partial realtime (4 times)
+   Wake lock 10892 *job*/com.example.game/com.unity3d.AnalyticsJob: 11m 4s partial realtime (2 times)
+   Wake lock 10645 com.competitor.app:HouseKeepingLock: 2m 12s partial realtime
+   Wake lock 1000 *job*/android/com.android.server.AlarmManager: 1m 5s partial realtime
+
+  Process com.example.game:
+    CPU: 8m 32s usr + 2m 18s krn
