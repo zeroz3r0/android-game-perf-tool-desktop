@@ -802,6 +802,39 @@ class AppViewModel(
         return iosScreenCaptureId
     }
 
+    /**
+     * H.7 Phase 2.2 — extracted from [startCapture]. Resets the event/warning flows
+     * and (when enabled by [Settings] and not on iOS) instantiates an
+     * [EventDetectorImpl], starts it on the shared capture [scope], and mirrors its
+     * StateFlows into our public surface.
+     *
+     * Behaviour is byte-equivalent to the prior inlined block: same flow resets,
+     * same Settings gate (`autoEventDetectionEnabled && !isIosDevice`), same field
+     * mutations (`eventDetector`), and the same two mirror launches.
+     */
+    private fun launchEventDetector(deviceId: String, pkg: String, isIosDevice: Boolean) {
+        // ═══ v4.4.0 — Auto event detection (Android only, gated by Settings) ═══
+        //
+        // The detector owns its own LogcatCapture + DumpsysPoller. We launch
+        // them on the same `scope` as the rest of the capture so cancellation
+        // propagates if the session is torn down. The bridge flows mirror the
+        // detector's StateFlows into our public surface.
+        //
+        // Behaviour when the flag is OFF: nothing is instantiated, no extra
+        // adb processes spawn, and `events`/`detectorWarnings` stay empty —
+        // identical to pre-v4.4.0 capture behaviour.
+        _events.value = emptyList()
+        _detectorWarnings.value = emptyList()
+        val settings = Settings.load()
+        if (settings.autoEventDetectionEnabled && !isIosDevice) {
+            val detector = EventDetectorImpl(bridge = adb)
+            detector.start(deviceId = deviceId, gamePackage = pkg, scope = scope)
+            eventDetector = detector
+            scope.launch { detector.events.collect { _events.value = it } }
+            scope.launch { detector.warnings.collect { _detectorWarnings.value = it } }
+        }
+    }
+
     fun init() {
         // Startup file-system cleanup runs on IO before the rest of init touches the
         // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
@@ -1136,26 +1169,7 @@ class AppViewModel(
             // event x-positions relative to capture origin without touching a private field.
             _captureStartMs.value = startTime
 
-            // ═══ v4.4.0 — Auto event detection (Android only, gated by Settings) ═══
-            //
-            // The detector owns its own LogcatCapture + DumpsysPoller. We launch
-            // them on the same `scope` as the rest of the capture so cancellation
-            // propagates if the session is torn down. The bridge flows mirror the
-            // detector's StateFlows into our public surface.
-            //
-            // Behaviour when the flag is OFF: nothing is instantiated, no extra
-            // adb processes spawn, and `events`/`detectorWarnings` stay empty —
-            // identical to pre-v4.4.0 capture behaviour.
-            _events.value = emptyList()
-            _detectorWarnings.value = emptyList()
-            val settings = Settings.load()
-            if (settings.autoEventDetectionEnabled && !isIosDevice) {
-                val detector = EventDetectorImpl(bridge = adb)
-                detector.start(deviceId = device.id, gamePackage = pkg, scope = scope)
-                eventDetector = detector
-                scope.launch { detector.events.collect { _events.value = it } }
-                scope.launch { detector.warnings.collect { _detectorWarnings.value = it } }
-            }
+            launchEventDetector(device.id, pkg, isIosDevice)
 
             // Chain recordings every ~175s (before the 180s screenrecord hard limit).
             //
