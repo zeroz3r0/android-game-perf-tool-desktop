@@ -110,9 +110,9 @@ private fun collectBreaches(
     if (crashCount != null && crashCount > 0.0) {
         out += "Crash rate users \u22651.09% (Vitals v1 proxy — esta sesión registró crashes)"
     }
-    // Suppress unused-warning on the literal — actually used in the banner above.
+    // Anchor reference so the import stays used (banner copy reads the literal text).
     @Suppress("UNUSED_VARIABLE")
-    val _crashFloorAnchor = CRASH_RATE_USERS_BAD_PCT
+    val crashFloorAnchor = CRASH_RATE_USERS_BAD_PCT
 
     val slow = byId[KpiId.SLOW_FRAMES]
     if (slow != null && slow > SLOW_FRAMES_BAD_PCT) {

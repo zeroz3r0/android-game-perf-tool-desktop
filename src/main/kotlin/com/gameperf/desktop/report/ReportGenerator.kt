@@ -362,7 +362,11 @@ object ReportGenerator {
             com.gameperf.desktop.core.report.kpi.renderKpiScoreSection(kpiReport!!)
         } else ""
         val kpiVitalsBannerHtml = if (kpiOn) {
-            com.gameperf.desktop.core.report.kpi.renderVitalsBanner(kpiReport!!, duration)
+            com.gameperf.desktop.core.report.kpi.renderVitalsBanner(
+                kpiReport!!,
+                duration,
+                wakeLocksScreenOffMs = wakeLocksScreenOffMs,
+            )
         } else ""
         val kpiPhaseBreakdownHtml = if (kpiOn) {
             com.gameperf.desktop.core.report.kpi.renderPhaseBreakdown(kpiReport!!)
