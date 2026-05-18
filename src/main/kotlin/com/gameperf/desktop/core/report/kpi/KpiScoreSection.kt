@@ -20,11 +20,13 @@ internal fun renderKpiScoreSection(report: KpiScoreReport): String = buildString
     append("<section id=\"sec-kpi-scoring\" class=\"kpi-scoring\">")
     append("<h2>Puntaje KPI</h2>")
 
-    // Overall card
+    // Overall card — band pill with a11y triad injected after the legacy
+    // band-name `<span>` (per RAG-002 — color + shape + castellano label).
     val overallClass = KpiBandColors.cssClassFor(report.sessionBand)
     append("<div class=\"kpi-overall-card $overallClass\">")
     append("<span class=\"kpi-overall-score\">${report.sessionScore}/100</span>")
     append("<span class=\"kpi-overall-band\">${report.sessionBand.name}</span>")
+    append(KpiCardRenderer.renderBandPill(report.sessionBand))
     append("</div>")
 
     // Phases table
@@ -51,6 +53,7 @@ internal fun renderKpiScoreSection(report: KpiScoreReport): String = buildString
             append("<div class=\"kpi-category-card $cls\">")
             append("<span class=\"kpi-category-name\">${cat.category.name}</span>")
             append("<span class=\"kpi-category-score\">${cat.score}/100</span>")
+            append(KpiCardRenderer.renderBandPill(cat.band))
             append("</div>")
         }
         append("</div>")

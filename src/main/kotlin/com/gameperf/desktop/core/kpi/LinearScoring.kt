@@ -65,3 +65,22 @@ fun scoreLinear(
     }
     return clamped.toInt()
 }
+
+/**
+ * Pure RAG-band classifier for a single KPI raw value.
+ *
+ * Composes `scoreLinear` (Model A) with `ComparisonEngine.band` trichotomy so
+ * that every render site uses a single source of truth for boundary semantics.
+ *
+ * Boundaries (inherited from `scoreLinear` + `ComparisonEngine.band`):
+ *   - `value == target` → score 100 → `Band.GREEN`
+ *   - `value == floor`  → score 0   → `Band.RED`
+ *   - mid-zone scores in `[60, 80) → AMBER`, `< 60 → RED`, `>= 80 → GREEN`
+ *
+ * Caller responsibility: filter null / -1L sentinels BEFORE invoking. NaN
+ * propagates to `Band.RED` (defensive, matches `scoreLinear(NaN) = 0`).
+ *
+ * @since v4.7 (html-report-rag-bands — RAG-001)
+ */
+fun bandFor(value: Double, threshold: Threshold, direction: Direction): Band =
+    ComparisonEngine.band(scoreLinear(value, threshold.target, threshold.floor, direction))

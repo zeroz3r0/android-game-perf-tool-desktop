@@ -57,4 +57,9 @@ val KPI_CSS: String = """
 .kpi-caveats{margin:24px 0;padding:16px 20px;border-radius:10px;background:rgba(15,23,42,0.55);border:1px solid rgba(148,163,184,0.08);font-size:13px;color:#94a3b8}
 .kpi-caveats h2{font-size:1rem;font-weight:700;color:#e2e8f0;margin-bottom:8px}
 .kpi-caveats p{margin-bottom:6px;line-height:1.5}
+.kpi-card-band{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;margin-left:8px;border-radius:6px;font-size:12px;font-weight:700}
+.kpi-card-band.kpi-band-green{background:${GREEN}20;color:$GREEN}
+.kpi-card-band.kpi-band-amber{background:${AMBER}20;color:$AMBER}
+.kpi-card-band.kpi-band-red{background:${RED}20;color:$RED}
+.kpi-card-band.kpi-na{opacity:0.5}
 """.trimIndent()

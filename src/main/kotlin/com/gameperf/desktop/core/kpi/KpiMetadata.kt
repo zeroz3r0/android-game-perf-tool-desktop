@@ -212,4 +212,13 @@ data class KpiScoreReport(
     val sessionBand: Band,
     val phases: List<PhaseScore>,
     val categories: List<CategoryScore>,
+    /**
+     * Device tier resolved for the session (v4.7+). Additive default `MID`
+     * preserves backward compatibility for legacy `.gameperf` JSON payloads
+     * that omit this field — kotlinx-serialization fills the default.
+     * Used by RAG band renderers to look up tier-specific thresholds.
+     *
+     * @since v4.7 (html-report-rag-bands)
+     */
+    val deviceTier: DeviceTier = DeviceTier.MID,
 )
