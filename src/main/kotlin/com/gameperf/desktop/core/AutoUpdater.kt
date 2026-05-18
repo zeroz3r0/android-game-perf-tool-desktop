@@ -658,10 +658,14 @@ object AutoUpdater {
 
     /**
      * PowerShell helper script that runs *elevated* via UAC. It:
-     *  1. waits up to 30 seconds for the running app to exit (matched by install dir prefix),
+     *  1. waits up to 120 seconds for the running app to exit (matched by the bundle's
+     *     specific launcher .exe + the bundled runtime\bin\java.exe — NOT any process
+     *     under the install dir, which used to misfire on unrelated java.exe in v4.6.0),
      *  2. copies the staged new JAR over the old one in the install dir's `app/` subdir,
      *  3. relaunches the native launcher .exe so the bundle's `.cfg` (Skiko paths, etc.) is honored,
-     *  4. logs every step to the path passed via `-LogPath` for post-mortem debugging.
+     *  4. logs every step to the path passed via `-LogPath` for post-mortem debugging,
+     *     including the surviving process names + PIDs if the timeout is hit so the user
+     *     has actionable evidence (closes bug #474 — repro 2026-05-18).
      *
      * The script is a CONSTANT template — per-update paths are passed as PowerShell
      * parameters at launch time (`-OldJar`, `-NewJar`, etc.), NOT baked into the body.
@@ -694,14 +698,25 @@ Write-Log "NewJar: ${'$'}NewJar"
 Write-Log "InstallDir: ${'$'}InstallDir"
 Write-Log "AppExe: ${'$'}AppExe"
 
-# 1. Wait for the running app to exit (max 30 s). We match by install dir prefix so
-#    we catch the launcher .exe AND any java.exe child started from the bundle.
-${'$'}timeoutSec = 30
+# 1. Wait for the running app to exit (max 120 s — bumped from 30 s in v4.6.1 because
+#    Compose/Skiko cleanup on Windows can take 5-15 s after exitProcess and was tripping
+#    the abort on real Program Files installs; bug #474).
+#    The filter is NARROW: only the bundle's launcher .exe (by basename) and the
+#    bundled JVM at <InstallDir>\runtime\bin\java.exe. The previous v4.6.0 filter
+#    matched ANY process whose Path started with ${'$'}InstallDir, which captured
+#    unrelated java.exe processes that happened to share the install dir's drive
+#    and also confused the wait when the user had other Java apps running.
+${'$'}timeoutSec = 120
+${'$'}launcherName = [System.IO.Path]::GetFileName(${'$'}AppExe)
+${'$'}bundledJvmPath = Join-Path ${'$'}InstallDir 'runtime\bin\java.exe'
 ${'$'}elapsed = 0.0
 ${'$'}stillRunning = ${'$'}null
 while (${'$'}elapsed -lt ${'$'}timeoutSec) {
     ${'$'}stillRunning = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        ${'$'}_.Path -and ${'$'}_.Path.StartsWith(${'$'}InstallDir, [System.StringComparison]::OrdinalIgnoreCase)
+        ${'$'}_.Path -and (
+            ((${'$'}_.Name + '.exe') -ieq ${'$'}launcherName) -or
+            ${'$'}_.Path.Equals(${'$'}bundledJvmPath, [System.StringComparison]::OrdinalIgnoreCase)
+        )
     }
     if (-not ${'$'}stillRunning) {
         Write-Log "App exited."
@@ -712,7 +727,8 @@ while (${'$'}elapsed -lt ${'$'}timeoutSec) {
 }
 
 if (${'$'}stillRunning) {
-    Write-Log "ERROR: App did not exit within ${'$'}timeoutSec seconds. Aborting."
+    ${'$'}survivors = (${'$'}stillRunning | ForEach-Object { ${'$'}_.Name + ' (PID ' + ${'$'}_.Id + ')' }) -join ', '
+    Write-Log "ERROR: App did not exit within ${'$'}timeoutSec seconds. Processes still alive: ${'$'}survivors. Aborting."
     exit 1
 }
 

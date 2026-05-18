@@ -14,6 +14,18 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.6.1] — 2026-05-18
+
+### Arreglos
+
+- **El AutoUpdater ya no se queda colgado en la actualizacion** — al pulsar "Actualizar" y dar el permiso de administrador, antes el helper esperaba solo 30 segundos a que la app se cerrase del todo y abortaba si Compose / Skiko tardaban mas en limpiar recursos nativos. Ahora espera hasta 120 segundos y filtra solo los procesos especificos del bundle (el launcher .exe + el java.exe dentro de `runtime\bin`), lo que evita confundir el JVM de la app con cualquier otro proceso `java.exe` que tengas corriendo en el sistema. Si aun asi falla, el log de la actualizacion (`~/GamePerf Reports/updates/last-update.log`) incluye la lista de procesos que siguen vivos con su PID para poder diagnosticar el problema. Cierra bug interno #474, repro confirmado 2026-05-18 13:19.
+
+### Detalles tecnicos
+
+- **`core/AutoUpdater.kt::UAC_HELPER_PS1`** — `$timeoutSec` 30 → 120. El filtro `Where-Object` ahora deriva `$launcherName = [System.IO.Path]::GetFileName($AppExe)` + `$bundledJvmPath = Join-Path $InstallDir 'runtime\bin\java.exe'` y matchea solo esos dos procesos (launcher .exe por basename + JVM bundleado por path exacto) en lugar de cualquier proceso bajo `$InstallDir`. Antes de `exit 1` se loguea la lista `Processes still alive: name (PID N), ...` para que el usuario pueda adjuntarla en un reporte.
+- **`viewmodel/UpdateDelegate.kt`** — `GRACE_BEFORE_EXIT_MS` extraido como `private const val = 3000L` (era literal `1500L` inline) para dar 3 s a Compose / Skiko cleanup antes de `exitProcess(0)`. Fix independiente del helper-side timeout — defensa en profundidad.
+- **Tests**: `AutoUpdaterHelperScriptTest` (NUEVO) cubre los tres constantes del helper (timeout = 120, filtro narrow con `$launcherName` + `$bundledJvmPath`, diagnostic log con `Processes still alive` + `PID`). `UpdateDelegateGraceTest` (NUEVO) pinea `GRACE_BEFORE_EXIT_MS = 3000L` via reflection y triangula con `> 1500L floor`. `AutoUpdaterElevationTest` se mantiene sin cambios (asserts sobre comportamiento del planner, no sobre constantes del helper body).
+
 ## [4.6.0] — 2026-05-18
 
 ### Que hay de nuevo

@@ -158,8 +158,11 @@ class UpdateDelegate(
                             "Cerrando GamePerf para aplicar la actualización con permisos de administrador. " +
                                 "Volverá a abrir automáticamente."
                         )
-                        // Give the user a beat to read the message before the window vanishes.
-                        delay(1500)
+                        // Give Compose/Skiko time to release native GL contexts + AWT EDT
+                        // BEFORE the JVM dies. v4.6.1: bumped 1500→3000 ms because the
+                        // legacy grace combined with the broad helper-side process filter
+                        // tripped the UAC helper's 30s abort (bug #474, repro 2026-05-18).
+                        delay(GRACE_BEFORE_EXIT_MS)
                         exitProcess(0)
                     }
                     result.success && result.needsManualRestart -> {
@@ -327,5 +330,21 @@ class UpdateDelegate(
 
         /** Maximum elapsed seconds shown in the watchdog status text. */
         private const val WATCHDOG_STATUS_MAX_SECONDS: Int = 8
+
+        /**
+         * v4.6.1 — Milliseconds the JVM lingers after surfacing the "Cerrando
+         * GamePerf..." status message and BEFORE calling `exitProcess(0)` on
+         * the elevated-exit branch.
+         *
+         * Bumped from 1500 → 3000 because Compose/Skiko cleanup on Windows
+         * bundles (native GL contexts, AWT EDT teardown) can take 5-15 s and
+         * the v4.6.0 1.5 s grace combined with the helper-side 30 s timeout +
+         * broad process filter caused the UAC helper to abort with `exit 1`
+         * even on successful UAC consent (bug #474, repro 2026-05-18).
+         *
+         * Pinned by [com.gameperf.desktop.viewmodel.UpdateDelegateGraceTest]
+         * via reflection — do NOT lower below the legacy 1500 ms floor.
+         */
+        private const val GRACE_BEFORE_EXIT_MS: Long = 3_000L
     }
 }
