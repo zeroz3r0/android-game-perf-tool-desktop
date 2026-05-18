@@ -201,4 +201,50 @@ class AndroidVitalsBannersTest {
         val html = renderVitalsBanner(report, durationSec = 60, wakeLocksScreenOffMs = -1L)
         assertEquals("", html, "no banner when wake locks unavailable")
     }
+
+    // ===== v4.7 (html-report-rag-bands — RAG-007) =====
+    // Banner thresholds now consume `KpiCatalog.byId(...).thresholds[MID].floor`
+    // as the single source of truth (closes engram followup #460). The previous
+    // local consts (`WAKE_LOCKS_BAD_MS`, `CRASH_RATE_USERS_BAD_PCT`,
+    // `ANR_RATE_USERS_BAD_PCT`) are deleted. Boundary semantics: the breach
+    // gate is INCLUSIVE at the catalog floor (mirrors `LinearScoring.bandFor`
+    // which maps `value == floor` → score 0 → Band.RED).
+
+    @Test
+    fun `wake locks at exactly catalog floor in ms is breach (inclusive)`() {
+        // Catalog floor: 2.0h → 7_200_000 ms. Inclusive policy: == floor breaches.
+        val floorMs = (com.gameperf.desktop.core.kpi.KpiCatalog
+            .byId(com.gameperf.desktop.core.kpi.KpiId.WAKE_LOCKS_RATE)
+            .thresholds[com.gameperf.desktop.core.kpi.DeviceTier.MID]!!.floor * 3_600_000L).toLong()
+        val report = reportOf()
+        val html = renderVitalsBanner(report, durationSec = 600, wakeLocksScreenOffMs = floorMs)
+        assertTrue(
+            html.contains("wake locks", ignoreCase = true) || html.contains("Wake locks"),
+            "expected wake-locks breach at exactly floor (inclusive); got:\n$html",
+        )
+    }
+
+    @Test
+    fun `wake locks one ms below floor does not breach (boundary 1_999h vs 2_001h)`() {
+        val floorMs = (com.gameperf.desktop.core.kpi.KpiCatalog
+            .byId(com.gameperf.desktop.core.kpi.KpiId.WAKE_LOCKS_RATE)
+            .thresholds[com.gameperf.desktop.core.kpi.DeviceTier.MID]!!.floor * 3_600_000L).toLong()
+        val report = reportOf()
+        val html = renderVitalsBanner(report, durationSec = 600, wakeLocksScreenOffMs = floorMs - 1L)
+        assertFalse(
+            html.contains("wake locks", ignoreCase = true),
+            "value just below floor must not breach; got:\n$html",
+        )
+    }
+
+    @Test
+    fun `wake locks gate is exactly floor times 3600000 (precision)`() {
+        // Multiply BEFORE `.toLong()` — verify the gate is exactly 7_200_000 for
+        // floor 2.0h, not 7_199_999 from a premature `.toLong()` rounding.
+        val floor = com.gameperf.desktop.core.kpi.KpiCatalog
+            .byId(com.gameperf.desktop.core.kpi.KpiId.WAKE_LOCKS_RATE)
+            .thresholds[com.gameperf.desktop.core.kpi.DeviceTier.MID]!!.floor
+        val expectedGateMs = (floor * 3_600_000L).toLong()
+        assertEquals(7_200_000L, expectedGateMs, "floor*3_600_000L must compute exactly 7_200_000")
+    }
 }

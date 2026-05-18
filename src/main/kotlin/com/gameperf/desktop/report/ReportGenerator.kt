@@ -10,8 +10,11 @@ import com.gameperf.desktop.core.devactions.DevActionItem
 import com.gameperf.desktop.core.events.Confidence
 import com.gameperf.desktop.core.events.DetectedEvent
 import com.gameperf.desktop.core.events.EventType
+import com.gameperf.desktop.core.kpi.DeviceTier
+import com.gameperf.desktop.core.kpi.FrameBudgets
 import com.gameperf.desktop.core.metrics.MetricsAggregates
 import com.gameperf.desktop.core.model.DeviceInfo
+import com.gameperf.desktop.core.report.kpi.i18n.ReportStrings
 import com.gameperf.desktop.core.model.FPowerDiagnostic
 import com.gameperf.desktop.core.model.FPowerUnavailableReason
 import com.gameperf.desktop.core.model.GpuDiagnostic
@@ -257,6 +260,30 @@ object ReportGenerator {
             allFrameTimes.count { it >= 100.0 }
         ).joinToString(",")
 
+        // v4.7 (html-report-rag-bands — RAG-003) — frame-time budget annotations.
+        // Renders dashed vlines at FrameBudgets.FPS_60_MS / FPS_30_MS (always),
+        // plus FPS_120_MS only when the resolved device tier == TOP. Labels are
+        // sourced from ReportStrings (single-source castellano). The 120fps line
+        // is gated to TOP tier per spec RAG-003 — MID/LOW devices never see it.
+        val ftTier: DeviceTier = kpiReport?.deviceTier ?: DeviceTier.MID
+        val ftBudget60 = FrameBudgets.FPS_60_MS
+        val ftBudget30 = FrameBudgets.FPS_30_MS
+        val ftBudget120 = FrameBudgets.FPS_120_MS
+        val ftBudgetAnnotationsJs = buildString {
+            append("b60:{type:'line',xMin:$ftBudget60,xMax:$ftBudget60,borderColor:'#64748b',borderWidth:1,borderDash:[5,3],label:{content:'${ReportStrings.BUDGET_60FPS}',display:true,position:'end',color:'#94a3b8',font:{size:10,weight:'600'},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:4}}")
+            append(",b30:{type:'line',xMin:$ftBudget30,xMax:$ftBudget30,borderColor:'#64748b',borderWidth:1,borderDash:[5,3],label:{content:'${ReportStrings.BUDGET_30FPS}',display:true,position:'end',color:'#94a3b8',font:{size:10,weight:'600'},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:4}}")
+            if (ftTier == DeviceTier.TOP) {
+                append(",b120:{type:'line',xMin:$ftBudget120,xMax:$ftBudget120,borderColor:'#64748b',borderWidth:1,borderDash:[5,3],label:{content:'${ReportStrings.BUDGET_120FPS}',display:true,position:'end',color:'#94a3b8',font:{size:10,weight:'600'},backgroundColor: IS_PRINT ? '#fff' : 'rgba(15,23,42,0.8)',padding:4}}")
+            }
+        }
+        // Dynamic Y-axis cap (RAG-008): max(measured_p99 * 1.1, FPS_60_MS * 1.1).
+        // Guarantees the 60fps budget line stays visible even when data is sub-budget.
+        // For empty frame data, fall back to a sensible default (50ms) so the chart
+        // does not collapse to zero height.
+        val ftP99Cap = if (allFrameTimes.isNotEmpty()) p99FrameTime else 50.0
+        val ftYMax = maxOf(ftP99Cap * 1.1, FrameBudgets.FPS_60_MS * 1.1)
+        val ftYMaxJs = fmtUS("%.2f", ftYMax)
+
         // Marker annotations for FPS chart — use custom color if available
         val markerAnnotationsJs = if (markers.isNotEmpty()) {
             markers.mapIndexed { i, m ->
@@ -370,6 +397,17 @@ object ReportGenerator {
         } else ""
         val kpiPhaseBreakdownHtml = if (kpiOn) {
             com.gameperf.desktop.core.report.kpi.renderPhaseBreakdown(kpiReport!!)
+        } else ""
+        // v4.7 (html-report-rag-bands — RAG-004) — per-phase distribution boxes.
+        // Renders a complementary section after `renderPhaseBreakdown` with one
+        // colored box per phase showing the median/p1 FPS pulled from the
+        // KPI scores. Returns "" when no phase carries a non-null `FPS_AVG`
+        // so legacy callers stay byte-equivalent (RAG-010).
+        val kpiPhaseDistributionHtml = if (kpiOn) {
+            com.gameperf.desktop.core.report.kpi.renderPhaseDistributionBoxes(
+                kpiReport!!,
+                kpiReport.deviceTier,
+            )
         } else ""
         val kpiCaveatsHtml = if (kpiOn) {
             com.gameperf.desktop.core.report.kpi.renderCaveats(kpiTier ?: deviceTier)
@@ -555,6 +593,8 @@ $kpiVitalsBannerHtml
 $kpiScoreSectionHtml
 
 $kpiPhaseBreakdownHtml
+
+$kpiPhaseDistributionHtml
 
 $excessiveCalloutHtml
 
@@ -949,7 +989,12 @@ var C = IS_PRINT ? COLORS_PRINT : COLORS_DARK;
   });
 })();
 """)
-            // Frame Time Histogram — print uses darker bar colors for contrast on white
+            // Frame Time Histogram — print uses darker bar colors for contrast on white.
+            // v4.7 (RAG-003): overlays dashed budget reference vlines at the FrameBudgets
+            // constants (16.6 / 33.3 / optional 8.3 on TOP tier) via the Chart.js
+            // annotation plugin. Labels come from ReportStrings (single-source castellano).
+            // Dynamic y-axis cap (RAG-008) is applied to `suggestedMax` so the budget
+            // lines stay in view even when all measured frame-times are sub-budget.
             if (ftBuckets.isNotEmpty()) append("""
 (function(){
   var barColors = IS_PRINT
@@ -961,7 +1006,7 @@ var C = IS_PRINT ? COLORS_PRINT : COLORS_DARK;
       labels:['<8ms (>120fps)','8-16ms (60-120fps)','16-33ms (30-60fps)','33-50ms (20-30fps)','50-100ms (<20fps)','>100ms (stutter)'],
       datasets:[{label:'Frames',data:[$ftBuckets],backgroundColor:barColors,borderRadius:6,borderSkipped:false,maxBarThickness: IS_PRINT ? 40 : 60}]
     },
-    options:{indexAxis:'y',...B,plugins:{...B.plugins,legend:{display:false}},scales:{x:{...B.scales.x},y:{...B.scales.y,ticks:{...B.scales.y.ticks,font:{size: IS_PRINT ? 10 : 11}}}}}
+    options:{indexAxis:'y',...B,plugins:{...B.plugins,legend:{display:false},annotation:{annotations:{$ftBudgetAnnotationsJs}}},scales:{x:{...B.scales.x,suggestedMax:$ftYMaxJs},y:{...B.scales.y,ticks:{...B.scales.y.ticks,font:{size: IS_PRINT ? 10 : 11}}}}}
   });
 })();
 """)

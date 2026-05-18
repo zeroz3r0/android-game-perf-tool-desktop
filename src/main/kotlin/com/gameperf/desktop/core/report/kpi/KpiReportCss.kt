@@ -62,4 +62,12 @@ val KPI_CSS: String = """
 .kpi-card-band.kpi-band-amber{background:${AMBER}20;color:$AMBER}
 .kpi-card-band.kpi-band-red{background:${RED}20;color:$RED}
 .kpi-card-band.kpi-na{opacity:0.5}
+.kpi-phase-distribution{margin:16px 0}
+.phase-dist-grid{display:flex;flex-wrap:wrap;gap:8px}
+.phase-dist-box{display:inline-block;min-width:160px;margin:6px;padding:10px;border-radius:8px;background:rgba(15,23,42,0.55);border-left:4px solid transparent}
+.phase-dist-box.kpi-band-green{border-left-color:$GREEN;background:${'$'}{GREEN}10}
+.phase-dist-box.kpi-band-amber{border-left-color:$AMBER;background:${'$'}{AMBER}10}
+.phase-dist-box.kpi-band-red{border-left-color:$RED;background:${'$'}{RED}10}
+.phase-dist-box h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:#cbd5e1;margin-bottom:6px}
+.phase-dist-row{display:flex;justify-content:space-between;font-size:11px;color:#94a3b8;padding:1px 0}
 """.trimIndent()
