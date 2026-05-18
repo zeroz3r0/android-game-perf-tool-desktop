@@ -189,6 +189,34 @@ Sub-metrics for frames >16ms:
 | DAU/MAU | **<8%** triggers warning |
 | User loss rate | **>5%** triggers warning |
 
+#### 3.1.1 Google Play Vitals 2024 thresholds — Google official source
+
+> Source: Google Play Console — Android Vitals "bad behavior thresholds" (Octubre 2024, recopilado y confirmado vía Gemini deep-dive). Engram observation: `#424 — research/google-play-vitals-2024-thresholds`. These are the **store-gating** thresholds: crossing them triggers direct Play Store penalties (visibility reduction, removal from Top Charts, discovery throttling) — not advisory, not "best practice", but actual ranking signals applied by Google.
+
+| Métrica (Vital) | Umbral Máximo General | Umbral Máximo Por Dispositivo | Penalización si lo superas |
+|-----------------|-----------------------|-------------------------------|----------------------------|
+| User-Perceived Crash Rate | < 1.09% de los usuarios | < 8.0% en un modelo específico | Reducción visibilidad + avisos tienda |
+| User-Perceived ANR Rate | < 0.47% de los usuarios | < 8.0% en un modelo específico | Eliminación Top Charts + recomendaciones |
+| Excessive Partial Wake Locks | < 5.0% sesiones (>2h en 24h screen-off) | — | Throttling descubrimiento app |
+| Cold Start | < 5s | — | Pérdida prioridad algoritmo calidad |
+| Warm Start | < 2s | — | Pérdida prioridad algoritmo calidad |
+| Hot Start | < 1s | — | Pérdida prioridad algoritmo calidad |
+| Slow UI Sessions (frames > 700ms) | < 0.1% sesiones | — | Peor posicionamiento "Apps similares" |
+
+**How GamePerf maps these to v1 single-session KPIs** (engram `sdd/vitals-rate-and-wakelocks/spec`):
+
+| Vital threshold (Google) | GamePerf v1 KPI | Single-session proxy |
+|--------------------------|-----------------|----------------------|
+| User-Perceived Crash Rate < 1.09% | `KpiId.CRASH_RATE_USERS` (Category: Stability) | `CRASH_COUNT > 0` flags banner |
+| User-Perceived ANR Rate < 0.47% | `KpiId.ANR_RATE_USERS` (Category: Stability) | `ANR_COUNT > 0` flags banner |
+| Excessive Partial Wake Locks < 5% sessions | `KpiId.WAKE_LOCKS_RATE` (Category: Resource, unit `h`) | `wakeLocksScreenOffMs >= 2h` flags banner |
+
+**Wake locks measurement spec** (engram `#425 — research/wake-locks-measurement-spec`): GamePerf reads `adb shell dumpsys batterystats --charged <pkg>` and parses the "All partial wake locks:" section, summing durations attributed to the target package. Plausibility window: `0 ≤ ms ≤ 24*3600*1000`. Out-of-range entries are dropped with `OUT_OF_RANGE_VALUE` diagnostic. Polling cadence: 30 ticks (~15s) — wake locks are accumulator metrics where the final value is what matters, intermediate samples are advisory only.
+
+**v1 confidence**: MEDIUM. Thresholds are Google official (above table). Measurement is **single-session**, which is a proxy for the cross-session rate Vitals actually computes (% of users / % of sessions). If a single session already crosses the 2h wake-locks gate, the cross-session rate is almost certainly above the 5% threshold. If a single session does NOT cross, we cannot confirm the real Vitals rate without cross-session aggregation (v2 deferred — would require `history.json` roll-up across N sessions of the same device model).
+
+**v2 deferred work**: per-device-model 8% gate (Vitals penalizes each model separately), cross-session aggregation for true rate calculation, iOS support (no direct equivalent to `dumpsys batterystats`), wake-locks-by-component breakdown (which SDK is holding the lock).
+
 ### 3.2 Google RAIL Performance Model
 
 > Source: <https://web.dev/articles/rail> (retrieved 2026-05-12). Core Web Vitals supersedes RAIL for web, but RAIL budgets remain canonical for user perception and engineering guidance for any interactive software.
