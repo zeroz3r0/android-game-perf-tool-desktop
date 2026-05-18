@@ -155,7 +155,7 @@ See §5 (KPI catalog) for how these reporting patterns map to which specific KPI
 
 Reference observation: `research/competitive-analysis-press-reports` (#305).
 
-### 2.4 How competitor tools visually present performance data
+### 2.5 How competitor tools visually present performance data
 
 Even though our tool ships a desktop GUI and a static HTML report (not a cloud dashboard), the **visual grammar** that QA leads, producers, and devs already speak comes from these competitors. Anyone who opens our report after using GameBench or PerfDog instantly compares: did we surface FPS the same way? Are jank events highlighted? Where's the comparison view? Borrowing the right patterns is shorthand for credibility — and avoiding the wrong ones (opaque composites, hidden tabs) keeps the report scannable. This section catalogs how 8 competitor tools present data and distills the patterns worth copying for §7 report design.
 
@@ -816,6 +816,13 @@ Explicitly **NOT** competing on:
 - <https://docs.gamebench.net/general-information/programmatic-markers/> — GameBench markers protocol
 - <https://developers.google.com/admob/android/interstitial> — AdMob (no stable logcat tags)
 - <https://docs.gamebench.net/> — GameBench docs root
+- <https://docs.gamebench.net/docs/web-dashboard/session-detail/metrics-timeline/> — GameBench Metrics Timeline visual layout (§2.5, retrieved 2026-05-18)
+- <https://docs.gamebench.net/docs/web-dashboard/session-detail/comparison/> — GameBench Session Comparison view (§2.5, retrieved 2026-05-18)
+- <https://docs.gamebench.net/docs/web-dashboard/trends/> — GameBench Trends Explorer (distribution charts + device perf table) (§2.5, retrieved 2026-05-18)
+- <https://docs.sentry.io/product/insights/mobile/mobile-vitals/> — Sentry Mobile Vitals dashboard (§2.5, retrieved 2026-05-18)
+- <https://docs.sentry.io/product/dashboards/sentry-dashboards/mobile/mobile-vitals/> — Sentry Mobile Vitals (Good/Meh/Poor RAG bands) (§2.5, retrieved 2026-05-18)
+- <https://docs.unity3d.com/Manual/profiler-window-navigating.html> — Unity Profiler window navigation (stacked module charts) (§2.5, retrieved 2026-05-18)
+- <https://www.qualcomm.com/developer/software/snapdragon-profiler> — Snapdragon Profiler landing (§2.5, JS-SPA, only landing reachable, retrieved 2026-05-18)
 - <https://perfdog.qq.com/> / <https://perfdog.wetest.net/> — PerfDog landing pages
 - <https://perfdog.wetest.net/helpCenter> — PerfDog Help Center (verified gated 2026-05-12, engram obs #328: JS-SPA + likely auth wall, 12 fetches confirmed identical shell, zero new features extractable)
 - <https://www.wetest.net/blog/mobile-game-performance-testing-2026-perfdog-guide-1189.html> — WeTest blog #1189: PerfDog founding dev (Awen Cao) interview by Sr. PM Baojian Shen, March 2026. Single highest-information public source on PerfDog (Jank formula, FPower formula, SmallJank, Smooth Index, 11-platform list, CI/CD plugins, 3-device GUI limit, Custom Data API). Cited in §3.6.
@@ -843,3 +850,4 @@ Explicitly **NOT** competing on:
 - **2026-05-12** — Initial consolidation from 7 research observations + internal audit. Replaces skeleton (`docs/competitive-analysis-skeleton-2026-05-12` obs #307). All 22 `<!-- AWAITING -->` markers resolved; all 8 placeholder tables filled. Document status: research-complete, pending §8 product decisions before SDD changes #2/#3 can start. Honesty notes preserved on console certs (NDA), engine/vendor PDFs (manual download required), and ad SDK auto-detection (NOT verified beyond current 5-SDK catalog).
 - **2026-05-12 (PM)** — PerfDog deep-dive integration. Added §3.6 PerfDog formulas (Jank / SmallJank / Smooth Index / FPower / CPU% freq-normalized), §5.1 +4 KPIs (FPower + CPU normalized + PerfDog Jank count + PerfDog Big Jank count), §5.2 phase relevance updated (FPower + CPU normalized weighting), §6.2.1 composite scoring alternatives (Smooth Index + Vitals-aligned ranking signal), §8 +2 decisions (#10 Smooth Index, #11 FPower anchors), §9 +7 SDD changes (#8 fpower-metric, #9 cpu-freq-normalized, #10 perfdog-jank-formula, #11 cli-headless-mode, #12 gh-action-wrapper, #13 multi-device-capture, #14 DEFER engine-mode-perfetto-capture), updated PerfDog row §2.1 with deep-dive findings (mandatory cloud, 11 platforms, 1 Hz default, Custom Data Extension SDK, gaps closeable vs not closing). New §10 Positioning statement. Renumbered References → §11, Changelog → §12. Source: engram obs #312 (`research/perfdog-deep-dive-2026-05-12`).
 - **2026-05-12 (PM 2)** — PerfDog Help Center deep-dive (engram obs #328). Site confirmed gated; zero new features extractable. Methodology-transparency angle added to §10 positioning.
+- **2026-05-18** — Added §2.5 "How competitor tools visually present performance data" (renumbered from §2.4 to avoid collision with parallel §2.3/§2.4 reordering committed in `770f3c4`). Covers 8 tools (GameBench, PerfDog, Snapdragon Profiler, ARM Streamline, Unity Profiler, Android Studio Profiler, Firebase Perf, Sentry Mobile Vitals). Distills dashboard layouts, KPI cards, chart types, severity coding, drill-down patterns, and comparison views. Surfaces 10 best patterns to copy, 6 anti-patterns to avoid, and 6 ranked recommendations for our HTML report (§7) — top 3 bundled into the `shareable-html-report` SDD change (§9 #3). Honesty notes preserved on tools whose UI is gated/JS-SPA (PerfDog wetest, Snapdragon Profiler, ARM Streamline, AS Profiler — marked "needs verification" where direct screenshot access failed). Engram obs `research/competitor-viz-patterns`.
