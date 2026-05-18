@@ -42,7 +42,7 @@ Leyenda: ✅ tiene · 🟡 parcial · ❌ no tiene
 |---|---|---|---|
 | GPU (uso y frecuencia) | ✅ a nivel driver gráfico (uso + frecuencia + sub-counters) | 🟡 uso % vía kernel sysfs (v4.5.0, Mali + Adreno; sin frecuencia ni sub-counters)[^gpu] | Para juegos gráficamente exigentes, ahora medimos si la GPU está saturada en % de uso (Mali ARM + Adreno Qualcomm). GameBench sigue ganando en frecuencia por dominio + sub-counters de driver (vertex / fragment / texture), porque su SDK Pro está embebido en el juego. PowerVR (MediaTek/Unisoc) todavía no soportado del lado nuestro. |
 | Red por conexión + tiempo al primer byte | ✅ | 🟡 ancho de banda total app vía binder/dumpsys (v4.6.0; sin desglose por endpoint)[^net] | Si te importa cuánto tarda cada llamada al servidor o cada anuncio en descargar, GameBench desglosa por endpoint. Nosotros medimos el total de bytes RX/TX que consume el juego, lo cual sirve para detectar fugas de bandwidth, anuncios pesados o uploads no planeados, pero no diferenciamos qué endpoint específico está consumiendo. |
-| Frecuencia por núcleo de CPU | ✅ | ❌ | Importa si querés saber qué núcleo está saturado en juegos multi-thread o si el sistema está bajando clocks por calor. |
+| Frecuencia por núcleo de CPU | ✅ | ❌ | Importa si quieres saber qué núcleo está saturado en juegos multi-thread o si el sistema está bajando clocks por calor. |
 | Consumo real de batería (mA / mW) | ✅ Android | 🟡 solo nivel y temperatura | Si tu KPI es "minutos de juego por carga", GameBench te da el dato real. Nosotros estimamos por temperatura y nivel. |
 | Memoria de WebView (juegos híbridos) | ✅ | ❌ | Solo importa si tu juego es Cocos2d-JS, Construct, Unity WebGL o similar. |
 | Temperatura del chip y de la piel del dispositivo | 🟡 solo batería | ✅ piel + chip + batería | Diferenciamos temperatura externa (la que siente el jugador) del chip interno, ajustando por fabricante de SoC (Snapdragon, Tensor, etc.). Crítico para detectar throttling térmico. |
@@ -86,7 +86,7 @@ Leyenda: ✅ tiene · 🟡 parcial · ❌ no tiene
 - **Local-first** — los builds prelanzamiento nunca salen de tu máquina. Crítico para privacidad y NDA.
 - **Detección automática de anuncios/IAP/loading** sin que el juego coopere. GameBench requiere SDK o marcadores manuales.
 - **Métricas filtradas** — separamos el rendimiento del juego del rendimiento del anuncio. GameBench los suma y promedia juntos.
-- **Conclusiones cualitativas deterministas** — 8 reglas que diagnostican causa-raíz en lenguaje humano. GameBench te da datos y vos descifrás.
+- **Conclusiones cualitativas deterministas** — 8 reglas que diagnostican causa-raíz en lenguaje humano. GameBench te da datos y tú los descifras.
 - **Nota proporcional al género y target FPS** del juego. GameBench no opina; nosotros sí, con criterio explícito.
 - **Temperatura piel vs chip** diferenciada con detección por fabricante de SoC.
 - **Video del gameplay sincronizado con timeline**. GameBench solo screenshots periódicas.
@@ -96,7 +96,7 @@ Leyenda: ✅ tiene · 🟡 parcial · ❌ no tiene
 
 ## 4. Donde PERDEMOS
 
-| Gap | Severidad | ¿Qué significa para vos? |
+| Gap | Severidad | ¿Qué significa para ti? |
 |---|---|---|
 | Frecuencia de GPU + sub-counters del driver (vertex / fragment / texture) | MEDIO | Desde v4.5.0 ya medimos % de uso de la GPU vía kernel sysfs (Mali + Adreno). Lo que aún nos falta es la frecuencia por dominio y los sub-counters del driver gráfico — eso solo se obtiene con un SDK embebido en el juego (GameBench Pro). Para juegos hipergráficos donde se necesita ese detalle, GameBench sigue ganando. |
 | Red por conexión + tiempo al primer byte | **CRÍTICO** | Si te importa el detalle de cada llamada de red (anuncios que tardan, multiplayer), GameBench desglosa y nosotros no medimos red. |
@@ -105,7 +105,7 @@ Leyenda: ✅ tiene · 🟡 parcial · ❌ no tiene
 | API REST + integración CI/CD | MEDIO | Si tu pipeline automatiza capturas, GameBench encaja; nosotros aún no. |
 | Comparación build-over-build (trends) | MEDIO | Para detectar regresiones entre versiones del juego, GameBench tiene gráficos longitudinales; nosotros aún no. |
 | Tags libres y búsqueda entre sesiones | MEDIO | Si manejás docenas de sesiones, GameBench las organiza mejor. |
-| Frecuencia por núcleo de CPU | MEDIO | Útil para juegos multi-thread donde querés saber qué núcleo se satura. |
+| Frecuencia por núcleo de CPU | MEDIO | Útil para juegos multi-thread donde quieres saber qué núcleo se satura. |
 | Consumo de CPU del medidor (3.8% vs ~10-15%) | MEDIO | Nuestro medidor pesa más sobre el dispositivo. Mejorable. |
 
 ---

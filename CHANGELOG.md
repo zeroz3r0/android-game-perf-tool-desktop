@@ -647,9 +647,9 @@ Con v4.2.7 estoy en **10/10 de fiabilidad real**:
 
 ### Que hay de nuevo
 
-- **Sincronizacion con Google Drive — sesiones compartidas entre el equipo**: ahora podes conectar tu cuenta de Google Drive en la app y todas las sesiones grabadas se suben automaticamente a una carpeta compartida. Cualquier otra persona del equipo que este conectada a la misma cuenta (o que tenga acceso a la carpeta) va a ver las sesiones en su historial local sin tener que pasarse archivos zippeados por Slack. Funciona con multiples dispositivos, multiples sesiones concurrentes, y con resolucion de conflictos si dos personas graban al mismo tiempo
+- **Sincronizacion con Google Drive — sesiones compartidas entre el equipo**: ahora puedes conectar tu cuenta de Google Drive en la app y todas las sesiones grabadas se suben automaticamente a una carpeta compartida. Cualquier otra persona del equipo que este conectada a la misma cuenta (o que tenga acceso a la carpeta) va a ver las sesiones en su historial local sin tener que pasarse archivos zippeados por Slack. Funciona con multiples dispositivos, multiples sesiones concurrentes, y con resolucion de conflictos si dos personas graban al mismo tiempo
 - **Pan horizontal del timeline con Shift+arrastrar**: al ver una sesion grabada, el grafico de FPS ahora se puede mover horizontalmente manteniendo Shift y arrastrando con el mouse. Util para sesiones largas (10min+) donde zoomear y mover es tedioso con scroll. Tambien el hover sobre el grafico muestra un tooltip con el valor exacto de FPS en ese punto del tiempo — antes solo se veia el promedio de la ventana
-- **Sistema de favoritos — sesiones marcadas nunca se auto-borran**: el historial tiene una politica de rotation (borra automaticamente sesiones viejas cuando supera X MB en disco). Ahora podes marcar una sesion como favorita con una estrella. Las favoritas estan excluidas del auto-borrado permanentemente — se mantienen aunque llenen el disco. Util para benchmarks de referencia que queres retener largo plazo
+- **Sistema de favoritos — sesiones marcadas nunca se auto-borran**: el historial tiene una politica de rotation (borra automaticamente sesiones viejas cuando supera X MB en disco). Ahora puedes marcar una sesion como favorita con una estrella. Las favoritas estan excluidas del auto-borrado permanentemente — se mantienen aunque llenen el disco. Util para benchmarks de referencia que quieres retener largo plazo
 - **Renombrar sesion desde un dialog elegante**: antes el renaming era un textfield inline en la fila del historial que quedaba super comprimido y era incomodo. Ahora hace click en el nombre y se abre un dialog modal con el textfield al tamaño normal + validacion + preview. Un cambio chico pero que se usa todo el dia
 - **Rotation de video en landscape arreglada**: si grababas un juego en modo horizontal (el 90% de los juegos mobile), el video quedaba grabado vertical con la imagen girada. Ahora detecta la rotacion del device y rota el video grabado antes de guardarlo. Los videos en landscape se reproducen correctamente en el player
 
@@ -749,7 +749,7 @@ Con v4.2.7 estoy en **10/10 de fiabilidad real**:
 
 ### Que hay de nuevo
 
-- **Conexion WiFi sin cable desde el arranque**: ahora podes conectar un Android 11 o superior a la app sin usar USB ni una sola vez. Activá "Depuracion inalambrica" en el movil, abrí el tab "WiFi (Android 11+)" o el boton discreto "Agregar device WiFi" segun corresponda, clickeá tu dispositivo en la lista que aparece y tipeá el codigo de 6 digitos del popup. Eso es todo. El proceso completo demora menos de 10 segundos
+- **Conexion WiFi sin cable desde el arranque**: ahora puedes conectar un Android 11 o superior a la app sin usar USB ni una sola vez. Activa "Depuracion inalambrica" en el movil, abre el tab "WiFi (Android 11+)" o el boton discreto "Agregar device WiFi" segun corresponda, pulsa sobre tu dispositivo en la lista que aparece y escribe el codigo de 6 digitos del popup. Eso es todo. El proceso completo demora menos de 10 segundos
 - **Descubrimiento automatico via mDNS**: la app detecta solo los dispositivos con "Depuracion inalambrica" encendida en tu red WiFi, sin que tengas que tipear IP ni puerto. Aparecen con el nombre del modelo (ej "adb-32211JEHN-XXXXXX") en menos de 3 segundos
 - **Fallback manual automatico**: si tu red no permite el descubrimiento (WiFi corporativa, firewall, macOS 15 con permisos bloqueados), el formulario manual para tipear IP + puerto + codigo aparece solo despues de 9 segundos. No tenes que buscarlo
 - **Reconexion automatica en sesiones siguientes**: una vez que pareaste un dispositivo, la proxima vez que abras la app con el mismo movil en la misma WiFi va a aparecer solo en la lista de "Dispositivos" sin que toques nada — confiando en el auto-connect nativo de adb 33+
@@ -788,7 +788,7 @@ Con v4.2.7 estoy en **10/10 de fiabilidad real**:
 
 3. **WP-7 cross-session reconnect**: Parea un dispositivo una vez (paso 1). Cerra la app completamente. Dejá pasar 10 segundos. Abri la app de nuevo. El dispositivo tiene que aparecer solo en la lista de "Dispositivos" sin que toques ningun control WiFi. (Requiere adb >= 33 — si ves el banner amarillo "platform-tools viejo", actualizá con `brew upgrade android-platform-tools`).
 
-4. **WP-8 USB regression (critico)**: Enchufa un cable USB con un device. Abri la app. NO toques nada del panel WiFi. El device USB tiene que auto-detectarse y auto-seleccionarse EXACTAMENTE igual que en v3.1.14. No debe haber ningun control WiFi visible por default — solo el boton discreto "Agregar device WiFi" debajo de la lista, que podes ignorar.
+4. **WP-8 USB regression (critico)**: Enchufa un cable USB con un device. Abre la app. NO toques nada del panel WiFi. El device USB tiene que auto-detectarse y auto-seleccionarse EXACTAMENTE igual que en v3.1.14. No debe haber ningun control WiFi visible por default — solo el boton discreto "Agregar device WiFi" debajo de la lista, que puedes ignorar.
 
 5. **WP-10 legacy switchToWifi**: Con un device USB conectado, toca el boton legacy "Cambiar a WiFi (medir bateria real)". Tiene que funcionar byte-a-byte identico a v3.1.14 — el flujo `adb tcpip 5555` + read IP + `adb connect` no se toco. Ningun control del feature nuevo se activa como efecto colateral.
 
@@ -822,11 +822,11 @@ as, despues de 9 segundos tiene que aparecer el mensaje accionable "macOS esta b
 
 ### Que hay de nuevo
 
-- **Boton "Reparar videos" en el historial**: si una sesion vieja quedo con el video cortado (por un crash de la app, un corte de luz, o cualquier cosa que haya impedido que la unificacion automatica corriera al arranque), ahora podes apretar el boton "Reparar videos" en la cabecera de "Pruebas recientes" para forzar manualmente la reconstruccion. La logica es la misma que ya corre automaticamente al iniciar la app, solo que ahora la podes invocar cuando quieras
+- **Boton "Reparar videos" en el historial**: si una sesion vieja quedo con el video cortado (por un crash de la app, un corte de luz, o cualquier cosa que haya impedido que la unificacion automatica corriera al arranque), ahora puedes pulsar el boton "Reparar videos" en la cabecera de "Pruebas recientes" para forzar manualmente la reconstruccion. La logica es la misma que ya corre automaticamente al iniciar la app, solo que ahora la puedes invocar cuando quieras
 
 ### Arreglos
 
-- **Bug critico, cierre de la saga v3.1.10 → v3.1.12**: el chain del recordJob (los segmentos 2..N de una grabacion larga) NO tenia la misma proteccion que el primer segmento. Si el segundo, tercer o cuarto segmento moria silenciosamente en el dispositivo (porque /sdcard se lleno, porque el encoder rechazo la combinacion de bitrate/resolucion, porque el low-memory killer mato el proceso, etc.) el codigo simplemente hacia `break` y vos perdias el resto del video sin enterarte. Ahora cada segmento del chain pasa por la misma validacion isAlive + lectura de stderr + retry con perfil STANDARD que ya tenia el primero, y si despues del retry el segmento sigue muerto se te muestra una advertencia explicita con el motivo en vez de quedarte sin nada
+- **Bug critico, cierre de la saga v3.1.10 → v3.1.12**: el chain del recordJob (los segmentos 2..N de una grabacion larga) NO tenia la misma proteccion que el primer segmento. Si el segundo, tercer o cuarto segmento moria silenciosamente en el dispositivo (porque /sdcard se lleno, porque el encoder rechazo la combinacion de bitrate/resolucion, porque el low-memory killer mato el proceso, etc.) el codigo simplemente hacia `break` y perdias el resto del video sin enterarte. Ahora cada segmento del chain pasa por la misma validacion isAlive + lectura de stderr + retry con perfil STANDARD que ya tenia el primero, y si despues del retry el segmento sigue muerto se te muestra una advertencia explicita con el motivo en vez de quedarte sin nada
 - **Tests fantasmas eliminados**: 7 tests del proyecto (6 en `ConcatResilienceTest`, 1 en `ReportRenderingTest`) usaban el patron `if (env != "true") return` para auto-saltarse cuando faltaban dependencias externas. JUnit los reportaba como PASSED aunque no hubieran corrido ni una sola assertion — era cobertura mentirosa. Ahora usan `Assume.assumeTrue(...)` y se reportan correctamente como SKIPPED. La suite ya no miente sobre lo que cubre
 
 ### Detalles tecnicos
@@ -859,7 +859,7 @@ as, despues de 9 segundos tiene que aparecer el mensaje accionable "macOS esta b
 ### Como probar
 
 1. Abrir la app actualizada
-2. Si tenes una sesion que mostraba "No se pudo leer la duración del video", deberia funcionar ahora (puede tener menos duracion total si algun segmento se descartaba). Tambien podes abrir la sesion del Pixel XL del 7 abril 15:06 que estaba rota y ahora deberia mostrar 7:00 de video reproducible (en lugar de 10:00 que era la duracion original — perdimos los primeros 3 minutos por el `_0.mp4` corrupto, pero el resto se recupero)
+2. Si tienes una sesion que mostraba "No se pudo leer la duración del video", deberia funcionar ahora (puede tener menos duracion total si algun segmento se descartaba). Tambien puedes abrir la sesion del Pixel XL del 7 abril 15:06 que estaba rota y ahora deberia mostrar 7:00 de video reproducible (en lugar de 10:00 que era la duracion original — perdimos los primeros 3 minutos por el `_0.mp4` corrupto, pero el resto se recupero)
 3. Capturar una sesion nueva de mas de 3 minutos (para forzar el chain del recordJob). Verificar que el video resultante se reproduce sin errores
 4. Si por alguna razon un segmento queda corrupto, vas a ver un banner amarillo "El video se grabo solo parcialmente" durante o despues de la captura
 
@@ -894,7 +894,7 @@ as, despues de 9 segundos tiene que aparecer el mensaje accionable "macOS esta b
 
 ### Que hay de nuevo
 
-- **Zoom en la timeline del reporte**: ahora podes hacer Ctrl + rueda del raton sobre la timeline para ampliar la zona donde se producen las caidas de FPS. Doble clic para resetear al ver toda la sesion. Especialmente util en grabaciones largas (10+ minutos)
+- **Zoom en la timeline del reporte**: ahora puedes hacer Ctrl + rueda del raton sobre la timeline para ampliar la zona donde se producen las caidas de FPS. Doble clic para resetear al ver toda la sesion. Especialmente util en grabaciones largas (10+ minutos)
 - Cuando el video no se puede grabar (algunos dispositivos rechazan screenrecord), ahora ves un aviso amarillo claro durante la captura en vez de descubrir al final que el video estaba vacio. Las metricas siguen registrandose normal
 - Las notas de los reportes son menos estrictas: un Huawei Y5 Lite a 28-30 FPS estables ahora se evalua como A o B (que es lo justo para ese hardware), no como D
 - Mejor deteccion de GPUs PowerVR de gama baja (Y5 Lite y similares) y otras GPUs con prefijos del fabricante
@@ -1010,7 +1010,7 @@ as, despues de 9 segundos tiene que aparecer el mensaje accionable "macOS esta b
 
 ### Que hay de nuevo
 
-- Los videos largos ya no se cortan a los 2 minutos y 56 segundos. Ahora podes grabar sesiones de 10, 15, 30 minutos o lo que quieras, y el video se ve entero
+- Los videos largos ya no se cortan a los 2 minutos y 56 segundos. Ahora puedes grabar sesiones de 10, 15, 30 minutos o lo que quieras, y el video se ve entero
 - Las sesiones que ya tenias guardadas con el video truncado se reparan automaticamente la primera vez que abras la app
 - El video del historial ahora se ve como un archivo unico, no como un fragmento del principio
 
