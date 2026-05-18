@@ -14,7 +14,7 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
-## [4.6.0] — Proximo (unreleased)
+## [4.6.0] — 2026-05-18
 
 ### Que hay de nuevo
 
