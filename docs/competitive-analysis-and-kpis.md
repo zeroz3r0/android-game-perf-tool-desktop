@@ -198,10 +198,10 @@ Even though our tool ships a desktop GUI and a static HTML report (not a cloud d
 
 #### Recommendations for our HTML report (ordered by perceived value)
 
-1. **Adopt Sentry-style RAG bands on EVERY KPI card** with the published threshold next to the value — anchor on §3.1 Vitals + §3.6 PerfDog thresholds. Use shape/text in addition to color (anti-pattern avoidance). Maps to §5.1 Master KPI catalog.
+1. **Adopt Sentry-style RAG bands on EVERY KPI card** with the published threshold next to the value — anchor on §3.1 Vitals + §3.6 PerfDog thresholds. Use shape/text in addition to color (anti-pattern avoidance). Maps to §5.1 Master KPI catalog. **— Applied in v4.7.0**
 2. **Add a screenshot strip synced to the FPS+Thermal timeline** (GameBench pattern). Screenshots can be sampled at 1 Hz via `adb screencap`; embed as inline base64 in the self-contained HTML (§7.6 decision). High visual impact, modest implementation cost.
-3. **Add explicit reference budget lines on frame-time charts** (16.6 ms / 33.3 ms / 8.3 ms — §3.4) — eliminate the Unity Profiler anti-pattern. One-line render addition.
-4. **Add per-phase distribution boxes (median + p1 + p99 + min/max) on top of the existing per-phase tables** (GameBench Trends pattern) — surfaces variance that single-number averages hide. Bundle with the §9 #3 `shareable-html-report` change.
+3. **Add explicit reference budget lines on frame-time charts** (16.6 ms / 33.3 ms / 8.3 ms — §3.4) — eliminate the Unity Profiler anti-pattern. One-line render addition. **— Applied in v4.7.0**
+4. **Add per-phase distribution boxes (median + p1 + p99 + min/max) on top of the existing per-phase tables** (GameBench Trends pattern) — surfaces variance that single-number averages hide. Bundle with the §9 #3 `shareable-html-report` change. **— Applied in v4.7.0**
 5. **Add a session-comparison view** with overlaid timelines color-coded per session + an index-numbered summary table (GameBench pattern). Aligns with §9 #13 `multi-device-capture`. Defer to post-CLI.
 6. **Add Suspect-Phase highlighting on the per-phase summary** (Sentry pattern) — auto-flag the phase with the worst KPI deltas vs the gameplay baseline. Aligns with the §4 event segmentation + qualitative conclusions (v4.4.0).
 
