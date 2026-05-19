@@ -242,12 +242,13 @@ fun ComparisonScreen(vm: AppViewModel) {
                                 fontSize = 48.sp, fontWeight = FontWeight.Bold)
                             Text("métricas ganadas", color = TextDim, fontSize = 10.sp)
                         }
-                        Column {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(competitorLabel, color = Orange, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             Text(
-                                "${winRate * 100}%".take(5) + "%".takeIf { winRate * 100 < 10 }.orEmpty(),
-                                color = Color.White,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold
+                                "$theyWin",
+                                color = if (theyWin > weWin) Green else if (theyWin < weWin) Red else Yellow,
+                                fontSize = 48.sp,
+                                fontWeight = FontWeight.Bold,
                             )
                             Text("métricas ganadas", color = TextDim, fontSize = 10.sp)
                         }

@@ -432,6 +432,53 @@ class SdkSignatureCatalogTest {
         )
     }
 
+    @Test
+    fun `Play Store package alone does NOT trigger IAP activity match (v4_7_1 false-positive hotfix)`() {
+        // Regression: `com.android.vending` was previously listed as a Play
+        // Billing activityClass. Combined with `matchActivity`'s substring
+        // containment, ANY task whose `cmp=` contained `com.android.vending`
+        // emitted a phantom IAP. This happens routinely on stock Pixel
+        // devices because of Play Integrity API checks, ad SDK consent pings
+        // via Play Services, and background Play Store refreshes.
+        //
+        // Confirmed repro 2026-05-19: 10-min ad-only session on Pixel 7a +
+        // AdMob/Unity Ads emitted spurious IAP_FLOW events in the report.
+        //
+        // The fix removes `com.android.vending` and keeps only
+        // `ProxyBillingActivity` (the activity exclusive to a real purchase
+        // sheet). This test pins that behaviour so the broad match cannot
+        // sneak back in.
+        val playStoreRootTask = SdkSignatureCatalog.matchActivity(
+            "com.android.vending/com.android.vending.AssetBrowserActivity",
+        )
+        assertNull(
+            playStoreRootTask,
+            "Play Store root activity must NOT match Play Billing — too broad, " +
+                "fires on routine system tasks and produces phantom IAP events",
+        )
+
+        val playIntegrityCheck = SdkSignatureCatalog.matchActivity(
+            "com.android.vending/com.google.android.finsky.integrityservice.IntegrityService",
+        )
+        assertNull(
+            playIntegrityCheck,
+            "Play Integrity API checks must NOT match Play Billing — they fire " +
+                "at game boot via Play Services, no purchase intent involved",
+        )
+
+        // Sanity: the SPECIFIC purchase-sheet activity must still match. This
+        // is the only activity that appears exclusively during a real flow.
+        val realPurchaseSheet = SdkSignatureCatalog.matchActivity(
+            "com.example.game/com.android.billingclient.api.ProxyBillingActivity",
+        )
+        assertNotNull(
+            realPurchaseSheet,
+            "ProxyBillingActivity is the canonical purchase-sheet activity and " +
+                "MUST still match Play Billing",
+        )
+        assertEquals("Google Play Billing", realPurchaseSheet.sdk)
+    }
+
     // ═══════ cross-SDK negative: SDK A close line should NOT match SDK B ═══════
 
     @Test

@@ -91,6 +91,18 @@ fun HomeScreen(vm: AppViewModel) {
         )
     }
 
+    // v4.7.1 — one-time privacy disclaimer before the first temp-link upload.
+    // Non-null = the user clicked "Enlace temporal" but has not yet accepted
+    // the disclaimer. The dialog calls confirmTempLinkShare() to persist
+    // acceptance + proceed, or cancelTempLinkShare() to back out.
+    val pendingTempLinkConsent by vm.pendingTempLinkConsent.collectAsState()
+    if (pendingTempLinkConsent != null) {
+        com.gameperf.desktop.ui.components.TempLinkDisclaimerDialog(
+            onConfirm = { vm.confirmTempLinkShare() },
+            onCancel = { vm.cancelTempLinkShare() },
+        )
+    }
+
     // v4.3.7 — recovery toast (Layer 4 companion to the recovery button further down).
     // Auto-clear after 4s so the toast is transient like sessionPackMessage.
     val recoveryStatus by vm.recoveryStatus.collectAsState()
@@ -960,6 +972,7 @@ private fun HistoryEntryRow(
     var editName by remember { mutableStateOf(entry.name) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     val isSelectedForComp = entry.id in comparisonSelection
+    val tempLinkUploadInProgress by vm.tempLinkUploadInProgress.collectAsState()
 
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -1094,6 +1107,40 @@ private fun HistoryEntryRow(
                     Icons.Default.FileUpload, "Exportar .gameperf",
                     tint = Cyan, modifier = Modifier.size(16.dp)
                 )
+            }
+
+            // ── Share local (v4.7.1) ─────────────────────────────────────
+            // Opens the reports folder in the OS file explorer + copies a
+            // ready-to-paste description block to the clipboard. The user
+            // then drags the .html into Slack/Drive/Teams/email along with
+            // the pasted text. No network, no expiration, default share.
+            if (entry.reportPath.isNotEmpty()) {
+                IconButton(
+                    onClick = { vm.shareReportLocal(entry.id) },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.FolderOpen, "Compartir reporte (abrir carpeta + copiar descripción)",
+                        tint = Cyan, modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                // ── Share temp link (v4.7.1) ─────────────────────────────
+                // Uploads the HTML to temp.sh (~3 day retention) and copies
+                // the public URL to the clipboard. First click surfaces a
+                // privacy disclaimer dialog (handled at the screen root).
+                IconButton(
+                    onClick = { vm.shareReportTempLink(entry.id) },
+                    enabled = !tempLinkUploadInProgress,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Link,
+                        "Enlace temporal para compartir (3 días)",
+                        tint = if (tempLinkUploadInProgress) TextDim else Cyan,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
 
             // ── Delete ──

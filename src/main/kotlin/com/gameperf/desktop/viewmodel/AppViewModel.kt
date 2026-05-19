@@ -17,6 +17,9 @@ import com.gameperf.desktop.core.PairResult
 import com.gameperf.desktop.core.RealAdbBridge
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.core.Settings
+import com.gameperf.desktop.core.sharing.ReportShareResult
+import com.gameperf.desktop.core.sharing.ReportSharer
+import com.gameperf.desktop.core.sharing.TempShUploader
 import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.conclusions.ConclusionEngine
 import com.gameperf.desktop.core.conclusions.ConclusionInput
@@ -581,6 +584,30 @@ class AppViewModel(
      *  after ~5 seconds via [clearSessionPackMessage]. */
     private val _sessionPackMessage = MutableStateFlow<String?>(null)
     val sessionPackMessage: StateFlow<String?> = _sessionPackMessage
+
+    // ── Report sharing (v4.7.1) ─────────────────────────────────────────────
+    //
+    // Two share paths, both surface their result through [sessionPackMessage]:
+    //
+    //  1. Local share — opens the reports folder + copies a description block
+    //     to the clipboard. No network, no expiration, default.
+    //  2. Temp link share — uploads the HTML to temp.sh (~3 day retention).
+    //     The first time the user clicks this, [pendingTempLinkConsent]
+    //     becomes non-null and the UI shows a privacy disclaimer dialog. If
+    //     they accept, the upload proceeds and [Settings.tempLinkShareDisclaimerAccepted]
+    //     is persisted so they don't see the dialog again.
+
+    /** When non-null, the UI must show the temp-link disclaimer dialog and
+     *  call [confirmTempLinkShare] or [cancelTempLinkShare] depending on the
+     *  user's choice. The String value is the `entryId` to upload after
+     *  consent. */
+    private val _pendingTempLinkConsent = MutableStateFlow<String?>(null)
+    val pendingTempLinkConsent: StateFlow<String?> = _pendingTempLinkConsent
+
+    /** True while a temp-link upload is in progress so the UI can disable
+     *  the button + show a spinner. Reset to false when [upload] returns. */
+    private val _tempLinkUploadInProgress = MutableStateFlow(false)
+    val tempLinkUploadInProgress: StateFlow<Boolean> = _tempLinkUploadInProgress
 
     // ===== Session Tagging =====
     private val _sessionTag = MutableStateFlow(SessionHistory.SessionTag.OUR_GAME)
@@ -2624,6 +2651,113 @@ class AppViewModel(
      *  after a brief display (typically 4-5 seconds). */
     fun clearSessionPackMessage() {
         _sessionPackMessage.value = null
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Report sharing (v4.7.1)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * "Compartir reporte" — local path. Opens the OS file explorer at the
+     * report's parent folder and copies a Spanish-tuteo description block to
+     * the system clipboard. The user pastes that block into Slack/Drive/Teams
+     * along with the .html file they drag from the opened folder.
+     *
+     * Idempotent — safe to call multiple times. Surfaces success / failure
+     * via [sessionPackMessage].
+     */
+    fun shareReportLocal(entryId: String) {
+        val entry = _history.value.firstOrNull { it.id == entryId } ?: return
+        if (entry.reportPath.isBlank()) {
+            _sessionPackMessage.value = "Esta sesión no tiene un informe HTML asociado."
+            return
+        }
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val result = ReportSharer.shareLocally(
+                reportFile = File(entry.reportPath),
+                sessionName = entry.name,
+                packageName = entry.gamePackage,
+                deviceName = entry.deviceModel,
+            )
+            _sessionPackMessage.value = when (result) {
+                is ReportShareResult.LocalShareResult ->
+                    "Carpeta abierta + descripción copiada al portapapeles. Arrastra el .html a Slack/Drive."
+                is ReportShareResult.Failure -> result.userMessage
+                // LocalShare cannot produce a TempLink result; exhaustive when keeps the compiler happy.
+                is ReportShareResult.TempLinkShareResult ->
+                    "Inesperado: enlace temporal recibido en flujo local."
+            }
+        }
+    }
+
+    /**
+     * "Enlace temporal (3 días)" — public-host upload path.
+     *
+     * First call (when [Settings.tempLinkShareDisclaimerAccepted] is false):
+     * sets [pendingTempLinkConsent] = entryId and STOPS. The UI must surface
+     * the privacy disclaimer dialog and call [confirmTempLinkShare] when the
+     * user agrees, or [cancelTempLinkShare] when they back out.
+     *
+     * Subsequent calls (after disclaimer accepted): proceeds directly to
+     * upload.
+     */
+    fun shareReportTempLink(entryId: String) {
+        val entry = _history.value.firstOrNull { it.id == entryId } ?: return
+        if (entry.reportPath.isBlank()) {
+            _sessionPackMessage.value = "Esta sesión no tiene un informe HTML asociado."
+            return
+        }
+        val settings = Settings.load()
+        if (!settings.tempLinkShareDisclaimerAccepted) {
+            _pendingTempLinkConsent.value = entryId
+            return
+        }
+        performTempLinkUpload(entry)
+    }
+
+    /**
+     * User accepted the temp-link disclaimer. Persist the choice + run the
+     * upload for the entry that was pending. Called from the UI dialog's
+     * "Continuar" button.
+     */
+    fun confirmTempLinkShare() {
+        val entryId = _pendingTempLinkConsent.value ?: return
+        Settings.save(Settings.load().copy(tempLinkShareDisclaimerAccepted = true))
+        _pendingTempLinkConsent.value = null
+        val entry = _history.value.firstOrNull { it.id == entryId } ?: return
+        performTempLinkUpload(entry)
+    }
+
+    /**
+     * User cancelled the temp-link disclaimer. Clear the pending state
+     * without persisting acceptance — they will see the dialog again next
+     * time they click the button.
+     */
+    fun cancelTempLinkShare() {
+        _pendingTempLinkConsent.value = null
+    }
+
+    private fun performTempLinkUpload(entry: SessionHistory.HistoryEntry) {
+        _tempLinkUploadInProgress.value = true
+        _sessionPackMessage.value = "Subiendo informe a temp.sh..."
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val result = TempShUploader.upload(File(entry.reportPath))
+            _tempLinkUploadInProgress.value = false
+            _sessionPackMessage.value = when (result) {
+                is ReportShareResult.TempLinkShareResult -> {
+                    // Copy URL straight to clipboard so the user can paste in chat.
+                    runCatching {
+                        val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
+                        clipboard.setContents(java.awt.datatransfer.StringSelection(result.url), null)
+                    }
+                    "Enlace copiado al portapapeles: ${result.url} (${result.retentionDescription})"
+                }
+                is ReportShareResult.Failure -> result.userMessage
+                // The temp-link flow cannot produce a Local result; keep the when exhaustive.
+                is ReportShareResult.LocalShareResult ->
+                    "Inesperado: resultado local en flujo de enlace temporal."
+            }
+        }
     }
 
     // ===== Dependency Bootstrap actions (v4.2.14) =====

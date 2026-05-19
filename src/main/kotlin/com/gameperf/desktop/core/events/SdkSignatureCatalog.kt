@@ -201,12 +201,23 @@ internal object SdkSignatureCatalog {
         // without buying anything. Without the USER_CANCELED close pattern
         // the cancelled-flow event used to rely on `stop()` to force-close
         // with `endInferred=true` — added in the same hardening pass.
+        //
+        // ActivityClasses scope (v4.7.1 hotfix — false-positive audit obs #478):
+        // `ProxyBillingActivity` is the ONLY activity that appears exclusively
+        // during a real purchase sheet. The earlier draft also listed
+        // `com.android.vending` (the Play Store package), but `matchActivity`
+        // uses substring containment (`cmp.contains(cls)`) and Play Store
+        // tasks routinely appear in `dumpsys activity activities` on stock
+        // Pixel devices because of Play Integrity API checks, ad SDK consent
+        // pings via Play Services, and background Play Store refreshes. Any
+        // of those would emit phantom IAP events during sessions where no
+        // purchase happened. Confirmed repro 2026-05-19: 10-min ad-only
+        // session on Pixel 7a + AdMob/Unity Ads emitted spurious IAP_FLOW.
         SdkSignature(
             sdk = "Google Play Billing",
             defaultType = EventType.IAP,
             activityClasses = listOf(
                 "com.android.billingclient.api.ProxyBillingActivity",
-                "com.android.vending",
             ),
             logcatTags = listOf("BillingClient", "Billing"),
             openPatterns = listOf(
