@@ -908,7 +908,7 @@ exit 0
             )
             is com.gameperf.desktop.core.update.WatchdogResult.TimedOut -> buildWatchdogTimeoutResult(
                 "El actualizador no respondió a tiempo. Probablemente cancelaste la solicitud de Windows " +
-                    "o el helper no pudo iniciarse. Probá descargar la nueva versión manualmente."
+                    "o el helper no pudo iniciarse. Prueba a descargar la nueva versión manualmente."
             )
         }
     }

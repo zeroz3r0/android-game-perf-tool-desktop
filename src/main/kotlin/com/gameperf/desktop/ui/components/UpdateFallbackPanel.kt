@@ -266,15 +266,15 @@ private fun outcomeShortName(outcome: UpdateOutcome): String = when (outcome) {
 
 private fun subtitleFor(reason: UpdateFallbackReason): String = when (reason) {
     UpdateFallbackReason.USER_CANCELLED_UAC ->
-        "Cancelaste la elevación de permisos. Volvé a probar y aceptá el mensaje de Windows."
+        "Cancelaste la elevación de permisos. Vuelve a probar y acepta el mensaje de Windows."
     UpdateFallbackReason.HELPER_TIMEOUT ->
-        "El proceso de elevación tardó demasiado. Probá descargar manualmente la nueva versión."
+        "El proceso de elevación tardó demasiado. Prueba a descargar manualmente la nueva versión."
     UpdateFallbackReason.DOWNLOAD_FAILED ->
-        "No pudimos descargar la nueva versión. Revisá tu conexión y probá de nuevo."
+        "No pudimos descargar la nueva versión. Revisa tu conexión y prueba de nuevo."
     UpdateFallbackReason.HELPER_CRASHED ->
-        "El proceso de actualización falló inesperadamente. Probá descargar manualmente."
+        "El proceso de actualización falló inesperadamente. Prueba a descargar manualmente."
     UpdateFallbackReason.UNKNOWN ->
-        "Ocurrió un error inesperado al actualizar. Probá descargar manualmente."
+        "Ocurrió un error inesperado al actualizar. Prueba a descargar manualmente."
 }
 
 private const val MAX_DETAIL_ROWS = 10

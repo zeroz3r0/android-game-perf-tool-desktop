@@ -87,7 +87,7 @@ fun ComparisonScreen(vm: AppViewModel) {
                     Icon(Icons.Default.Warning, null, tint = Yellow, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "Las sesiones usan dispositivos diferentes (${allDevices.joinToString(", ")}). Para una comparacion justa, usa el mismo dispositivo.",
+                        "Las sesiones usan dispositivos diferentes (${allDevices.joinToString(", ")}). Para una comparación justa, usa el mismo dispositivo.",
                         color = Yellow, fontSize = 12.sp
                     )
                 }
@@ -240,19 +240,16 @@ fun ComparisonScreen(vm: AppViewModel) {
                             Text("Nuestro juego", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             Text("$weWin", color = if (weWin > theyWin) Green else if (weWin < theyWin) Red else Yellow,
                                 fontSize = 48.sp, fontWeight = FontWeight.Bold)
-                            Text("metricas ganadas", color = TextDim, fontSize = 10.sp)
+                            Text("métricas ganadas", color = TextDim, fontSize = 10.sp)
                         }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("VS", color = TextDim, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            if (tied > 0) {
-                                Text("$tied empate${if (tied > 1) "s" else ""}", color = TextDim, fontSize = 10.sp)
-                            }
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(competitorLabel, color = Orange, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Text("$theyWin", color = if (theyWin > weWin) Green else if (theyWin < weWin) Red else Yellow,
-                                fontSize = 48.sp, fontWeight = FontWeight.Bold)
-                            Text("metricas ganadas", color = TextDim, fontSize = 10.sp)
+                        Column {
+                            Text(
+                                "${winRate * 100}%".take(5) + "%".takeIf { winRate * 100 < 10 }.orEmpty(),
+                                color = Color.White,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text("métricas ganadas", color = TextDim, fontSize = 10.sp)
                         }
                     }
 
@@ -313,7 +310,7 @@ fun ComparisonScreen(vm: AppViewModel) {
                 Column(Modifier.padding(20.dp)) {
                     Text("Comparativa visual", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Spacer(Modifier.height(4.dp))
-                    Text("Barras normalizadas al mejor valor de cada metrica", color = TextDim, fontSize = 11.sp)
+                    Text("Barras normalizadas al mejor valor de cada métrica", color = TextDim, fontSize = 11.sp)
                     Spacer(Modifier.height(16.dp))
 
                     // Legend

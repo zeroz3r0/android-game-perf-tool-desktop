@@ -616,9 +616,9 @@ fun EmbeddedVideoPlayer(
                 errorMessage = if (!file.exists()) {
                     "El archivo de video no existe en el disco. Es probable que se haya borrado o movido."
                 } else if (file.length() == 0L) {
-                    "El archivo de video esta vacio. La grabacion fallo durante la captura."
+                    "El archivo de vídeo está vacío. La grabación falló durante la captura."
                 } else {
-                    "El video esta dañado y no se puede leer (falta el moov atom MP4). Esto pasa cuando la grabacion se interrumpe abruptamente. Las metricas del reporte siguen siendo validas."
+                    "El vídeo está dañado y no se puede leer (falta el moov atom MP4). Esto pasa cuando la grabación se interrumpe abruptamente. Las métricas del reporte siguen siendo válidas."
                 }
                 return@withContext
             }

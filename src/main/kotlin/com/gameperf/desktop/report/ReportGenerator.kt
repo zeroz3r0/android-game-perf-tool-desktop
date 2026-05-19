@@ -209,7 +209,7 @@ object ReportGenerator {
         val verdict = when (grade) {
             'A' -> "Rendimiento excelente. El juego corre de forma fluida y estable."
             'B' -> "Buen rendimiento con areas menores de mejora."
-            'C' -> "Rendimiento aceptable. Hay caidas notables que afectan la experiencia."
+            'C' -> "Rendimiento aceptable. Hay caídas notables que afectan la experiencia."
             'D' -> "Rendimiento deficiente. Problemas frecuentes de fluidez."
             else -> "Rendimiento critico. El juego no es jugable de forma aceptable."
         }
@@ -464,7 +464,7 @@ object ReportGenerator {
             <span class="expand-icon">&#9654;</span> FPS por segundo (correlacion con video)
         </button>
         <div class="expand-content">
-            <p class="card-desc">Cada fila corresponde al segundo exacto de la captura. Usa estos timestamps para localizar caidas en el video.</p>
+            <p class="card-desc">Cada fila corresponde al segundo exacto de la captura. Usa estos timestamps para localizar caídas en el vídeo.</p>
             <div class="table-scroll">
             <table class="data-table compact">
                 <thead><tr><th>Seg</th><th>FPS</th><th>Estado</th><th style="width:45%">Visual</th></tr></thead>
@@ -747,7 +747,7 @@ $excessiveCalloutHtml
         // register matches the existing thermal die/skin copy at line 521
         // (tuteo-formal: "tu juego", "tu dispositivo").
         if (cpuDualView) {
-            """<p class="hint">&#8505; <strong>Total dispositivo</strong> incluye el SO y otros procesos del telefono. Si el total esta alto pero la app esta baja, el dispositivo esta saturado por otros procesos &mdash; no necesariamente por tu juego.</p>"""
+            """<p class="hint">&#8505; <strong>Total dispositivo</strong> incluye el SO y otros procesos del teléfono. Si el total está alto pero la app está baja, el dispositivo está saturado por otros procesos &mdash; no necesariamente por tu juego.</p>"""
         } else ""
     }
     <div class="chart-container"><canvas id="cpuChart"></canvas></div>
@@ -766,7 +766,7 @@ $excessiveCalloutHtml
         if (showSkinAsPrimary) {
             "Temperatura piel (case): por encima de ~42&deg;C se activa el thermal throttling que reduce CPU/GPU. La temperatura del die de CPU rutinariamente alcanza 80-95&deg;C bajo carga y NO indica un problema salvo que supere los 95&deg;C."
         } else {
-            "Temperatura del die de CPU. El silicio rutinariamente alcanza 80-95&deg;C bajo carga sostenida y carga USB simultanea; solo se considera throttling severo por encima de los 95&deg;C. Si tu dispositivo no expone un sensor de piel, este es el unico valor disponible."
+            "Temperatura del die de CPU. El silicio rutinariamente alcanza 80-95&deg;C bajo carga sostenida y carga USB simultánea; solo se considera throttling severo por encima de los 95&deg;C. Si tu dispositivo no expone un sensor de piel, este es el único valor disponible."
         }
     }</p>
     <div class="stats-row">
@@ -797,7 +797,7 @@ $wakeLocksSectionHtml
         <div class="stat-pill"><span class="stat-pill-label">Consumo</span><span class="stat-pill-value ${cls(batteryDrain, 10, 5)}">${batteryDrain}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Consumo/min</span><span class="stat-pill-value">${if (duration > 0) fmtUS("%.2f", batteryDrain.toDouble() / (duration / 60.0)) else "0"}%</span></div>
     </div>
-    ${if (!isWifi) """<p class="hint">&#9888; Medido con USB conectado. Para consumo real de bateria, usa modo WiFi.</p>""" else """<p class="hint good">&#10003; Medido via WiFi — consumo real de bateria sin carga USB.</p>"""}
+    ${if (!isWifi) """<p class="hint">&#9888; Medido con USB conectado. Para consumo real de batería, usa modo WiFi.</p>""" else """<p class="hint good">&#10003; Medido vía WiFi — consumo real de batería sin carga USB.</p>"""}
 </section>
 
 <section id="sec-problems" class="card ${if (problems.isNotEmpty()) "card-problems" else ""}">
@@ -859,7 +859,7 @@ $kpiExportButtonsHtml
                 <div class="method-item"><span class="method-label">Memoria</span><span class="method-value">dumpsys meminfo (PSS + Native + Java)</span></div>
                 <div class="method-item"><span class="method-label">CPU</span><span class="method-value">/proc/stat delta entre muestras</span></div>
                 <div class="method-item"><span class="method-label">Temperatura</span><span class="method-value">dumpsys thermalservice + thermal zones</span></div>
-                <div class="method-item"><span class="method-label">Bateria</span><span class="method-value">dumpsys battery${if (isWifi) " (WiFi, sin carga)" else " (USB charging disabled)"}</span></div>
+                <div class="method-item"><span class="method-label">Batería</span><span class="method-value">dumpsys battery${if (isWifi) " (WiFi, sin carga)" else " (USB charging disabled)"}</span></div>
                 <div class="method-item"><span class="method-label">Nota</span><span class="method-value">Base 100 - penalizaciones (FPS/P1/problemas)</span></div>
             </div>
         </div>
@@ -890,7 +890,7 @@ ${if (info?.platform == com.gameperf.desktop.core.model.DevicePlatform.IOS) """
         <p>&#8226; La temperatura de skin no esta disponible en iOS.</p>
         <p>&#8226; La memoria muestra el total (physFootprint). No se puede separar nativa/Java en iOS.</p>
         <p>&#8226; GPU% es estimado desde el frame timing, no una lectura directa del hardware.</p>
-        <p>&#8226; El video se captura mediante screenshots (15fps Mac / 8fps Windows), no grabacion nativa.</p>
+        <p>&#8226; El vídeo se captura mediante screenshots (15fps Mac / 8fps Windows), no grabación nativa.</p>
     </div>
 </section>
 """ else ""}
@@ -1881,9 +1881,9 @@ $cards
             ThermalUnavailableReason.ALL_TEMPS_INVALID ->
                 "Las temperaturas reportadas están fuera del rango plausible del sensor (probablemente lecturas corruptas o en otra escala)."
             ThermalUnavailableReason.PERMISSION_DENIED ->
-                "El sistema operativo negó los permisos necesarios para leer los sensores térmicos. Probá habilitar adb root si tu dispositivo lo permite."
+                "El sistema operativo negó los permisos necesarios para leer los sensores térmicos. Prueba a habilitar adb root si tu dispositivo lo permite."
             ThermalUnavailableReason.UNKNOWN ->
-                "El motivo exacto es desconocido. Reportá este caso adjuntando las zonas listadas debajo para que podamos extender el catálogo."
+                "El motivo exacto es desconocido. Reporta este caso adjuntando las zonas listadas debajo para que podamos extender el catálogo."
         }
         val zoneItems = diagnostic.rawZoneNames.take(10).joinToString("") { name ->
             "<li><code>${esc(name)}</code></li>"
@@ -1933,15 +1933,15 @@ $cards
             FPowerUnavailableReason.BATTERY_PATH_MISSING ->
                 "No pudimos leer el consumo de batería en este dispositivo. Probamos los siguientes paths sysfs sin éxito; probablemente el vendor todavía no está en nuestro catálogo."
             FPowerUnavailableReason.FPS_ZERO ->
-                "No hay FPS válidos en esta sesión, por lo que no se puede calcular mW/frame. Capturá una sesión con gameplay activo."
+                "No hay FPS válidos en esta sesión, por lo que no se puede calcular mW/frame. Captura una sesión con gameplay activo."
             FPowerUnavailableReason.IMPLAUSIBLE_VALUE ->
-                "Los valores leídos del sensor de batería están fuera del rango plausible (probable bug del kernel del dispositivo). Reportá la marca, el modelo y la versión de Android."
+                "Los valores leídos del sensor de batería están fuera del rango plausible (probable bug del kernel del dispositivo). Reporta la marca, el modelo y la versión de Android."
             FPowerUnavailableReason.OEM_LOCKED ->
                 "Este OEM (Huawei Knox, Xiaomi GameTurbo o equivalente) bloquea el acceso al sensor de batería. No hay workaround sin root."
             FPowerUnavailableReason.PERMISSION_DENIED ->
-                "El sistema operativo negó los permisos necesarios para leer el sensor de batería. Probá habilitar adb root si tu dispositivo lo permite."
+                "El sistema operativo negó los permisos necesarios para leer el sensor de batería. Prueba a habilitar adb root si tu dispositivo lo permite."
             FPowerUnavailableReason.UNKNOWN ->
-                "El motivo exacto es desconocido. Reportá este caso adjuntando los paths listados debajo para que podamos extender el catálogo."
+                "El motivo exacto es desconocido. Reporta este caso adjuntando los paths listados debajo para que podamos extender el catálogo."
         }
         val pathItems = diagnostic.rawPathsTried.take(10).joinToString("") { p ->
             "<li><code>${esc(p)}</code></li>"
@@ -2018,9 +2018,10 @@ $cards
      * one-sentence reason copy + lists raw probedPaths and (when relevant)
      * the failedEnableCommand.
      *
-     * Voice register: tuteo-formal ("ten en cuenta", "tu dispositivo", NOT
-     * "tené" / "tu juego" voseo). Matches the README in-app castellano formal
-     * convention (CLAUDE.md "Convención de idiomas").
+     * Voice register: neutral Castilian Spanish (Spain), "tú" form ("ten en
+     * cuenta", "tu dispositivo", NOT Rioplatense voseo "tené" / "tu juego").
+     * Matches the README in-app castellano formal convention (CLAUDE.md
+     * "Convención de idiomas").
      *
      * Path strings are escaped via [esc] defensively in case a vendor exposes
      * HTML-special chars in a sysfs node name; [probedPaths] is already capped
@@ -2106,9 +2107,10 @@ $cards
      * distinct one-sentence reason copy + lists raw probed sources and
      * failed binder codes when available.
      *
-     * Voice register: tuteo-formal ("ten en cuenta", "tu dispositivo", NOT
-     * "tené" voseo). Matches the README in-app castellano formal convention
-     * (CLAUDE.md "Convención de idiomas").
+     * Voice register: neutral Castilian Spanish (Spain), "tú" form ("ten en
+     * cuenta", "tu dispositivo", NOT Rioplatense voseo "tené"). Matches the
+     * README in-app castellano formal convention (CLAUDE.md "Convención de
+     * idiomas").
      */
     private fun networkDiagnosticBanner(diagnostic: NetworkDiagnostic): String {
         val reasonText = when (diagnostic.reason) {
@@ -2116,8 +2118,8 @@ $cards
                 "Los códigos binder de netstats que probamos no devolvieron datos legibles. " +
                     "Esto suele pasar en versiones de Android que renombraron la transacción " +
                     "(AOSP renumeró el call entre Android 11 y 14). Ten en cuenta que la app " +
-                    "intentará la siguiente probe con dumpsys; si seguís viendo este mensaje, " +
-                    "actualizá tu dispositivo o reportá el modelo + versión para sumarlo al catálogo."
+                    "intentará la siguiente probe con dumpsys; si sigues viendo este mensaje, " +
+                    "actualiza tu dispositivo o reporta el modelo + versión para sumarlo al catálogo."
             NetworkUnavailableReason.DUMPSYS_PERMISSION_DENIED ->
                 "El comando dumpsys netstats requiere el permiso android.permission.DUMP que " +
                     "no está disponible en tu dispositivo sin root. No hay workaround sin acceso " +
@@ -2125,7 +2127,7 @@ $cards
             NetworkUnavailableReason.ALL_PROBES_FAILED ->
                 "Ningún sondeo de netstats funcionó: ni los códigos binder ni el fallback dumpsys " +
                     "produjeron datos legibles. Tu dispositivo probablemente no expone la API de " +
-                    "netstats por UID. Hacé una medición manual de tráfico desde la app o el " +
+                    "netstats por UID. Haz una medición manual de tráfico desde la app o el " +
                     "panel del juego como fallback."
             NetworkUnavailableReason.IMPLAUSIBLE_VALUE ->
                 "El sondeo binder devolvió un valor fuera del rango plausible (0 a 100 GB). Esto " +
@@ -2133,7 +2135,7 @@ $cards
                     "leímos basura interpretada como bytes). El sistema descartó la lectura y la " +
                     "verificación en laboratorio queda pendiente para confirmar el código correcto."
             NetworkUnavailableReason.CAPTURE_THREW ->
-                "Se produjo un error inesperado leyendo netstats. Reportá el modelo, marca y " +
+                "Se produjo un error inesperado leyendo netstats. Reporta el modelo, marca y " +
                     "versión de Android para que podamos investigarlo y la app no se cae — sigue " +
                     "midiendo el resto de las métricas con normalidad."
         }
@@ -2268,7 +2270,7 @@ $cards
         <div class="stat-pill"><span class="stat-pill-label">Total screen-on</span><span class="stat-pill-value">$onText</span></div>
         $vitalsBadge
     </div>
-    <p class="hint">&#8505; <strong>Alerta temprana Vitals (v1):</strong> esta lectura corresponde a una única sesión. Google Play Vitals oficial mide el % de usuarios cross-session que cruzaron el umbral de 2h en 24h screen-off — la métrica que penaliza con throttling de descubrimiento. v1 te avisa cuando una sesión sola ya cruza 2h, así sabés que esa configuración va a generar penalizaciones en producción.</p>
+    <p class="hint">&#8505; <strong>Alerta temprana Vitals (v1):</strong> esta lectura corresponde a una única sesión. Google Play Vitals oficial mide el % de usuarios cross-session que cruzaron el umbral de 2h en 24h screen-off — la métrica que penaliza con throttling de descubrimiento. v1 te avisa cuando una sesión sola ya cruza 2h, así sabes que esa configuración va a generar penalizaciones en producción.</p>
 </section>"""
         }
         return ""
@@ -2288,14 +2290,14 @@ $cards
             WakeLocksUnavailableReason.PARSE_FAILED ->
                 "No pudimos leer batterystats. Esto suele pasar en builds de usuario " +
                     "donde dumpsys está restringido por permiso o el output viene truncado. " +
-                    "Probá una build userdebug o un dispositivo con dumpsys accesible."
+                    "Prueba con una build userdebug o un dispositivo con dumpsys accesible."
             WakeLocksUnavailableReason.OUT_OF_RANGE_VALUE ->
                 "Lectura fuera del rango razonable (0 a 24h). Suele ser un reset de " +
                     "contadores mid-session o un formato inesperado de duración. El sistema " +
                     "descartó las entradas anómalas para no contaminar los totales."
             WakeLocksUnavailableReason.CAPTURE_THREW ->
                 "Error inesperado capturando wake locks. La métrica de FPS y el resto " +
-                    "de la sesión siguen siendo válidos — solo este probe falló. Reportá modelo + " +
+                    "de la sesión siguen siendo válidos — solo este probe falló. Reporta modelo + " +
                     "versión de Android para que podamos investigarlo."
         }
         val probedBlock = if (diagnostic.probedCommand.isEmpty()) "" else """

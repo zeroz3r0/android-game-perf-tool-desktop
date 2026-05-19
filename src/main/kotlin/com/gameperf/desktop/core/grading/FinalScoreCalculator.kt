@@ -117,7 +117,7 @@ object FinalScoreCalculator {
             }
             p50Ratio < 0.7 -> {
                 score -= 20
-                problems.add("FPS mediana $p50 vs target ${targetFps} - Se nota falta de fluidez en escenas con accion")
+                problems.add("FPS mediana $p50 vs target ${targetFps} - Se nota falta de fluidez en escenas con acción")
             }
             p50Ratio < 0.85 -> score -= 8
         }
@@ -138,7 +138,7 @@ object FinalScoreCalculator {
         when {
             jankRatio > 0.20 -> {
                 score -= 15
-                problems.add("$totalJank frames con jank (${(jankRatio * 100).toInt()}% de la sesion) - Falta de fluidez perceptible")
+                problems.add("$totalJank frames con jank (${(jankRatio * 100).toInt()}% de la sesión) - Falta de fluidez perceptible")
             }
             jankRatio > 0.10 -> score -= 8
             jankRatio > 0.05 -> score -= 3
@@ -146,7 +146,7 @@ object FinalScoreCalculator {
         // Stutter penalty (frames > 100ms = visible freezes regardless of target).
         if (totalStutter > 5) {
             score -= 10
-            problems.add("$totalStutter freezes visibles (frames > 100ms) durante la sesion")
+            problems.add("$totalStutter freezes visibles (frames > 100ms) durante la sesión")
         }
         if (peakMem > 2000) { score -= 12; problems.add("Pico de memoria ${peakMem}MB - Riesgo de cierre forzado en dispositivos con poca RAM") }
         else if (peakMem > 1500) { score -= 6; problems.add("Memoria alta: ${peakMem}MB") }

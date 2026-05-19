@@ -73,7 +73,7 @@ class SidecarLifecycle(
         // Wait for health check (up to 10s)
         val healthy = waitForHealth(timeoutMs = 10_000)
         if (!healthy) {
-            lastError = "El sidecar iOS no respondio al health check tras 10 segundos."
+            lastError = "El sidecar iOS no respondió al health check tras 10 segundos."
             stop()
             return false
         }

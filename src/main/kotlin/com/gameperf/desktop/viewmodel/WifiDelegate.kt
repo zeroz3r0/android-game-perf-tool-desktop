@@ -74,24 +74,24 @@ class WifiDelegate(
 
     private fun mapPairReasonToMessage(reason: PairFailureReason): String = when (reason) {
         PairFailureReason.INVALID_CODE, PairFailureReason.EXPIRED_CODE ->
-            "Codigo incorrecto. Abri nuevamente 'Emparejar dispositivo con codigo' en el movil para generar un codigo nuevo."
+            "Código incorrecto. Abre de nuevo 'Emparejar dispositivo con código' en el móvil para generar un código nuevo."
         PairFailureReason.CONNECTION_REFUSED ->
-            "No se puede conectar a esa direccion. Verifica que la IP sea la que muestra el movil y que esten en la misma WiFi."
+            "No se puede conectar a esa dirección. Verifica que la IP sea la que muestra el móvil y que estén en la misma WiFi."
         PairFailureReason.TIMEOUT ->
-            "El movil no respondio. Asegurate de que 'Depuracion inalambrica' este activa en el movil."
+            "El móvil no respondió. Asegúrate de que 'Depuración inalámbrica' esté activa en el móvil."
         PairFailureReason.UNKNOWN ->
-            "No se pudo emparejar el dispositivo. Volve a abrir el menu de emparejamiento en el movil y probá de nuevo."
+            "No se pudo emparejar el dispositivo. Vuelve a abrir el menú de emparejamiento en el móvil y prueba de nuevo."
     }
 
     private fun mapConnectReasonToMessage(reason: ConnectFailureReason): String = when (reason) {
         ConnectFailureReason.NO_ROUTE ->
-            "El movil no esta visible en la red. Verifica que tenga WiFi activa y este en la misma red que esta computadora."
+            "El móvil no está visible en la red. Verifica que tenga WiFi activa y esté en la misma red que este ordenador."
         ConnectFailureReason.REFUSED ->
-            "El movil rechazo la conexion. Abri de nuevo 'Depuracion inalambrica' en el movil y probá de nuevo."
+            "El móvil rechazó la conexión. Abre de nuevo 'Depuración inalámbrica' en el móvil y prueba de nuevo."
         ConnectFailureReason.TIMEOUT ->
-            "El movil no respondio al conectar. Verifica que siga en la misma WiFi."
+            "El móvil no respondió al conectar. Verifica que siga en la misma WiFi."
         ConnectFailureReason.UNKNOWN ->
-            "No se pudo conectar al dispositivo. Volve a parearlo desde el menu del movil."
+            "No se pudo conectar al dispositivo. Vuelve a emparejarlo desde el menú del móvil."
     }
 
     private fun startMdnsPolling() {
@@ -173,7 +173,7 @@ class WifiDelegate(
             val cs = findConnectServiceForInstance(service.instance, retries = 1)
             if (cs == null) {
                 _wifiPanel.value = WifiPanelState.Error(
-                    message = "No se pudo encontrar el puerto de conexion del dispositivo. Volve a parear desde el menu del movil.",
+                    message = "No se pudo encontrar el puerto de conexión del dispositivo. Vuelve a emparejarlo desde el menú del móvil.",
                     recoverable = true,
                 )
                 return

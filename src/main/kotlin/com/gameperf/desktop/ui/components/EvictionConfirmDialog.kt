@@ -34,7 +34,7 @@ import com.gameperf.desktop.viewmodel.AppViewModel
  *  - "Eliminar de todas formas" — proceed with the eviction, deleting orphan report + video
  *  - "Cancelar" — discard the new entry
  *
- * UI strings: castellano formal **TUTEO** (per CLAUDE.md), e.g. "vas a perder", "marcala".
+ * UI strings: neutral Castilian Spanish (Spain) **"tú" form** (per CLAUDE.md), e.g. "vas a perder", "márcala".
  */
 @Composable
 fun EvictionConfirmDialog(
@@ -63,7 +63,7 @@ fun EvictionConfirmDialog(
                 buildString {
                     append("Vas a perder la sesión más antigua: «")
                     append(pending.evictableEntry.name)
-                    append("». ¿Querés marcarla como favorita primero para conservarla?")
+                    append("». ¿Quieres marcarla como favorita primero para conservarla?")
                 },
                 color = TextSecondary,
                 fontSize = 13.sp,

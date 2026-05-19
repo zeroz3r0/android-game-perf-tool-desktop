@@ -157,7 +157,7 @@ fun HomeScreen(vm: AppViewModel) {
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "Nueva version v${info.version} disponible",
+                                "Nueva versión v${info.version} disponible",
                                 color = Yellow,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
@@ -559,7 +559,7 @@ fun HomeScreen(vm: AppViewModel) {
                             Text(gamePackage!!, color = Green, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                     } else {
-                        Text("No se detecto juego", color = Yellow, fontSize = 13.sp)
+                        Text("No se detectó juego", color = Yellow, fontSize = 13.sp)
                         Spacer(Modifier.height(4.dp))
                         Text("Abre un juego en el dispositivo y pulsa Refrescar", color = TextDim, fontSize = 11.sp)
                     }
@@ -615,7 +615,7 @@ fun HomeScreen(vm: AppViewModel) {
                     val currentTag by vm.sessionTag.collectAsState()
                     val currentCompetitor by vm.competitorName.collectAsState()
 
-                    Text("Tipo de sesion", color = TextSecondary, fontSize = 12.sp)
+                    Text("Tipo de sesión", color = TextSecondary, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -718,7 +718,7 @@ fun HomeScreen(vm: AppViewModel) {
                         // the SessionPack importer validates + rejects on mismatch).
                         TextButton(
                             onClick = {
-                                val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Importar sesion .gameperf", java.awt.FileDialog.LOAD)
+                                val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Importar sesión .gameperf", java.awt.FileDialog.LOAD)
                                 dialog.setFilenameFilter { _, name -> name.endsWith(".gameperf", ignoreCase = true) }
                                 dialog.isVisible = true
                                 val chosen = dialog.file
@@ -852,7 +852,7 @@ fun HomeScreen(vm: AppViewModel) {
                         }
                         if (!canCompare) {
                             Text(
-                                "Selecciona al menos 1 sesion 'Nuestro juego' y 1 'Competencia'",
+                                "Selecciona al menos 1 sesión 'Nuestro juego' y 1 'Competencia'",
                                 color = Yellow, fontSize = 10.sp,
                                 modifier = Modifier.padding(top = 4.dp)
                             )
@@ -1078,7 +1078,7 @@ private fun HistoryEntryRow(
             // from the "Importar .gameperf" button at the top of the history.
             IconButton(
                 onClick = {
-                    val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Exportar sesion como .gameperf", java.awt.FileDialog.SAVE)
+                    val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Exportar sesión como .gameperf", java.awt.FileDialog.SAVE)
                     dialog.file = "${entry.name.ifBlank { "sesion" }}.gameperf"
                     dialog.isVisible = true
                     val chosen = dialog.file
@@ -1232,7 +1232,7 @@ private fun WifiPanelContent(viewModel: AppViewModel) {
                     Spacer(Modifier.width(8.dp))
                     Text(
                         "platform-tools viejo detectado (v${version.major}.${version.minor}.${version.patch}). " +
-                            "Para reconexion automatica entre sesiones, actualizá a platform-tools 33 o superior.",
+                            "Para reconexión automática entre sesiones, actualiza a platform-tools 33 o superior.",
                         color = Yellow,
                         fontSize = 11.sp
                     )
@@ -1311,7 +1311,7 @@ private fun WifiPanelContent(viewModel: AppViewModel) {
 private fun WifiOnboardingSteps() {
     Column {
         Text(
-            "1. En el movil: Opciones de desarrollador → Depuracion inalambrica → ON",
+            "1. En el móvil: Opciones de desarrollador → Depuración inalámbrica → ON",
             color = TextDim, fontSize = 11.sp
         )
         Spacer(Modifier.height(2.dp))
@@ -1369,7 +1369,7 @@ private fun DiscoveredView(
 
         if (!mdnsAvailable) {
             Text(
-                "El descubrimiento automatico no esta disponible. Usa el formulario manual para agregar el dispositivo.",
+                "El descubrimiento automático no está disponible. Usa el formulario manual para añadir el dispositivo.",
                 color = Yellow, fontSize = 11.sp
             )
             return@Column
@@ -1377,7 +1377,7 @@ private fun DiscoveredView(
 
         if (services.isEmpty()) {
             Text(
-                "Aun no se encontraron dispositivos. Asegurate de activar 'Depuracion inalambrica' en el movil.",
+                "Aún no se encontraron dispositivos. Asegúrate de activar 'Depuración inalámbrica' en el móvil.",
                 color = TextDim, fontSize = 11.sp
             )
         } else {
@@ -1529,7 +1529,7 @@ private fun InputtingManualView(
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
-            "No se encontraron dispositivos. Asegurate de activar 'Depuracion inalambrica' en el movil y de estar en la misma red WiFi.",
+            "No se encontraron dispositivos. Asegúrate de activar 'Depuración inalámbrica' en el móvil y de estar en la misma red WiFi.",
             color = Yellow, fontSize = 11.sp
         )
         Spacer(Modifier.height(12.dp))

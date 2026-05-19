@@ -868,7 +868,7 @@ class AppViewModel(
             }
             recordProcess = startSegmentWithRetry(deviceId, sessionId, recordSegment, recordProfile)
             if (recordProcess == null) {
-                _captureWarning.value = "El video no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las metricas si se estan registrando."
+                _captureWarning.value = "El vídeo no se pudo grabar en este dispositivo (screenrecord rechazado por el sistema). Las métricas sí se están registrando."
                 System.err.println("AppViewModel: screenrecord failed for both COMPACT and STANDARD profiles on device $deviceId")
             }
         }
@@ -1716,7 +1716,7 @@ class AppViewModel(
                 _statusMessage.value = "Buscando juego en primer plano..."
                 _gamePackage.value = iosBridge?.detectGame(device.id)
                 _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar"
-                    else "No se detecto juego. Abre un juego en el iPhone y pulsa Refrescar."
+                    else "No se detectó juego. Abre un juego en el iPhone y pulsa Refrescar."
             } else {
                 // Android device — use AdbBridgeApi
                 // v4.1.0: adb.getDeviceInfo() now returns core.model.DeviceInfo directly
@@ -1724,7 +1724,7 @@ class AppViewModel(
                 _statusMessage.value = "Buscando juego en primer plano..."
                 _gamePackage.value = adb.detectGame(device.id)
                 _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar"
-                    else "No se detecto juego. Abre un juego y pulsa Refrescar."
+                    else "No se detectó juego. Abre un juego y pulsa Refrescar."
             }
         }
     }
@@ -1734,7 +1734,7 @@ class AppViewModel(
         scope.launch {
             _statusMessage.value = "Buscando juego..."
             _gamePackage.value = adb.detectGame(device.id)
-            _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar" else "No se detecto juego."
+            _statusMessage.value = if (_gamePackage.value != null) "Listo para capturar" else "No se detectó juego."
         }
     }
 
@@ -1764,7 +1764,7 @@ class AppViewModel(
                     _wifiStatus.value = "WiFi activo pero no verificado. Intenta refrescar."
                 }
             } else {
-                _wifiStatus.value = "No se pudo activar WiFi. Verifica que el movil y el PC estan en la misma red."
+                _wifiStatus.value = "No se pudo activar WiFi. Verifica que el móvil y el PC estén en la misma red."
             }
         }
     }
@@ -1846,7 +1846,7 @@ class AppViewModel(
             // v4.2.5: surface processing status to the UI so the user knows the
             // post-capture pipeline is running (~30-90s for long sessions). The
             // overlay disappears when _processingStatus goes back to null.
-            _processingStatus.value = "Deteniendo grabacion..."
+            _processingStatus.value = "Deteniendo grabación..."
 
             // v4.0.0: platform-aware recording stop + pull
             val videoPath: String
@@ -1888,10 +1888,10 @@ class AppViewModel(
                     } else if (ffmpegMissing) {
                         val anyValid = recordings.firstOrNull { adb.isValidVideoFile(it) } ?: recordings.first()
                         System.err.println("AppViewModel: ffmpeg not found, video kept as ${recordings.size} separate segments")
-                        _captureWarning.value = "ffmpeg no esta instalado — el video se grabo en ${recordings.size} segmentos " +
+                        _captureWarning.value = "ffmpeg no está instalado — el vídeo se grabó en ${recordings.size} segmentos " +
                             "separados de ~3 min cada uno. Solo se muestra el primero. " +
                             "Instala ffmpeg (con winget install Gyan.FFmpeg, scoop install ffmpeg, o brew install ffmpeg) " +
-                            "y al reabrir la app los segmentos se juntaran automaticamente."
+                            "y al reabrir la app los segmentos se juntarán automáticamente."
                         anyValid.absolutePath
                     } else {
                         val anyValid = recordings.firstOrNull { adb.isValidVideoFile(it) }
@@ -1901,7 +1901,7 @@ class AppViewModel(
                             anyValid.absolutePath
                         } else {
                             System.err.println("AppViewModel: NO valid video segments produced (all ${recordings.size} corrupt)")
-                            _captureWarning.value = "Los segmentos de video estan corruptos y no se pudieron unir. Las metricas si estan completas."
+                            _captureWarning.value = "Los segmentos de vídeo están corruptos y no se pudieron unir. Las métricas sí están completas."
                             ""
                         }
                     }
@@ -2299,7 +2299,7 @@ class AppViewModel(
             // the insert by raising _evictionPending and let the UI dialog drive the
             // resolution via confirmEviction(EvictionDecision). Fakes still go through
             // the silent path unchanged.
-            _processingStatus.value = "Guardando sesion en el historial..."
+            _processingStatus.value = "Guardando sesión en el historial..."
             val captureTag = _sessionTag.value
             val captureCompetitor = _competitorName.value
             val pendingEntry = SessionHistory.HistoryEntry(
@@ -2608,7 +2608,7 @@ class AppViewModel(
                 val imported = com.gameperf.desktop.cloud.SessionPack.import(packFile, reportsDir)
                 val existing = _history.value.any { it.id == imported.id }
                 if (existing) {
-                    _sessionPackMessage.value = "La sesion ya estaba en el historial, no se duplico"
+                    _sessionPackMessage.value = "La sesión ya estaba en el historial, no se duplicó"
                 } else {
                     SessionHistory.addEntry(imported)
                     _history.value = SessionHistory.load()
