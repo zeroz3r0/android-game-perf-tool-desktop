@@ -44,6 +44,104 @@ object ReportGenerator {
      */
     private const val WAKE_LOCKS_VITALS_HOURS_FLOOR: Double = 2.0
 
+    /**
+     * Print-palette listener wired into both single-session and comparativa reports.
+     * Re-applies high-contrast colors when the browser fires `beforeprint` (Ctrl+P)
+     * and restores dark-mode colors on `afterprint`.
+     *
+     * Chart.js bakes colors into the canvas at construction time, so CSS `@media print`
+     * cannot reach inside the canvas. Mutating `Chart.defaults` alone is not enough:
+     * Chart.js v4 only re-reads defaults for options the instance did NOT pass
+     * explicitly. Every chart in this report passes per-instance colors (legend labels,
+     * axis ticks, grids, radar pointLabels/angleLines), so we must walk every
+     * `Chart.instances[i].options` and mutate the explicit paths in place. Then call
+     * `update('none')` to repaint without animation.
+     *
+     * Paths mutated (only paths that actually exist on dark-mode `B` and the radar):
+     *  - plugins.legend.labels.color
+     *  - scales.x.ticks.color, scales.x.grid.color
+     *  - scales.y.ticks.color, scales.y.grid.color
+     *  - scales.r.ticks.color, scales.r.grid.color, scales.r.angleLines.color,
+     *    scales.r.pointLabels.color
+     *
+     * Best-effort: Chart.js v3+ exposes `Chart.instances` as an object; v2 as an array.
+     * `Object.values(arr)` returns the same entries for both, so this works in both
+     * shapes without branching.
+     */
+    private val PRINT_PALETTE_JS: String = """
+(function(){
+  var DARK = {
+    legendFg: '#94a3b8',
+    xTick:    '#64748b',
+    xGrid:    'rgba(148,163,184,0.06)',
+    yTick:    '#94a3b8',
+    yGrid:    'rgba(148,163,184,0.08)',
+    rTick:    '#475569',
+    rGrid:    'rgba(148,163,184,0.1)',
+    rAngle:   'rgba(148,163,184,0.08)',
+    rLabel:   '#94a3b8',
+    defFg:    '#94a3b8',
+    defBorder:'rgba(255,255,255,0.1)'
+  };
+  var PRINT = {
+    legendFg: '#1e293b',
+    xTick:    '#334155',
+    xGrid:    'rgba(15,23,42,0.12)',
+    yTick:    '#334155',
+    yGrid:    'rgba(15,23,42,0.10)',
+    rTick:    '#1e293b',
+    rGrid:    'rgba(15,23,42,0.20)',
+    rAngle:   'rgba(15,23,42,0.25)',
+    rLabel:   '#1e293b',
+    defFg:    '#1e293b',
+    defBorder:'rgba(0,0,0,0.1)'
+  };
+
+  function setIfExists(obj, path, value) {
+    if (obj == null) return;
+    var parts = path.split('.');
+    var cur = obj;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (cur == null || typeof cur !== 'object') return;
+      cur = cur[parts[i]];
+    }
+    if (cur != null && typeof cur === 'object' && parts[parts.length - 1] in cur) {
+      cur[parts[parts.length - 1]] = value;
+    }
+  }
+
+  function __applyPrintPalette(printing) {
+    try {
+      var P = printing ? PRINT : DARK;
+      if (typeof Chart === 'undefined') return;
+      Chart.defaults.color = P.defFg;
+      Chart.defaults.borderColor = P.defBorder;
+      var insts = Chart.instances ? Object.values(Chart.instances) : [];
+      insts.forEach(function(c) {
+        var o = c && c.options;
+        if (!o) return;
+        setIfExists(o, 'plugins.legend.labels.color', P.legendFg);
+        setIfExists(o, 'scales.x.ticks.color', P.xTick);
+        setIfExists(o, 'scales.x.grid.color',  P.xGrid);
+        setIfExists(o, 'scales.y.ticks.color', P.yTick);
+        setIfExists(o, 'scales.y.grid.color',  P.yGrid);
+        setIfExists(o, 'scales.r.ticks.color',       P.rTick);
+        setIfExists(o, 'scales.r.grid.color',        P.rGrid);
+        setIfExists(o, 'scales.r.angleLines.color',  P.rAngle);
+        setIfExists(o, 'scales.r.pointLabels.color', P.rLabel);
+        try { c.update('none'); } catch(e){}
+      });
+    } catch(e){}
+  }
+
+  if (typeof window !== 'undefined') {
+    window.__applyPrintPalette = __applyPrintPalette;
+    window.addEventListener('beforeprint', function(){ __applyPrintPalette(true);  });
+    window.addEventListener('afterprint',  function(){ __applyPrintPalette(false); });
+  }
+})();
+""".trimIndent()
+
     // ══════════ EMBEDDED ASSETS (offline Chart.js) ══════════
     // Loaded once per process via `by lazy` (thread-safe, SYNCHRONIZED mode by default).
     // Keeps generated HTML fully offline-capable: no CDN references, no runtime network.
@@ -1100,6 +1198,8 @@ function copyJson(){var d=document.getElementById('sessionData').textContent;nav
 document.querySelectorAll('.nav-link').forEach(function(a){a.addEventListener('click',function(e){e.preventDefault();var t=document.querySelector(this.getAttribute('href'));if(t)t.scrollIntoView({behavior:'smooth',block:'start'})})});
 var secs=document.querySelectorAll('section[id]');var nls=document.querySelectorAll('.nav-link');
 window.addEventListener('scroll',function(){var cur='';secs.forEach(function(s){if(window.scrollY>=s.offsetTop-120)cur=s.id});nls.forEach(function(l){l.classList.remove('active');if(l.getAttribute('href')==='#'+cur)l.classList.add('active')})});
+
+$PRINT_PALETTE_JS
 </script>
 </body>
 </html>""")
@@ -1291,7 +1391,25 @@ td{border-bottom:1px solid rgba(148,163,184,0.04);color:#cbd5e1}
 .summary-row.tie .summary-result{color:#f59e0b}
 .footer{text-align:center;padding:24px 0 8px;margin-top:32px;border-top:1px solid rgba(148,163,184,0.06);color:#475569;font-size:11px}
 .footer-logo{font-size:13px;font-weight:800;letter-spacing:1px;text-transform:uppercase;background:linear-gradient(135deg,#38bdf8,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:6px}
-@media print{body{background:#fff!important;color:#1e293b!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.card{background:#fafafa!important;border:1px solid #e2e8f0!important}.metric-val.best{color:#059669!important}.metric-val.worst{color:#dc2626!important}th{background:#f1f5f9!important;color:#475569!important}td{color:#1e293b!important}}
+@media print{
+  @page { size: A4; margin: 10mm }
+  html,body{background:#fff!important;color:#0f172a!important;
+            -webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .report-header{background:#e2e8f0!important;border:1px solid #94a3b8!important}
+  .report-header::after{display:none!important}
+  .header-title{-webkit-text-fill-color:#0f172a!important;background:none!important;color:#0f172a!important}
+  .card{background:#f1f5f9!important;border:1px solid #94a3b8!important;
+        box-shadow:none!important;page-break-inside:avoid}
+  .footer-logo{-webkit-text-fill-color:#1e293b!important;background:none!important;color:#1e293b!important}
+  th{background:#475569!important;color:#fff!important}
+  td{color:#0f172a!important}
+  tr:nth-child(even) td{background:#f1f5f9!important}
+  .summary-row.win{background:#dcfce7!important;border-color:#16a34a!important}
+  .summary-row.lose{background:#fef2f2!important;border-color:#dc2626!important}
+  .summary-row.tie{background:#fffbeb!important;border-color:#d97706!important}
+  .metric-val.best{color:#059669!important}
+  .metric-val.worst{color:#dc2626!important}
+}
 </style>
 </head>
 <body>
@@ -1360,6 +1478,8 @@ new Chart(document.getElementById('radarChart').getContext('2d'),{
         }
     }
 });
+
+$PRINT_PALETTE_JS
 </script>
 </body>
 </html>"""
