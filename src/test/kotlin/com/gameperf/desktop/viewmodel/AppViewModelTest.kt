@@ -539,7 +539,7 @@ class AppViewModelTest {
                 errorState as WifiDelegate.WifiPanelState.Error
 
                 assertEquals(
-                    "Codigo incorrecto. Abri nuevamente 'Emparejar dispositivo con codigo' en el movil para generar un codigo nuevo.",
+                    "Código incorrecto. Abre de nuevo 'Emparejar dispositivo con código' en el móvil para generar un código nuevo.",
                     errorState.message,
                 )
                 assertTrue(errorState.recoverable)
@@ -625,7 +625,7 @@ class AppViewModelTest {
                 errorState as WifiDelegate.WifiPanelState.Error
 
                 assertEquals(
-                    "El movil no esta visible en la red. Verifica que tenga WiFi activa y este en la misma red que esta computadora.",
+                    "El móvil no está visible en la red. Verifica que tenga WiFi activa y esté en la misma red que este ordenador.",
                     errorState.message,
                 )
             } finally {
@@ -820,7 +820,7 @@ class AppViewModelTest {
                 errorState as WifiDelegate.WifiPanelState.Error
 
                 assertEquals(
-                    "El movil no respondio. Asegurate de que 'Depuracion inalambrica' este activa en el movil.",
+                    "El móvil no respondió. Asegúrate de que 'Depuración inalámbrica' esté activa en el móvil.",
                     errorState.message,
                 )
             } finally {

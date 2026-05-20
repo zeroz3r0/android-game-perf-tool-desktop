@@ -93,7 +93,7 @@ class FinalScoreCalculatorTest {
         assertEquals(80, result.score)
         assertEquals(1, result.problems.size)
         assertEquals(
-            "FPS mediana 41 vs target 60 - Se nota falta de fluidez en escenas con accion",
+            "FPS mediana 41 vs target 60 - Se nota falta de fluidez en escenas con acción",
             result.problems[0],
         )
     }
@@ -137,7 +137,7 @@ class FinalScoreCalculatorTest {
         assertEquals(80, result.score)
         assertEquals(1, result.problems.size)
         assertEquals(
-            "FPS mediana 30 vs target 60 - Se nota falta de fluidez en escenas con accion",
+            "FPS mediana 30 vs target 60 - Se nota falta de fluidez en escenas con acción",
             result.problems[0],
         )
     }
@@ -181,7 +181,7 @@ class FinalScoreCalculatorTest {
         assertEquals(1, result.problems.size)
         // The percentage is computed as (ratio * 100).toInt(); 0.2222 * 100 = 22.22 → 22
         assertEquals(
-            "800 frames con jank (22% de la sesion) - Falta de fluidez perceptible",
+            "800 frames con jank (22% de la sesión) - Falta de fluidez perceptible",
             result.problems[0],
         )
     }
@@ -223,7 +223,7 @@ class FinalScoreCalculatorTest {
         val result = FinalScoreCalculator.compute(input)
         assertEquals(90, result.score)
         assertEquals(1, result.problems.size)
-        assertEquals("6 freezes visibles (frames > 100ms) durante la sesion", result.problems[0])
+        assertEquals("6 freezes visibles (frames > 100ms) durante la sesión", result.problems[0])
     }
 
     @Test
