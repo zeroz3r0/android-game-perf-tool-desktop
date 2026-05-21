@@ -1867,6 +1867,16 @@ class AppViewModel(
             // v4.4.0: stop auto event detection. Force-closes any still-open
             // events with `endInferred=true` so the report can disclose the
             // synthesized boundary.
+            //
+            // v4.8.0 PR2 (engram #495, #498) — capture detector liveness BEFORE
+            // nulling the reference. The report's silent-detector warning + the
+            // detection-mode banner both need to know whether the detector ran
+            // during the session. Reading `eventDetector != null` AFTER the
+            // null assignment would always report false, causing the report
+            // banner to mislabel any auto-detected session as MANUAL_ONLY.
+            // Do NOT move this capture point past the null assignment without
+            // also reworking the report wiring.
+            val detectorWasActive: Boolean = eventDetector != null
             eventDetector?.stop()
             eventDetector = null
 
@@ -2184,9 +2194,19 @@ class AppViewModel(
                     conclusions = conclusions,
                     filteredAggregates = filterResult.filtered,
                     rawAggregates = filterResult.raw,
-                    detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
+                    // v4.8.0 PR2 (engram #495, #498) — use the lifecycle flag
+                    // captured BEFORE L1871 cleanup. Reading `eventDetector`
+                    // here always evaluated to null (we just nulled it 300+
+                    // lines above) so this banner ALWAYS said MANUAL_ONLY
+                    // even when the detector had been running for minutes.
+                    detectionMode = if (detectorWasActive) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
                     detectorWarnings = _detectorWarnings.value,
                     captureStartMs = captureStartTime,
+                    // v4.8.0 PR1 wire-up — pass the lifecycle flag so the silent-
+                    // detector callout in `sectionEvents` can decide whether the
+                    // session ran with the detector active (>=2 min + 0 meaningful
+                    // events = warn). PR1 shipped this param with default=false.
+                    detectorWasActive = detectorWasActive,
                     // v4.4.1 (temperature-not-shown, Phase 6 wire): propagate the
                     // last-known thermal availability flag + diagnostic payload
                     // so the report renders "N/D" + a Spanish-tuteo-formal banner
@@ -2261,7 +2281,11 @@ class AppViewModel(
                 // copy it from _result.value verbatim. Without this line, detectionMode
                 // would always default to MANUAL_ONLY and the persisted history would
                 // lie about whether the auto-detector actually ran (Bug 2 fidelity fix).
-                detectionMode = if (eventDetector != null) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
+                // v4.8.0 PR2 (engram #495, #498) — the v4.4.1 fix above was incomplete:
+                // by the time SessionResult is built `eventDetector` was already null
+                // (cleanup at L1871). Use the lifecycle flag captured BEFORE cleanup
+                // so the persisted history reflects reality, not nulled state.
+                detectionMode = if (detectorWasActive) DetectionMode.ANDROID_FULL else DetectionMode.MANUAL_ONLY,
                 // v4.5.0 — FPower aggregates + history payload (design §9f, spec FPW-008).
                 // Empty history → 0.0 for both avg and peak (mirrors the post-loop guard at
                 // `maxTempCpu = acc.tempCpuHistory.maxOrNull() ?: 0.0`).
