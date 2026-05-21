@@ -45,6 +45,48 @@ object ReportGenerator {
     private const val WAKE_LOCKS_VITALS_HOURS_FLOOR: Double = 2.0
 
     /**
+     * v4.8.0 — Default minimum session duration before the silent-detector
+     * warning fires. Sessions shorter than 2 minutes are too inconclusive to
+     * label as "detector silent" — the user may just have run a quick smoke
+     * test. Caller can override via the [shouldShowSilentDetectorWarning]
+     * `thresholdMs` parameter (e.g. tests).
+     *
+     * Spec: `event-detection-fidelity` R2 (engram #497).
+     */
+    const val DEFAULT_SILENT_DETECTOR_THRESHOLD_MS: Long = 2L * 60_000L
+
+    /**
+     * v4.8.0 — Decides whether to render the "silent detector" callout in the
+     * events card of the HTML report. Returns `true` when ALL of:
+     *  - the detector was actually active during the session
+     *    ([detectorWasActive] — captured by `AppViewModel` BEFORE the cleanup
+     *    point per the bug-B fidelity fix shipping in a follow-up PR);
+     *  - the session ran for at least [thresholdMs] millis (default 2 minutes);
+     *  - and zero **meaningful** events were detected. Meaningful = total
+     *    detected events MINUS the synthetic APP_STARTUP and SCREEN_TRANSITION
+     *    types so that the warning still surfaces on Unity / Unreal release
+     *    builds where those two firing alone do NOT constitute real detection.
+     *
+     * Pure function: no I/O, no mutable state. Callers compute
+     * [meaningfulEventsCount] from `detectedEvents.filter { it.type !in setOf(APP_STARTUP, SCREEN_TRANSITION) }.size`
+     * at the call site (kept here to avoid coupling this helper to the
+     * `DetectedEvent.Type` enum so the helper stays trivially testable).
+     *
+     * Spec scenarios covered: `event-detection-fidelity` R2.S1..R2.S5 +
+     * custom-threshold (engram #497). Tests: `SilentDetectorWarningTest`.
+     */
+    fun shouldShowSilentDetectorWarning(
+        detectorWasActive: Boolean,
+        sessionDurationMs: Long,
+        meaningfulEventsCount: Int,
+        thresholdMs: Long = DEFAULT_SILENT_DETECTOR_THRESHOLD_MS,
+    ): Boolean {
+        if (!detectorWasActive) return false
+        if (sessionDurationMs < thresholdMs) return false
+        return meaningfulEventsCount == 0
+    }
+
+    /**
      * Print-palette listener wired into both single-session and comparativa reports.
      * Re-applies high-contrast colors when the browser fires `beforeprint` (Ctrl+P)
      * and restores dark-mode colors on `afterprint`.
@@ -191,6 +233,14 @@ object ReportGenerator {
         detectionMode: DetectionMode = DetectionMode.MANUAL_ONLY,
         detectorWarnings: List<String> = emptyList(),
         captureStartMs: Long = 0L,
+        // v4.8.0 — events-catalog-and-device-naming PR1: signals whether the
+        // event detector actually ran during the session. Used to gate the
+        // silent-detector callout in `sectionEvents`. Defaults to false to
+        // preserve legacy behavior (legacy fixtures + pre-v4.8.0 history
+        // re-renders never trigger the warning). The PRODUCTION caller in
+        // `AppViewModel` will pass the real flag once PR2 ships the
+        // capture-point fix. Until then this is dead-code-safe additive.
+        detectorWasActive: Boolean = false,
         // v4.4.1 -- thermal pipeline availability flag + diagnostic payload.
         // When `thermalAvailable = false` the temperature card renders "N/D"
         // instead of "0°C" (which the user would otherwise read as "device is
@@ -394,8 +444,16 @@ object ReportGenerator {
         // v4.4.0: unified events + manual markers section. Replaces the legacy
         // markers-only section with a chronological table that distinguishes
         // manual entries (orange) from auto-detected ones (cyan) via the source
-        // column. Hidden when both lists are empty.
-        val eventsHtml = sectionEvents(markers, events, captureStartMs)
+        // column. Hidden when both lists are empty UNLESS the v4.8.0 silent-
+        // detector warning fires (then the section renders standalone with
+        // just the callout).
+        val eventsHtml = sectionEvents(
+            markers = markers,
+            events = events,
+            captureStartMs = captureStartMs,
+            detectorWasActive = detectorWasActive,
+            sessionDurationMs = duration.toLong() * 1000L,
+        )
 
         // v4.4.0: detection-mode banner + auto-event live count.
         val detectionBannerHtml = detectionModeBanner(detectionMode, events.size, detectorWarnings)
@@ -1757,8 +1815,44 @@ $cards
         markers: List<SessionMarker>,
         events: List<DetectedEvent>,
         captureStartMs: Long,
+        // v4.8.0 — silent-detector warning inputs. When both `detectorWasActive`
+        // and the threshold predicate hold AND no meaningful events were
+        // detected, the section renders a callout EVEN IF markers+events are
+        // empty (the callout stands alone). Defaults preserve legacy behavior:
+        // detectorWasActive=false ⇒ never warns.
+        detectorWasActive: Boolean = false,
+        sessionDurationMs: Long = 0L,
     ): String {
-        if (markers.isEmpty() && events.isEmpty()) return ""
+        // v4.8.0 — meaningful events exclude APP_STARTUP + SCREEN_TRANSITION so
+        // the warning still surfaces on Unity / Unreal release builds where
+        // those two firing alone are NOT real detection signal.
+        val meaningfulEventsCount = events.count {
+            it.type != EventType.APP_STARTUP && it.type != EventType.SCREEN_TRANSITION
+        }
+        val showSilentWarning = shouldShowSilentDetectorWarning(
+            detectorWasActive = detectorWasActive,
+            sessionDurationMs = sessionDurationMs,
+            meaningfulEventsCount = meaningfulEventsCount,
+        )
+        val silentWarningHtml = if (showSilentWarning) {
+            """
+    <div class="callout callout-info" role="status">
+        <strong>&#9432; El detector estuvo activo pero no observó marcas conocidas.</strong>
+        <p>Es típico en builds de release de Unity / Unreal con <code>Debug.Log</code> eliminado por <em>stripping</em>. Para obtener detección fiable, integra el tag GamePerf en tu juego.</p>
+    </div>"""
+        } else ""
+
+        if (markers.isEmpty() && events.isEmpty()) {
+            // v4.8.0 — even with no markers/events, render the warning section
+            // if the silent-detector predicate fires (events card otherwise
+            // hidden ⇒ user never sees the diagnostic).
+            return if (showSilentWarning) """
+<section id="sec-events" class="card">
+    <div class="card-header"><h2>&#128205; Eventos detectados</h2></div>
+    <p class="card-desc">No se registraron eventos manuales ni automáticos durante esta sesión.</p>
+    $silentWarningHtml
+</section>""" else ""
+        }
 
         data class Row(
             val tsMs: Long,
@@ -1877,6 +1971,7 @@ $cards
         </tbody>
     </table>
     </div>
+    $silentWarningHtml
 </section>"""
     }
 

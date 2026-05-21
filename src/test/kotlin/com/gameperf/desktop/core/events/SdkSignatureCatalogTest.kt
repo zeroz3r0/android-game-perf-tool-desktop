@@ -35,7 +35,7 @@ class SdkSignatureCatalogTest {
     // ═══════ catalog-level invariants ═══════
 
     @Test
-    fun `catalog contains exactly the nineteen catalogued SDKs and engines`() {
+    fun `catalog contains exactly the twenty-six catalogued SDKs and engines`() {
         // If anyone removes an SDK they MUST update this assertion deliberately.
         // v4.4.0 baseline: six ad/billing SDKs.
         // v4.4.1 quickfix (audit obs #308): added three engine LOADING signatures.
@@ -47,7 +47,11 @@ class SdkSignatureCatalogTest {
         // `17 + 1 = 18`.
         // Sprint 4 (vr-event-detection): added VRRuntime VR_SESSION signature —
         // `18 + 1 = 19`.
-        assertEquals(19, SdkSignatureCatalog.ALL.size, "expected 19 catalogued SDKs/engines")
+        // v4.8.0 (events-catalog-and-device-naming): added 7 entries —
+        // Firebase Analytics, GameAnalytics, AppsFlyer, Adjust, Choreographer
+        // Stalls, ActivityTaskManager Transitions, Unity Scene Loaded —
+        // `19 + 7 = 26`.
+        assertEquals(26, SdkSignatureCatalog.ALL.size, "expected 26 catalogued SDKs/engines")
         val sdkNames = SdkSignatureCatalog.ALL.map { it.sdk }.toSet()
         val expected = setOf(
             "AdMob",
@@ -74,6 +78,14 @@ class SdkSignatureCatalogTest {
             "GamePerf",
             // Sprint 4 — VR_SESSION (vr-event-detection)
             "VRRuntime",
+            // v4.8.0 — events-catalog-and-device-naming
+            "Firebase Analytics",
+            "GameAnalytics",
+            "AppsFlyer",
+            "Adjust",
+            "Choreographer Stalls",
+            "ActivityTaskManager Transitions",
+            "Unity Scene Loaded",
         )
         assertEquals(expected, sdkNames, "catalog SDK set drifted from spec")
     }
@@ -86,32 +98,47 @@ class SdkSignatureCatalogTest {
 
             // closePatterns invariant — required for entries that model a
             // bracketed lifecycle (ad/IAP/loading: every show has a dismiss;
-            // ANR: am_anr eventually pairs with am_proc_died). SDK_INIT and
-            // RATE_US entries are instantaneous markers (no natural close on
-            // the logcat side; the report renders them as point events) so an
-            // empty closePatterns list is acceptable for them.
+            // ANR: am_anr eventually pairs with am_proc_died). SDK_INIT,
+            // RATE_US, and UNKNOWN entries are instantaneous markers (no
+            // natural close on the logcat side; the report renders them as
+            // point events) so an empty closePatterns list is acceptable for
+            // them. UNKNOWN covers the v4.8.0 Choreographer Stalls SYMPTOM
+            // event — one logcat line per stall, no natural close.
+            // SCREEN_TRANSITION entries that act as point events (v4.8.0
+            // ActivityTaskManager Transitions) are also accepted because the
+            // existing dumpsys-driven SCREEN_TRANSITION pipeline closes them
+            // on the NEXT cmp change, not via a logcat pattern.
             val instantaneous = sig.defaultType == EventType.SDK_INIT ||
-                sig.defaultType == EventType.RATE_US
+                sig.defaultType == EventType.RATE_US ||
+                sig.defaultType == EventType.UNKNOWN ||
+                sig.defaultType == EventType.SCREEN_TRANSITION
             if (!instantaneous) {
                 assertTrue(
                     sig.closePatterns.isNotEmpty(),
-                    "${sig.sdk}: no close patterns (only SDK_INIT/RATE_US entries may have empty closePatterns)",
+                    "${sig.sdk}: no close patterns (only SDK_INIT/RATE_US/UNKNOWN/SCREEN_TRANSITION " +
+                        "entries may have empty closePatterns)",
                 )
             }
 
             // activityClasses MAY be empty for engine-level signatures (Unity
             // Engine, Unreal Engine, Cocos2d), SDK_INIT signatures, the
             // System ANR signature, the instrumented-event-mode GamePerf
-            // signature, and VR_SESSION signatures (VR runtimes don't push
-            // their own Android Activity — they take over the active surface)
-            // — none of these push their own Android Activity onto
-            // the back stack. For ad/billing SDKs (which DO push activities)
-            // the field must still be populated.
+            // signature, VR_SESSION signatures (VR runtimes don't push their
+            // own Android Activity — they take over the active surface), the
+            // v4.8.0 Choreographer Stalls symptom signature (UNKNOWN type,
+            // logcat-only), and the v4.8.0 ActivityTaskManager Transitions
+            // signature (logcat-only — relies on the START + Displayed
+            // patterns, not on activity-class containment) — none of these
+            // push their own Android Activity onto the back stack. For
+            // ad/billing SDKs (which DO push activities) the field must still
+            // be populated.
             val noActivityRequired = sig.defaultType == EventType.LOADING ||
                 sig.defaultType == EventType.SDK_INIT ||
                 sig.defaultType == EventType.ANR ||
                 sig.defaultType == EventType.INSTRUMENTED ||
-                sig.defaultType == EventType.VR_SESSION
+                sig.defaultType == EventType.VR_SESSION ||
+                sig.defaultType == EventType.UNKNOWN ||
+                sig.defaultType == EventType.SCREEN_TRANSITION
             if (!noActivityRequired) {
                 assertTrue(sig.activityClasses.isNotEmpty(), "${sig.sdk}: no activity classes")
             }
@@ -889,7 +916,308 @@ class SdkSignatureCatalogTest {
         assertTrue(sig.closePatterns.isEmpty(), "RATE_US must remain instantaneous (no closePatterns)")
     }
 
-    // ═══════ helpers ═══════
+    // ═══════ v4.8.0 — SDK catalog expansion (events-catalog-and-device-naming) ═══════
+    //
+    // Seven new entries cover the silent-detection gap reported on real
+    // Piece Out sessions (engram #495):
+    //   - Firebase Analytics — game event tracking (logEvent / setUserProperty)
+    //   - GameAnalytics — standalone analytics SDK common in casual games
+    //   - AppsFlyer — attribution SDK (dynamic AppsFlyer_<version> tag)
+    //   - Adjust — attribution alt to AppsFlyer (legacy AdjustIo tag tolerated)
+    //   - Choreographer Stalls — main-thread skip frames (LOW confidence,
+    //     threshold N>=10 frames, point event, defaultType=UNKNOWN)
+    //   - ActivityTaskManager Transitions — START + Displayed pairs
+    //   - Unity Scene Loaded — SceneManager API logs (distinct from existing
+    //     `Unity Engine` row which uses `Loading scene` literal patterns).
+    //
+    // Each SDK gets positive / negative / edge assertions.
+
+    // ─── Firebase Analytics ───────────────────────────────────────────
+
+    @Test
+    fun `Firebase Analytics matches logEvent open pattern`() {
+        val line = lineFor(tag = "FA", msg = "Logging event (FE): button_click, params={name=play}")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Firebase Analytics logEvent line must match")
+        assertEquals("Firebase Analytics", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `Firebase Analytics rejects unrelated FA-SVC connection-established line`() {
+        // Same tag, unrelated msg — must NOT match Firebase Analytics. May still
+        // match AppMeasurement Init / other SDKs, but the catalog must not raise
+        // a phantom Firebase Analytics open on idle service traffic.
+        val line = lineFor(tag = "FA-SVC", msg = "connection established")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        if (result != null) {
+            assertFalse(
+                result.sig.sdk == "Firebase Analytics",
+                "FA-SVC connection line must not match Firebase Analytics",
+            )
+        }
+    }
+
+    @Test
+    fun `Firebase Analytics matches setUserProperty as edge variant`() {
+        val line = lineFor(tag = "FirebaseAnalytics", msg = "setUserProperty(level_max, 3)")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Firebase Analytics setUserProperty must match")
+        assertEquals("Firebase Analytics", result.sig.sdk)
+    }
+
+    // ─── GameAnalytics ────────────────────────────────────────────────
+
+    @Test
+    fun `GameAnalytics matches addBusinessEvent open pattern`() {
+        val line = lineFor(
+            tag = "GameAnalytics",
+            msg = "addBusinessEvent:purchase currency=USD amount=499",
+        )
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "GameAnalytics business event line must match")
+        assertEquals("GameAnalytics", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `GameAnalytics rejects unrelated MyGame analytics-ready line`() {
+        // Tag `MyGame` is not in the GameAnalytics tag allowlist; even though
+        // the msg contains "analytics" the catalog must reject it.
+        val line = lineFor(tag = "MyGame", msg = "analytics ready")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        if (result != null) {
+            assertFalse(
+                result.sig.sdk == "GameAnalytics",
+                "Foreign tag must not match GameAnalytics",
+            )
+        }
+    }
+
+    @Test
+    fun `GameAnalytics matches initialized line on GA short tag (edge)`() {
+        val line = lineFor(tag = "GA", msg = "GameAnalytics initialized v7.5.0")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "GameAnalytics initialized on `GA` short tag must match")
+        assertEquals("GameAnalytics", result.sig.sdk)
+    }
+
+    // ─── AppsFlyer ────────────────────────────────────────────────────
+
+    @Test
+    fun `AppsFlyer matches sendTrackingWithEvent on versioned tag`() {
+        val line = lineFor(
+            tag = "AppsFlyer_6.12.2",
+            msg = "sendTrackingWithEvent: af_purchase, value=4.99",
+        )
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AppsFlyer versioned tag must match")
+        assertEquals("AppsFlyer", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `AppsFlyer rejects AppsFlyerLib pure-initialization noise (negative)`() {
+        // The bare initialization-noise line `AppsFlyerLib initialization` does
+        // NOT carry any of the meaningful event signals (init success, attribution,
+        // sendEvent). It must NOT trigger an AppsFlyer open by itself.
+        val line = lineFor(tag = "AppsFlyerLib", msg = "noise unrelated to events")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        if (result != null) {
+            assertFalse(
+                result.sig.sdk == "AppsFlyer",
+                "AppsFlyerLib idle noise must not match AppsFlyer",
+            )
+        }
+    }
+
+    @Test
+    fun `AppsFlyer matches onAppOpenAttribution edge variant`() {
+        val line = lineFor(tag = "AppsFlyer", msg = "onAppOpenAttribution: status=organic")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "AppsFlyer onAppOpenAttribution must match")
+        assertEquals("AppsFlyer", result.sig.sdk)
+    }
+
+    // ─── Adjust ───────────────────────────────────────────────────────
+
+    @Test
+    fun `Adjust matches trackEvent with token open pattern`() {
+        val line = lineFor(tag = "Adjust", msg = "Event tracked (event_token=abc123)")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Adjust trackEvent token line must match")
+        assertEquals("Adjust", result.sig.sdk)
+        assertEquals(EventType.SDK_INIT, result.resolvedType)
+    }
+
+    @Test
+    fun `Adjust rejects foreign Adjustment word on unrelated tag (negative)`() {
+        val line = lineFor(tag = "MyGame", msg = "Adjustment value computed")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        if (result != null) {
+            assertFalse(
+                result.sig.sdk == "Adjust",
+                "Foreign tag with `Adjustment` substring must not match Adjust",
+            )
+        }
+    }
+
+    @Test
+    fun `Adjust matches legacy AdjustIo tag variant`() {
+        val line = lineFor(tag = "AdjustIo", msg = "Event tracked (event_token=xyz789)")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Adjust legacy AdjustIo tag must match")
+        assertEquals("Adjust", result.sig.sdk)
+    }
+
+    // ─── Choreographer Stalls ─────────────────────────────────────────
+
+    @Test
+    fun `Choreographer matches Skipped 47 frames open pattern`() {
+        val line = lineFor(
+            tag = "Choreographer",
+            msg = "Skipped 47 frames!  The application may be doing too much work on its main thread.",
+        )
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Choreographer 47-frame stall must match")
+        assertEquals("Choreographer Stalls", result.sig.sdk)
+        // Per design §2: SYMPTOM event, type UNKNOWN keeps it out of filtered
+        // metric windows. LOW confidence is set per-emit in EventDetectorImpl.
+        assertEquals(EventType.UNKNOWN, result.resolvedType)
+    }
+
+    @Test
+    fun `Choreographer rejects Skipped 5 frames below threshold`() {
+        // Single-digit skips are normal micro-jank and must NOT fire — the
+        // regex requires N>=10 frames via \d{2,}.
+        val line = lineFor(
+            tag = "Choreographer",
+            msg = "Skipped 5 frames!  Normal micro-jank.",
+        )
+        val result = SdkSignatureCatalog.matchOpen(line)
+        if (result != null) {
+            assertFalse(
+                result.sig.sdk == "Choreographer Stalls",
+                "Skipped 5 frames must not match — below N>=10 threshold",
+            )
+        }
+    }
+
+    @Test
+    fun `Choreographer matches Skipped 120 frames as edge upper-bound`() {
+        val line = lineFor(
+            tag = "Choreographer",
+            msg = "Skipped 120 frames!  The application may be doing too much work on its main thread.",
+        )
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Choreographer 120-frame stall must match")
+        assertEquals("Choreographer Stalls", result.sig.sdk)
+    }
+
+    @Test
+    fun `Choreographer Stalls entry has empty closePatterns (point event)`() {
+        val sig = SdkSignatureCatalog.ALL.first { it.sdk == "Choreographer Stalls" }
+        assertTrue(
+            sig.closePatterns.isEmpty(),
+            "Choreographer Stalls is a point/symptom event — closePatterns must stay empty",
+        )
+        assertEquals(EventType.UNKNOWN, sig.defaultType)
+    }
+
+    // ─── ActivityTaskManager Transitions ──────────────────────────────
+
+    @Test
+    fun `ActivityTaskManager matches START component open pattern`() {
+        val line = lineFor(
+            tag = "ActivityTaskManager",
+            msg = "START u0 {act=android.intent.action.MAIN cmp=com.example.game/.MainActivity} from uid 10123",
+        )
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "ActivityTaskManager START line must match")
+        assertEquals("ActivityTaskManager Transitions", result.sig.sdk)
+        assertEquals(EventType.SCREEN_TRANSITION, result.resolvedType)
+    }
+
+    @Test
+    fun `ActivityTaskManager rejects moveTaskToFront housekeeping line`() {
+        val line = lineFor(tag = "ActivityTaskManager", msg = "moveTaskToFront: 2031 task=Recents")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        if (result != null) {
+            assertFalse(
+                result.sig.sdk == "ActivityTaskManager Transitions",
+                "moveTaskToFront must not match ActivityTaskManager Transitions",
+            )
+        }
+    }
+
+    @Test
+    fun `ActivityTaskManager matches Displayed +ms close pattern as edge`() {
+        val line = lineFor(
+            tag = "ActivityTaskManager",
+            msg = "Displayed com.example.game/.MainActivity: +312ms",
+        )
+        val sig = SdkSignatureCatalog.ALL.first { it.sdk == "ActivityTaskManager Transitions" }
+        // matchClose returns the matched regex (or null). Point event keeps
+        // closePatterns empty so this asserts that matchOpen catches the
+        // Displayed line as an additional open marker for the screen lifecycle.
+        val openResult = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(openResult, "ActivityTaskManager Displayed line must match an open")
+        assertEquals(sig.sdk, openResult.sig.sdk)
+    }
+
+    // ─── Unity Scene Loaded ───────────────────────────────────────────
+    //
+    // Distinct from the existing `Unity Engine` row, which matches the literal
+    // `Loading scene` token. The new entry catches SceneManager API logs that
+    // emit `SceneManager.LoadScene[Async]` or `Scene 'X' loaded` directly.
+
+    @Test
+    fun `Unity Scene Loaded matches SceneManager LoadSceneAsync open pattern`() {
+        val line = lineFor(tag = "Unity", msg = "SceneManager.LoadSceneAsync \"Level_3\"")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "SceneManager.LoadSceneAsync must match")
+        assertEquals("Unity Scene Loaded", result.sig.sdk)
+        assertEquals(EventType.LOADING, result.resolvedType)
+    }
+
+    @Test
+    fun `Unity Scene Loaded rejects AssetBundle loaded line (negative)`() {
+        val line = lineFor(tag = "Unity", msg = "AssetBundle loaded")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        if (result != null) {
+            assertFalse(
+                result.sig.sdk == "Unity Scene Loaded",
+                "AssetBundle loaded must not match Unity Scene Loaded",
+            )
+        }
+    }
+
+    @Test
+    fun `Unity Scene Loaded matches Scene loaded close pattern as edge`() {
+        val sig = SdkSignatureCatalog.ALL.first { it.sdk == "Unity Scene Loaded" }
+        val line = lineFor(tag = "Unity", msg = "Scene 'Level_3' loaded in 421ms")
+        assertNotNull(
+            SdkSignatureCatalog.matchClose(line, sig),
+            "Unity Scene 'X' loaded line must match Unity Scene Loaded close pattern",
+        )
+    }
+
+    @Test
+    fun `Unity Scene Loaded tolerates Unity I level-prefixed tag is rejected (exact match)`() {
+        // The catalog matcher uses exact tag equality (case-insensitive) — a
+        // tag literally named `Unity I` is NOT the same as `Unity`. This pins
+        // the contract: log-level prefixes belong to the message body in the
+        // logcat threadtime format we parse from fixtures via
+        // LogcatLineParser, NOT the tag itself. The fixture intentionally
+        // includes a line with tag=Unity that has a body starting with `I:`
+        // which is still tag=Unity → matches.
+        val line = lineFor(tag = "Unity", msg = "I: SceneManager.LoadSceneAsync \"MainMenu\"")
+        val result = SdkSignatureCatalog.matchOpen(line)
+        assertNotNull(result, "Unity tag with `I:` body prefix must still match")
+        assertEquals("Unity Scene Loaded", result.sig.sdk)
+    }
+
+    // ─── helpers ──────────────────────────────────────────────────────
 
     private fun assertFixtureProducesOpenAndClose(fixture: String, expectedSdk: String) {
         val sig = SdkSignatureCatalog.ALL.first { it.sdk == expectedSdk }

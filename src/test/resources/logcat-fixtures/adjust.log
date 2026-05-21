@@ -1,0 +1,38 @@
+05-21 12:00:00.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:00.150  6210  6230 I Adjust: Adjust 4.33.0
+05-21 12:00:00.200  6210  6230 I Adjust: Sdk initialized with app token: abcdef
+05-21 12:00:00.230  6210  6230 I Adjust: Adjust SDK has been initialized successfully
+05-21 12:00:00.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:01.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:01.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:02.000  6210  6230 V Adjust: Sending session at time 1684665600
+05-21 12:00:02.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:03.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:03.250  6210  6230 V AdjustIo: Legacy tag session ping forwarded
+05-21 12:00:03.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:04.000  6210  6230 I MyGame: Player completed tutorial
+05-21 12:00:04.050  6210  6230 V Adjust: Event tracked (event_token=abc123)
+05-21 12:00:04.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:05.000  6210  6230 I MyGame: Frame rendered fps=59
+05-21 12:00:05.250  6210  6230 V Adjust: queue size: 2 events pending
+05-21 12:00:05.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:06.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:06.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:07.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:07.500  6210  6230 V AdjustIo: Event tracked (event_token=xyz789)
+05-21 12:00:08.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:08.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:09.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:09.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:10.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:10.500  6210  6230 I MyGame: Player started level 2
+05-21 12:00:11.000  6210  6230 V Adjust: Event tracked (event_token=lvl_start)
+05-21 12:00:11.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:12.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:12.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:13.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:13.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:14.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:14.500  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:15.000  6210  6230 I MyGame: Frame rendered fps=60
+05-21 12:00:15.250  6210  6230 V Adjust: Adjustment value debug: skip-non-sdk-line

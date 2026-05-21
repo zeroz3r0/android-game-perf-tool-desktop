@@ -784,6 +784,36 @@ class EventDetectorImplTest {
         assertNull(ev.metadata["upgradedFrom"], "no upgrade metadata for unchanged event")
     }
 
+    // ─── v4.8.0 — Choreographer Stalls LOW confidence override ───────────
+    //
+    // Engram #495 / #498 §2 — Choreographer Stalls is a SYMPTOM event, not a
+    // phase. The catalog entry emits at the default HIGH logcat confidence
+    // unless tryOpen overrides it. Confidence is LOWERED to LOW per-emit so
+    // the report can disclose that the signal is heuristic (a stall does not
+    // necessarily correlate with a specific SDK or phase — it just observes
+    // main-thread slowness).
+
+    @Test
+    fun `Choreographer Stalls events emit with LOW confidence`() {
+        val det = newDetectorAtTime(1_000L)
+
+        det.handleLogLine(LogLine(
+            tsMs = 1_000L, pid = 1, tid = 1, level = 'I',
+            tag = "Choreographer",
+            msg = "Skipped 47 frames!  The application may be doing too much work on its main thread.",
+        ))
+
+        val events = det.events.value
+        assertEquals(1, events.size, "Choreographer stall must emit one event")
+        val ev = events.first()
+        assertEquals("Choreographer Stalls", ev.sdkSource)
+        assertEquals(EventType.UNKNOWN, ev.type)
+        assertEquals(
+            Confidence.LOW, ev.confidence,
+            "Choreographer Stalls is a SYMPTOM event — emit at LOW confidence per design §2",
+        )
+    }
+
     // ──────────────────────── Lifecycle smoke test ────────────────────────
 
     @Test
