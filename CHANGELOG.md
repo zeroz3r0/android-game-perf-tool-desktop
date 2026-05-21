@@ -14,6 +14,24 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.7.2] — 2026-05-21
+
+### Arreglos
+
+- **AutoUpdater dejaba de instalar nuevas versiones aunque dijera que la actualizacion era correcta** — al pulsar Actualizar, la app cerraba, no aparecia la ventana de Windows pidiendo permisos de administrador (o aparecia y la cancelabas sin querer), pero el historial interno registraba la actualizacion como exitosa. La causa: el watchdog que confirma que el helper de Windows arranco no distinguia entre la marca que escribio el helper en esa misma sesion y las marcas que habian quedado de actualizaciones anteriores en el mismo fichero de log. Como el log es append-only, cualquier intento posterior al primero exitoso encontraba la marca vieja instantaneamente y daba la actualizacion por OK sin que el helper se hubiera ejecutado en realidad. A partir de v4.7.2 el watchdog solo considera marcas escritas despues del inicio del intento actual
+
+### Que hay de nuevo
+
+- Hotfix interno; no hay nuevas funcionalidades visibles
+
+### Detalles tecnicos
+
+- `HelperLogWatcher.awaitCanary` ahora acepta un parametro `baselineLength: Long` (default `0L` por compatibilidad). El detector trocea el contenido del log via `content.substring(clampedStart)` antes de buscar `CANARY_LINE`, con `clampedStart = baselineLength.coerceIn(0L, content.length.toLong())` para tolerar logs truncados sin lanzar excepciones
+- `AutoUpdater.planAndLaunchElevatedUpdate` captura `logPath.length()` ANTES de `writeBreadcrumb()` y lo propaga como `baselineLength` al watchdog. Comentario inline pinea la intencion (cita engram #487 y #490) para que un refactor futuro no rompa el orden
+- Nuevo test `HelperLogWatcherStaleCanaryTest` con 4 escenarios: stale-only pre-baseline → TimedOut (escenario del bug), fresh post-baseline → CanaryFound, mixed pre+post → CanaryFound (no short-circuit en la stale), baseline > content.length → clamp sin crash
+- Sin cambios en la firma de `runWatchdogAndBuildResult` ni en `awaitCanary` para callers existentes (default `0L` preserva el comportamiento legacy en tests; el unico call site de produccion pasa el baseline real). Cero cambios en `update-helper.ps1` ni en `GamePerf.cfg`: el bug no tenia que ver con la copia del JAR sino con el detector del helper
+- Decimosexta iteracion del bug recurrente "AutoUpdater nunca actualiza". Lecciones meta documentadas en engram #487: cuando `history.jsonl` registra Success pero el estado real es fail, el primer sospechoso debe ser el detector de Success, no el ejecutor
+
 ## [4.7.1] — 2026-05-20
 
 ### Arreglos
