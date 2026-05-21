@@ -938,6 +938,15 @@ exit 0
         val logPath = lastUpdateLogPath().toFile()
         runCatching { logPath.parentFile?.mkdirs() }
 
+        // v4.7.2 hotfix (engram #487, #490, change: autoupdater-stale-canary-watcher):
+        // capture log size BEFORE writeBreadcrumb. The helper log is append-only
+        // across runs, so without this baseline awaitCanary detects canaries from
+        // previous successful updates and returns a FALSE Success even when the
+        // current UAC helper never actually started (e.g. user cancelled UAC).
+        val helperLogBaseline: Long = runCatching {
+            if (logPath.exists()) logPath.length().coerceAtLeast(0L) else 0L
+        }.getOrDefault(0L)
+
         val args = buildElevatedLaunchArgs(
             helperScript = helperScript,
             oldJar = oldJar,
@@ -971,6 +980,7 @@ exit 0
                 com.gameperf.desktop.core.update.HelperLogWatcher.awaitCanary(
                     logPath = logPath.toPath(),
                     timeout = kotlin.time.Duration.parse("8s"),
+                    baselineLength = helperLogBaseline,
                 )
             },
         )

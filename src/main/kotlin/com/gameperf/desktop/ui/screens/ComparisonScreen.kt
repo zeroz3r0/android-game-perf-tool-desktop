@@ -226,8 +226,6 @@ fun ComparisonScreen(vm: AppViewModel) {
                     val theyWin = metrics.count { m ->
                         if (m.higherBetter) m.compVal > m.oursVal else m.compVal < m.oursVal
                     }
-                    val tied = metrics.size - weWin - theyWin
-
                     val competitorLabel = comp.competitorName.ifEmpty { comp.gamePackage.substringAfterLast('.') }
 
                     // Scoreboard

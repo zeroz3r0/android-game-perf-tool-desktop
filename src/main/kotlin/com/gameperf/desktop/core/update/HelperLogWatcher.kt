@@ -70,19 +70,46 @@ object HelperLogWatcher {
      * Poll [logPath] every [pollInterval] until the canary line appears
      * or [timeout] elapses.
      *
-     * @param logPath      path to the helper log (e.g. `~/GamePerf Reports/updates/last-update.log`)
-     * @param timeout      maximum wall-clock duration to wait. `Duration.ZERO` returns [WatchdogResult.Disabled].
-     * @param pollInterval pause between polls; defaults to [DEFAULT_POLL_INTERVAL].
-     * @param clock        epoch-millis supplier; injected so tests can advance deterministically.
-     * @param readTail     log reader; returns the file content or `null` if absent / unreadable.
-     *                     Exceptions thrown by [readTail] are swallowed and polling continues.
-     * @param sleep        pause function called with `pollInterval` millis between polls.
+     * ## Baseline semantics (v4.7.2 hotfix — engram #487)
+     *
+     * `last-update.log` is append-only across update attempts. A canary line
+     * from a previous successful update would otherwise be picked up by every
+     * subsequent invocation, producing a FALSE `CanaryFound` even when the
+     * current helper never started (e.g. user cancels UAC). The 16th iteration
+     * of the "AutoUpdater never updates" bug.
+     *
+     * [baselineLength] is the byte offset (or character offset; helper output
+     * is ASCII plus an optional UTF-8 BOM ≤2 chars which is harmless for our
+     * canary detection) captured BEFORE the current attempt writes anything
+     * to the log. Only content with index `≥ baselineLength` is considered.
+     *
+     * Production callers MUST capture `Files.size(logPath)` immediately
+     * before any write to the log (including any pre-spawn JVM breadcrumb)
+     * and pass it here. Failing to do so reproduces the pre-v4.7.2 bug.
+     *
+     * `baselineLength` is clamped to `[0, content.length]` so a baseline
+     * larger than the current content (e.g. log was truncated between capture
+     * and poll) does NOT throw — it just yields an empty slice, so the canary
+     * is not detected this poll and we keep polling until either growth or
+     * timeout.
+     *
+     * @param logPath        path to the helper log
+     * @param timeout        maximum wall-clock duration. `Duration.ZERO` returns [WatchdogResult.Disabled].
+     * @param pollInterval   pause between polls; defaults to [DEFAULT_POLL_INTERVAL].
+     * @param baselineLength offset captured before any write to [logPath]; default `0L` reproduces
+     *                       legacy (broken) behavior and exists only for callers that have no log
+     *                       yet to baseline against. Production callers MUST pass `Files.size`.
+     * @param clock          epoch-millis supplier; injected so tests can advance deterministically.
+     * @param readTail       log reader; returns the file content or `null` if absent / unreadable.
+     *                       Exceptions thrown by [readTail] are swallowed and polling continues.
+     * @param sleep          pause function called with `pollInterval` millis between polls.
      */
     @Suppress("LongParameterList")
     fun awaitCanary(
         logPath: Path,
         timeout: Duration,
         pollInterval: Duration = DEFAULT_POLL_INTERVAL,
+        baselineLength: Long = 0L,
         clock: () -> Long = System::currentTimeMillis,
         readTail: (Path) -> String? = ::defaultReadTail,
         sleep: (Long) -> Unit = Thread::sleep,
@@ -99,8 +126,13 @@ object HelperLogWatcher {
             } catch (_: Throwable) {
                 null
             }
-            if (content != null && content.contains(CANARY_LINE)) {
-                return WatchdogResult.CanaryFound
+            if (content != null) {
+                val clampedStart: Int =
+                    baselineLength.coerceIn(0L, content.length.toLong()).toInt()
+                val freshContent: String = content.substring(clampedStart)
+                if (freshContent.contains(CANARY_LINE)) {
+                    return WatchdogResult.CanaryFound
+                }
             }
             val elapsed: Long = clock() - start
             if (elapsed >= timeoutMs) return WatchdogResult.TimedOut
