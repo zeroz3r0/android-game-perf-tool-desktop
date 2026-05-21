@@ -1,0 +1,39 @@
+05-21 15:00:00.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:00.250  9210  9220 I Unity: SystemInfo: deviceModel=SM-A137F
+05-21 15:00:00.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:01.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:01.250  9210  9220 I Unity: SceneManager.LoadSceneAsync "Level_3"
+05-21 15:00:01.500  9210  9220 I MyGame: Frame rendered fps=30
+05-21 15:00:02.000  9210  9220 I MyGame: Frame rendered fps=15
+05-21 15:00:02.250  9210  9220 I Unity: AssetBundle loaded
+05-21 15:00:02.500  9210  9220 I MyGame: Frame rendered fps=20
+05-21 15:00:03.000  9210  9220 I MyGame: Frame rendered fps=30
+05-21 15:00:03.500  9210  9220 I MyGame: Frame rendered fps=45
+05-21 15:00:04.000  9210  9220 I Unity: Scene 'Level_3' loaded in 421ms
+05-21 15:00:04.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:05.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:05.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:06.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:06.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:07.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:07.500  9210  9220 I MyGame: Player exits to menu
+05-21 15:00:08.000  9210  9220 I Unity I: SceneManager.LoadSceneAsync "MainMenu"
+05-21 15:00:08.500  9210  9220 I MyGame: Frame rendered fps=40
+05-21 15:00:09.000  9210  9220 I MyGame: Frame rendered fps=30
+05-21 15:00:09.250  9210  9220 I Unity: UnloadUnusedAssets took 215ms
+05-21 15:00:09.500  9210  9220 I MyGame: Frame rendered fps=50
+05-21 15:00:10.000  9210  9220 I Unity: Scene 'MainMenu' loaded in 312ms
+05-21 15:00:10.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:11.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:11.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:12.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:12.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:13.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:13.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:14.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:14.500  9210  9220 I UnityEngine: Scene loaded successfully
+05-21 15:00:15.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:15.500  9210  9220 I Unity: AssetBundle loaded
+05-21 15:00:16.000  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:16.500  9210  9220 I MyGame: Frame rendered fps=60
+05-21 15:00:17.000  9210  9220 I MyGame: Frame rendered fps=60

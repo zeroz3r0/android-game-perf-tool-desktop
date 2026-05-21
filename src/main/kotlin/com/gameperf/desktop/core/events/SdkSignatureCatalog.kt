@@ -569,6 +569,170 @@ internal object SdkSignatureCatalog {
             ),
             dedupWindowMs = 5_000L,
         ),
+        // ────────────────────────────────────────────────────────────────
+        //  v4.8.0 — events-catalog-and-device-naming (engram #495, #497, #498)
+        // ────────────────────────────────────────────────────────────────
+        //
+        // Seven additional signatures cover the silent-detection gap reported
+        // on real Piece Out sessions (Unity release builds with Debug.Log
+        // stripped). All entries follow the existing single-source-of-truth
+        // pattern; no parallel catalogs elsewhere.
+
+        // ── Firebase Analytics (game events / user properties) ──────────
+        //
+        // Distinct from the existing `Firebase Init` and `AppMeasurement Init`
+        // rows, which match SDK-bootstrap log lines. This entry matches the
+        // gameplay event stream (`Logging event (FE): X`, `logEvent name=`,
+        // `setUserProperty`). Tag overlap with `AppMeasurement Init`
+        // (`FA-SVC`, `FA`, `FirebaseAnalytics`) is fine because the patterns
+        // do NOT collide with the AppMeasurement init regex set.
+        SdkSignature(
+            sdk = "Firebase Analytics",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("FA", "FA-SVC", "FirebaseAnalytics"),
+            openPatterns = listOf(
+                Regex("""\bLogging event\b""") to EventType.SDK_INIT,
+                Regex("""\blogEvent\b.*\bname=""") to EventType.SDK_INIT,
+                Regex("""\bsetUserProperty\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── GameAnalytics ───────────────────────────────────────────────
+        //
+        // Standalone analytics SDK common in casual / hyper-casual games.
+        // `GA` short tag covered alongside the canonical `GameAnalytics`
+        // tag — both are commonly emitted by the SDK depending on version.
+        SdkSignature(
+            sdk = "GameAnalytics",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("GameAnalytics", "GA"),
+            openPatterns = listOf(
+                Regex("""(?i)\bGameAnalytics\b.*\binitialized\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\baddDesignEvent\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\baddBusinessEvent\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── AppsFlyer (attribution) ─────────────────────────────────────
+        //
+        // The matcher uses exact tag equality (case-insensitive), so versioned
+        // tags such as `AppsFlyer_6.12.2` must be listed explicitly. The list
+        // covers the canonical `AppsFlyer`, the legacy `AppsFlyerLib`, and a
+        // common contemporary version. New versions can be appended without
+        // touching the patterns.
+        SdkSignature(
+            sdk = "AppsFlyer",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("AppsFlyer", "AppsFlyerLib", "AppsFlyer_6.12.2"),
+            openPatterns = listOf(
+                Regex("""(?i)\bAppsFlyer\b.*\binit\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bonAppOpenAttribution\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bsendTrackingWithEvent\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\bsendEvent\b""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── Adjust (attribution alt) ────────────────────────────────────
+        //
+        // Two tag variants: the canonical `Adjust` and the legacy `AdjustIo`
+        // used by older SDK versions. Patterns cover the version banner
+        // (`Adjust 4.33.0`), the explicit init success line, and the event
+        // tracking line (`event_token=`). The `Adjustment:` noise line on a
+        // foreign tag does NOT match because the tag-allowlist filters it
+        // out before the patterns are evaluated.
+        SdkSignature(
+            sdk = "Adjust",
+            defaultType = EventType.SDK_INIT,
+            activityClasses = emptyList(),
+            logcatTags = listOf("Adjust", "AdjustIo"),
+            openPatterns = listOf(
+                Regex("""(?i)\bAdjust\b.*\binitialized\b""") to EventType.SDK_INIT,
+                Regex("""(?i)\btrackEvent\b.*\btoken=""") to EventType.SDK_INIT,
+                Regex("""\bevent_token=""") to EventType.SDK_INIT,
+                Regex("""\bAdjust\s+\d+\.\d+\.\d+""") to EventType.SDK_INIT,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── Choreographer Stalls (Android main-thread skips) ────────────
+        //
+        // SYMPTOM event, not a phase. `defaultType = UNKNOWN` keeps it out of
+        // the filtered-metric windows (existing jank metric already covers
+        // the perceived performance impact). LOW confidence is set per-emit
+        // in [EventDetectorImpl.tryOpen] (the data class has no per-entry
+        // confidence field by design — adding one would touch all 19 existing
+        // rows, scope creep).
+        //
+        // The pattern requires at least TWO digits in the frame count
+        // (`\d{2,}`), so single-digit skips (`Skipped 5 frames`) are rejected
+        // — those are normal micro-jank, not actionable stalls.
+        //
+        // Point event: `closePatterns = emptyList()` — Choreographer emits a
+        // single line per stall, no natural close.
+        SdkSignature(
+            sdk = "Choreographer Stalls",
+            defaultType = EventType.UNKNOWN,
+            activityClasses = emptyList(),
+            logcatTags = listOf("Choreographer"),
+            openPatterns = listOf(
+                Regex("""\bSkipped\s+\d{2,}\s+frames\b""") to EventType.UNKNOWN,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── ActivityTaskManager Transitions (screen lifecycle) ──────────
+        //
+        // Tag-locked to `ActivityTaskManager` and `ActivityManager` — both
+        // tags emit lifecycle events depending on Android version. Tag
+        // overlap with the existing `System ANR` row is intentional and
+        // safe: the patterns do not collide (`am_anr` vs `START u0 ... cmp=`).
+        //
+        // Confidence at emission time is MEDIUM by default (the existing
+        // dumpsys SCREEN_TRANSITION path uses the same level). The cmp may
+        // belong to other apps in some system-overlay builds; the
+        // tag-allowlist mitigates by rejecting foreign-tag lines outright.
+        SdkSignature(
+            sdk = "ActivityTaskManager Transitions",
+            defaultType = EventType.SCREEN_TRANSITION,
+            activityClasses = emptyList(),
+            logcatTags = listOf("ActivityTaskManager", "ActivityManager"),
+            openPatterns = listOf(
+                Regex("""\bSTART\s+u\d+\b.*\bcmp=""") to EventType.SCREEN_TRANSITION,
+                Regex("""\bDisplayed\b.*\+\d+ms""") to EventType.SCREEN_TRANSITION,
+            ),
+            closePatterns = emptyList(),
+        ),
+        // ── Unity Scene Loaded (SceneManager API) ───────────────────────
+        //
+        // Distinct from the existing `Unity Engine` row which matches the
+        // literal `Loading scene` and `AsyncOperation` tokens. This entry
+        // catches `SceneManager.LoadScene[Async]` and `Scene 'X' loaded`
+        // patterns emitted by the Unity engine telemetry path (different
+        // code path from `Debug.Log` so it survives IL2CPP stripping).
+        //
+        // Confidence at emission time is MEDIUM (debug-build markers).
+        // Bracketed lifecycle: open on SceneManager call, close on
+        // `Scene 'X' loaded` or `UnloadUnusedAssets took`.
+        //
+        // Placed AFTER `Unity Engine` so the linear first-match-wins scan
+        // gives the legacy entry priority on its existing patterns — only
+        // the SceneManager-shape lines reach this row.
+        SdkSignature(
+            sdk = "Unity Scene Loaded",
+            defaultType = EventType.LOADING,
+            activityClasses = emptyList(),
+            logcatTags = listOf("Unity", "UnityEngine"),
+            openPatterns = listOf(
+                Regex("""(?i)\bSceneManager\b.*\b(LoadScene|LoadSceneAsync)\b""") to EventType.LOADING,
+                Regex("""(?i)\bScene\s+'[\w\-]+'\s+loaded\b""") to EventType.LOADING,
+            ),
+            closePatterns = listOf(
+                Regex("""(?i)\bScene\s+'[\w\-]+'\s+loaded\b"""),
+                Regex("""(?i)\bUnloadUnusedAssets\s+took\b"""),
+                Regex("""(?i)\bScene\s+loaded\s+successfully\b"""),
+            ),
+        ),
     )
 
     /**

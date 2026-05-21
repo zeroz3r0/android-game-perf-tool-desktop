@@ -1,0 +1,50 @@
+05-21 09:00:00.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:00.500  3120  3140 I Unity: Behaviour update tick=10
+05-21 09:00:01.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:01.250  3120  3140 D FA-SVC: Connecting to remote service
+05-21 09:00:01.260  3120  3140 D FA-SVC: connection established
+05-21 09:00:01.300  3120  3140 D FA: Logging event (FE): app_open, params={origin=auto}
+05-21 09:00:01.320  3120  3140 D FA: setUserProperty(_o, app)
+05-21 09:00:01.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:02.000  3120  3140 I MyGame: Player tapped Play
+05-21 09:00:02.040  3120  3140 D FA: Logging event (FE): button_click, params={name=play}
+05-21 09:00:02.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:03.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:03.500  3120  3140 I MyGame: Loading level 3
+05-21 09:00:04.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:04.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:05.000  3120  3140 I MyGame: Frame rendered fps=58
+05-21 09:00:05.500  3120  3140 D FirebaseAnalytics: setSessionTimeoutDuration: 1800000
+05-21 09:00:06.000  3120  3140 D FA: logEvent name=level_start params={level_name=Level_3,attempts=1}
+05-21 09:00:06.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:07.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:07.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:08.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:08.500  3120  3140 I MyGame: Frame rendered fps=59
+05-21 09:00:09.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:09.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:10.000  3120  3140 I MyGame: Player completed level
+05-21 09:00:10.050  3120  3140 D FA: Logging event (FE): level_complete, params={level_name=Level_3,score=1240}
+05-21 09:00:10.060  3120  3140 D FA: setUserProperty(level_max, 3)
+05-21 09:00:10.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:11.000  3120  3140 I MyGame: Showing rewards screen
+05-21 09:00:11.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:12.000  3120  3140 D FA: Logging event (FE): screen_view, params={screen_name=rewards}
+05-21 09:00:12.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:13.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:13.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:14.000  3120  3140 D FA-SVC: connection lost, retry scheduled
+05-21 09:00:14.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:15.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:15.500  3120  3140 D FA-SVC: connection re-established
+05-21 09:00:16.000  3120  3140 D FA: Logging event (FE): level_fail, params={level_name=Level_4,reason=died}
+05-21 09:00:16.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:17.000  3120  3140 I MyGame: Frame rendered fps=58
+05-21 09:00:17.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:18.000  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:18.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:19.000  3120  3140 D FA: Logging event (FE): post_score, params={value=1240}
+05-21 09:00:19.500  3120  3140 I MyGame: Frame rendered fps=60
+05-21 09:00:20.000  3120  3140 I MyGame: Player tapped Retry
+05-21 09:00:20.500  3120  3140 D FA: Logging event (FE): button_click, params={name=retry}
+05-21 09:00:21.000  3120  3140 I MyGame: Frame rendered fps=60

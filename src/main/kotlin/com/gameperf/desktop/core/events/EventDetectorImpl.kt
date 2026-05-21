@@ -739,12 +739,20 @@ internal class EventDetectorImpl(
         val key = "${sig.sdk}:$tag:$signatureMatched"
         if (openEvents.containsKey(key)) return  // already tracking same SDK+pattern
 
+        // v4.8.0 — Choreographer Stalls confidence override (engram #498 §2).
+        // SYMPTOM event, not pattern-matched against an SDK phase, so emit at
+        // LOW confidence so the report can disclose the heuristic nature.
+        // Single-line branch keeps the data-class shape unchanged — adding a
+        // per-entry `defaultConfidence` field would touch all 25 other rows
+        // and is scope creep (see design ADR).
+        val confidence = if (sig.sdk == "Choreographer Stalls") Confidence.LOW else Confidence.HIGH
+
         val event = DetectedEvent(
             type = resolvedType,
             sdkSource = sig.sdk,
             startMs = startMs,
             endMs = null,
-            confidence = Confidence.HIGH,
+            confidence = confidence,
             signatureMatched = signatureMatched,
             metadata = mapOf("source" to source, "tag" to tag),
         )

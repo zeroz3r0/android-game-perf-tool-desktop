@@ -1,0 +1,45 @@
+05-21 10:00:00.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:00.250  4210  4220 I MyGame: Booting GameAnalytics SDK
+05-21 10:00:00.300  4210  4220 I GameAnalytics/INFO: GameAnalytics SDK initialized v7.5.0
+05-21 10:00:00.320  4210  4220 I GameAnalytics/INFO: addBusinessEvent: currency=USD, amount=299
+05-21 10:00:00.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:01.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:01.250  4210  4220 I GameAnalytics/INFO: addDesignEvent: eventId=Tutorial:Start
+05-21 10:00:01.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:02.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:02.300  4210  4220 I MyGame: Tutorial step 1 begin
+05-21 10:00:02.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:03.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:03.250  4210  4220 I GameAnalytics/INFO: addDesignEvent: eventId=Tutorial:Step1:Complete
+05-21 10:00:03.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:04.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:04.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:05.000  4210  4220 I MyGame: Player buys gem pack
+05-21 10:00:05.050  4210  4220 I GA: addBusinessEvent:purchase currency=USD amount=499 itemType=gems itemId=pack_small
+05-21 10:00:05.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:06.000  4210  4220 I MyGame: Frame rendered fps=58
+05-21 10:00:06.300  4210  4220 I GameAnalytics/INFO: Event added to queue: business:purchase
+05-21 10:00:06.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:07.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:07.250  4210  4220 I GameAnalytics/INFO: Submitting events batch, count=8
+05-21 10:00:07.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:08.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:08.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:09.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:09.250  4210  4220 I GameAnalytics/INFO: Server response: ok, eventsAccepted=8
+05-21 10:00:09.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:10.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:10.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:11.000  4210  4220 I MyGame: Level 1 started
+05-21 10:00:11.250  4210  4220 I GameAnalytics/INFO: addDesignEvent: eventId=Level:Start:1
+05-21 10:00:11.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:12.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:12.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:13.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:13.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:14.000  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:14.500  4210  4220 I MyGame: Frame rendered fps=59
+05-21 10:00:15.000  4210  4220 I MyGame: Level 1 won
+05-21 10:00:15.250  4210  4220 I GameAnalytics/INFO: addDesignEvent: eventId=Level:End:1:Win
+05-21 10:00:15.500  4210  4220 I MyGame: Frame rendered fps=60
+05-21 10:00:16.000  4210  4220 I MyGame: Frame rendered fps=60
