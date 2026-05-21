@@ -655,7 +655,7 @@ object ReportGenerator {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Informe de Rendimiento — ${esc(pkg)}</title>
+<title>Informe de Rendimiento — ${esc(com.gameperf.desktop.core.PackageDisplayNameResolver.displayName(pkg))}</title>
 <script>${Assets.chartJs}</script>
 <script>${Assets.annotationPlugin}</script>
 <script>${Assets.zoomPlugin}</script>
@@ -694,6 +694,7 @@ $CSS$kpiCssBlock
     <div class="header-content">
         <div class="header-badge">Game Performance Tool</div>
         <h1 class="header-title">Informe de Rendimiento</h1>
+        <p class="header-title-game">${esc(com.gameperf.desktop.core.PackageDisplayNameResolver.displayName(pkg))}</p>
         <p class="header-pkg">${esc(pkg)}</p>
         <div class="header-meta">
             <span>&#128197; ${dateDisplay}</span><span class="meta-sep">|</span>
@@ -2644,7 +2645,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .header-content{position:relative;z-index:1}
 .header-badge{display:inline-block;background:linear-gradient(135deg,rgba(56,189,248,0.15),rgba(129,140,248,0.15));border:1px solid rgba(56,189,248,0.2);color:#38bdf8;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;padding:6px 16px;border-radius:100px;margin-bottom:16px}
 .header-title{font-size:2.2rem;font-weight:800;letter-spacing:-0.5px;background:linear-gradient(135deg,#e2e8f0,#94a3b8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:8px}
-.header-pkg{color:#94a3b8;font-size:15px;font-family:monospace;margin-bottom:12px}
+.header-title-game{color:#e2e8f0;font-size:22px;font-weight:600;margin:4px 0 0 0}
+.header-pkg{color:#94a3b8;font-size:13px;font-family:monospace;margin-bottom:12px}
 .header-meta{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 0;color:#64748b;font-size:13px;margin-bottom:12px}
 .meta-sep{margin:0 10px;opacity:0.3}
 .header-session{color:#475569;font-size:11px;font-family:monospace;letter-spacing:0.5px}
