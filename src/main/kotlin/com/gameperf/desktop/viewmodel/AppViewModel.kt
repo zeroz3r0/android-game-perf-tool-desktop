@@ -350,9 +350,20 @@ class AppViewModel(
          * Buckets correspond to the common mobile-game refresh strategies:
          *   ≥ 110 → 120 fps (high-refresh competitive)
          *   ≥ 80  → 90 fps (Genshin's "60+" mode, OnePlus 90hz games)
-         *   ≥ 50  → 60 fps (most action games)
-         *   ≥ 38  → 45 fps (Unity Auto on mid-range)
+         *   ≥ 55  → 60 fps (action games that genuinely hit 60)
+         *   ≥ 42  → 45 fps (Unity Auto on mid-range)
          *   else  → 30 fps (battery-saver, casual games, low-end devices)
+         *
+         * v4.8.2 (engram #504) — raised the 60-FPS gate from `≥ 50` to `≥ 55`
+         * and the 45-FPS gate from `≥ 38` to `≥ 42`. The previous thresholds
+         * were too eager to promote a casual mobile game to "60-FPS target",
+         * which then graded it red even though 30 stable is the normal mobile
+         * target. Casual games rarely declare a hard 60 target; production
+         * builds with `Application.targetFrameRate = 60` typically sit around
+         * 55-60 avg, so 55 is a safer detection floor. 42 keeps the 45-FPS
+         * tier reachable for Unity Auto games that genuinely sit at 44-50
+         * without falsely promoting solid-30 games (which avg ~30-32) to a
+         * 45 tier they cannot achieve.
          *
          * Pure function, easily unit-testable.
          */
@@ -361,8 +372,8 @@ class AppViewModel(
             return when {
                 indicator >= 110 -> 120
                 indicator >= 80 -> 90
-                indicator >= 50 -> 60
-                indicator >= 38 -> 45
+                indicator >= 55 -> 60
+                indicator >= 42 -> 45
                 else -> 30
             }
         }
