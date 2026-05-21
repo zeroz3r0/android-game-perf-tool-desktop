@@ -77,7 +77,17 @@ object DeviceNameResolver {
 
         // ═══ Samsung Galaxy A series (mid-range) ═══
         "SM-A105" to "Samsung Galaxy A10",
+        "SM-A125" to "Samsung Galaxy A12",
+        "SM-A136" to "Samsung Galaxy A13 5G",
+        "SM-A137" to "Samsung Galaxy A13",
+        "SM-A146" to "Samsung Galaxy A14 5G",
+        "SM-A155" to "Samsung Galaxy A15",
         "SM-A205" to "Samsung Galaxy A20",
+        "SM-A226" to "Samsung Galaxy A22 5G",
+        "SM-A235" to "Samsung Galaxy A23",
+        "SM-A236" to "Samsung Galaxy A23 5G",
+        "SM-A245" to "Samsung Galaxy A24",
+        "SM-A256" to "Samsung Galaxy A25 5G",
         "SM-A305" to "Samsung Galaxy A30",
         "SM-A325" to "Samsung Galaxy A32",
         "SM-A336" to "Samsung Galaxy A33 5G",

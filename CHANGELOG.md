@@ -14,6 +14,30 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.8.0] — 2026-05-21
+
+### Arreglos
+
+- **El banner del reporte mentia diciendo que la auto-deteccion estaba desactivada** — aunque el detector hubiera corrido toda la sesion, el reporte siempre mostraba "Marcadores manuales unicamente". La causa: el codigo leia el estado del detector despues de haberlo nulleado en la limpieza de la captura. Ahora el flag se captura ANTES del cleanup y el banner refleja la realidad.
+- **La deteccion automatica solo registraba el evento de arranque en juegos casual** — el catalogo de signaturas SDK no cubria los patrones tipicos de builds Unity / Unreal con stripping (Firebase Analytics, GameAnalytics, AppsFlyer, Adjust, Choreographer stalls, ActivityTaskManager transitions, Unity Engine scenes). Anadidos 7 SDKs nuevos al catalogo con fixtures realistas y tests positivo / negativo / edge por entrada.
+- **El nombre del dispositivo Samsung Galaxy A13 aparecia como SM-A137F en vez de su nombre comercial** — la tabla `DeviceNameResolver` no tenia entrada para esa familia. Anadidas las series Galaxy A12 / A13 / A14 / A15 / A22 / A23 / A24 / A25 (incluyendo variantes 4G y 5G).
+
+### Que hay de nuevo
+
+- **Nombre legible del juego en el reporte HTML** — junto al titulo del reporte ahora aparece el nombre comercial del juego ("Piece Out") en lugar de solo el package name (`com.vivastudios.pieceout`). Si el package no esta en el catalogo curado, se hace fallback determinista al ultimo segmento capitalizado.
+- **Aviso contextual cuando el detector no encuentra nada** — si el detector estuvo activo mas de 2 minutos pero no observo eventos significativos (excluyendo arranque y transiciones de pantalla), el reporte muestra un callout explicando que es tipico en builds release de Unity / Unreal con `Debug.Log` eliminado por stripping, y sugiere integrar el tag GamePerf en el juego.
+
+### Detalles tecnicos
+
+- `SdkSignatureCatalog.ALL` crece de 15 a 22 entradas. Choreographer marcado con `Confidence.LOW` y threshold N >= 30 frames para mitigar falsos positivos.
+- 7 fixtures nuevas bajo `src/test/resources/logcat-fixtures/` (firebase-analytics, gameanalytics, appsflyer, adjust, choreographer-stalls, activity-task-manager, unity-engine-scene).
+- `ReportGenerator.shouldShowSilentDetectorWarning` (pura, `DEFAULT_SILENT_DETECTOR_THRESHOLD_MS = 2 * 60_000L`) decide el render del callout. Eventos significativos = total MENOS `APP_STARTUP` MENOS `SCREEN_TRANSITION` para que el aviso emerja en builds release sin Debug.Log.
+- Bug B fidelity fix (engram #495, #498): `AppViewModel.kt:1871` captura `val detectorWasActive: Boolean = eventDetector != null` ANTES del cleanup, y propaga al param `detectionMode` + nuevo param `detectorWasActive` de `ReportGenerator.generate()`. Sustituye dos call sites donde `eventDetector != null` se leia DESPUES del null assignment.
+- Nuevo objeto puro `PackageDisplayNameResolver` (`core/PackageDisplayNameResolver.kt`) con curated map + fallback `substringAfterLast('.').replaceFirstChar { titlecase }`. Tolera espacios y puntos al inicio / final. Anti-duplicacion: unica fuente del lookup package->displayName en el proyecto (CLAUDE.md v4.4.0).
+- `DeviceNameResolver.codenameToMarketing` crece con 11 entradas Samsung Galaxy A12-A25.
+- Tres PRs stacked-to-main ortogonales (#12 catalogo + warning, #13 fidelity, #14 naming). Cada PR mergeable independientemente con `./gradlew check` verde antes del merge.
+- Nuevos tests: `SilentDetectorWarningTest` (6), `DetectionBannerFidelityTest` (2), `PackageDisplayNameResolverTest` (10), 7 nuevos grupos en `SdkSignatureCatalogTest` (positivo / negativo / edge cada uno).
+
 ## [4.7.2] — 2026-05-21
 
 ### Arreglos
