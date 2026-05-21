@@ -856,7 +856,8 @@ $excessiveCalloutHtml
         <h2>&#127918; FPS — Frames por Segundo</h2>
         <span class="card-badge" style="background:${gradeColor(fpsGrade)}20;color:${gradeColor(fpsGrade)}">${fpsGrade}</span>
     </div>
-    <p class="card-desc">Medido desde SurfaceFlinger con ventana temporal de 1 segundo. Objetivo: 60 FPS estable.</p>
+    <p class="card-desc">Medido desde SurfaceFlinger con ventana temporal de 1 segundo.</p>
+    ${targetFpsBanner(targetFps = targetFps, avgFps = avgFps, maxFps = maxFps)}
     <div class="stats-row">
         <div class="stat-pill"><span class="stat-pill-label">P1</span><span class="stat-pill-value ${cls(p1, 20, 30, "r")}">${p1}</span></div>
         <div class="stat-pill"><span class="stat-pill-label">P5</span><span class="stat-pill-value ${cls(p5, 25, 35, "r")}">${p5}</span></div>
@@ -880,7 +881,7 @@ $excessiveCalloutHtml
         <h2>&#9201; Distribucion de Frame Time</h2>
         <span class="card-badge" style="background:${gradeColor(ftGrade)}20;color:${gradeColor(ftGrade)}">${ftGrade}</span>
     </div>
-    <p class="card-desc">Tiempo que tarda cada frame en renderizarse. Menos = mejor. >16.67ms = por debajo de 60fps.</p>
+    <p class="card-desc">Tiempo que tarda cada frame en renderizarse. Menos = mejor. El objetivo dinamico es ${fmtUS("%.2f", 1000.0 / targetFps)} ms (= 1000 ms / ${targetFps} fps).</p>
     <div class="stats-row">
         <div class="stat-pill"><span class="stat-pill-label">Promedio</span><span class="stat-pill-value">${fmtUS("%.1f", avgFrameTime)}ms</span></div>
         <div class="stat-pill"><span class="stat-pill-label">P99</span><span class="stat-pill-value ${cls(p99FrameTime.toInt(), 50, 17, "r")}">${fmtUS("%.1f", p99FrameTime)}ms</span></div>
@@ -2053,6 +2054,31 @@ $cards
     }
 
     /**
+     * v4.8.2 (engram #504) — Inline banner above the FPS chart that discloses
+     * the auto-detected target FPS + a one-sentence justification so the user
+     * understands why a casual mobile game graded as A even though it sits
+     * "only" at 30 FPS. Pure function, no I/O.
+     *
+     * Castellano formal tuteo. Refresca el contrato del grading: un juego
+     * casual a 30 estables es OPTIMO, no malo. Llegar a 60 en movil casual
+     * sería extraordinario.
+     */
+    internal fun targetFpsBanner(targetFps: Int, avgFps: Int, maxFps: Int): String {
+        val rationale = when (targetFps) {
+            120 -> "Detectado por avg ${avgFps} + max ${maxFps} consistentes en franja 110+: el juego corre claramente a alta frecuencia (típico de competitive shooters en teléfonos high-refresh)."
+            90 -> "Detectado por avg ${avgFps} + max ${maxFps} en franja 80-110: el juego tira de modo 90 Hz adaptativo (Genshin Impact \"60+\", OnePlus 90 Hz)."
+            60 -> "Detectado por avg ${avgFps} + max ${maxFps} en franja 55-80: el juego declara explícitamente <code>targetFrameRate = 60</code>. Es el objetivo de juegos de acción y competitivos en gama media-alta."
+            45 -> "Detectado por avg ${avgFps} + max ${maxFps} en franja 42-55: configuración Unity Auto en gama media. No es objetivo común; suele indicar build sin frame rate explícito."
+            else -> "Detectado por avg ${avgFps} + max ${maxFps} por debajo de 42: <strong>30 FPS estables es el objetivo normal en móvil casual</strong>. Subir a 60 en este segmento sería extraordinario — no se penaliza no llegar."
+        }
+        return """
+    <div class="callout callout-info target-fps-banner">
+        <strong>&#127919; Objetivo dinámico: <span class="target-fps-value">${targetFps} FPS</span></strong>
+        <p>$rationale</p>
+    </div>"""
+    }
+
+    /**
      * v4.6.0 AUTO-007 — Auto-phase disclaimer banner. Renders when ANY of the
      * 4 AUTO EventType variants (CUTSCENE / MENU_NAV / COMBAT_PHASE /
      * TUTORIAL_PHASE) is present in the session events list. Zero-cost on
@@ -2799,6 +2825,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .diag-paths-label{color:#cbd5e1;font-size:12px;margin-top:8px;margin-bottom:4px;font-weight:600}
 .diag-paths{margin:6px 0 2px 20px;color:#94a3b8;line-height:1.6;font-size:12px}
 .diag-paths code{font-size:0.9em;opacity:0.85}
+.target-fps-banner{margin:8px 0 14px 0}
+.target-fps-banner .target-fps-value{color:#4ade80;font-weight:800;font-size:1.1em}
 .hint.good{color:#10b981}
 .chart-container{height:280px;background:rgba(0,0,0,0.2);border:1px solid rgba(148,163,184,0.04);border-radius:12px;padding:16px;margin-top:12px}
 .table-wrap,.table-scroll{max-height:420px;overflow-y:auto;border-radius:10px}

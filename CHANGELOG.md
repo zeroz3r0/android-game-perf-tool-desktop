@@ -14,6 +14,24 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.8.2] — 2026-05-21
+
+### Arreglos
+
+- **Los juegos casual de movil (que corren a 30 FPS estables) ya no se penalizan por no llegar a 60 FPS** — la deteccion automatica del target FPS subio el umbral para 60 (de avg>=50 a avg>=55) y para 45 (de avg>=38 a avg>=42). En v4.8.1 un juego que corria estable a 50 FPS se interpretaba como "target=60 FPS" → grade rojo aunque rendia bien para movil casual. Ahora la deteccion es mas conservadora: solo declara target=60 cuando hay evidencia clara (avg >= 55). Para juegos casual el target normal es 30 FPS, llegar a 60 seria extraordinario.
+
+### Que hay de nuevo
+
+- **Banner explicativo del target FPS detectado en la card FPS del reporte** — debajo del titulo "FPS — Frames por Segundo" aparece un callout verde que dice "Objetivo dinamico: X FPS" con una justificacion en una linea explicando POR QUE se detecto ese target (avg, max, segmento del catalogo). Cuando el target es 30 FPS, el banner declara explicitamente que es el objetivo normal en movil casual y que llegar a 60 seria extraordinario — para que confies en el grade A aunque "solo" veas 30 FPS.
+
+### Detalles tecnicos
+
+- `AppViewModel.Companion.inferGameTargetFps` ahora usa thresholds: `indicator >= 110 -> 120`, `>= 80 -> 90`, `>= 55 -> 60` (era `>= 50`), `>= 42 -> 45` (era `>= 38`), else 30. Tests AppViewModelGradingTest cubren los casos casual a 30 estables (Piece Out scenario), Unity Auto genuino a 44, y 60-FPS genuino a 56-60 para no falsear el techo.
+- Nuevo `ReportGenerator.targetFpsBanner(targetFps, avgFps, maxFps): String` (puro, internal, testeable) con copy castellano-formal-tuteo para los 5 buckets (30, 45, 60, 90, 120). Tests TargetFpsBannerTest pinea el copy + clases CSS.
+- `<p class="card-desc">` de la card FPS ya no dice "Objetivo: 60 FPS estable" hardcoded; sustituido por la card-desc neutra + el banner dinamico debajo.
+- `<p class="card-desc">` de la card Frame Time ahora usa el target dinamico tambien: muestra `${1000/targetFps}ms` calculado en lugar de "16.67ms" hardcoded.
+- CSS: nuevo `.target-fps-banner .target-fps-value` (verde, font-weight 800, 1.1em) para destacar el numero.
+
 ## [4.8.1] — 2026-05-21
 
 ### Arreglos
