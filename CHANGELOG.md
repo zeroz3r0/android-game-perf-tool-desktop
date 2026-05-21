@@ -14,6 +14,27 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.8.1] — 2026-05-21
+
+### Arreglos
+
+- **Los eventos de inicializacion de SDKs ya no contaminan la tabla "Eventos detectados"** — Firebase Analytics, GameAnalytics, AppsFlyer, Adjust y otros SDKs disparan en los primeros 0-2 segundos de cold start. En v4.8.0 aparecian como 4 filas con duracion inflada que llenaban la tabla de ruido. Ahora `SDK_INIT`, `APP_STARTUP` y `SCREEN_TRANSITION` se ocultan de la tabla por defecto. Los datos siguen en el JSON exportado para analisis forense.
+- **Las tarjetas N/D (FPower, GPU, Network, Wake locks, Termal) ya no se desbordan con detalle tecnico** — la lista de paths sysfs probados, comandos fallidos y zonas detectadas ahora vive dentro de un `<details>` colapsado ("Ver detalle tecnico"). Devs lo expanden si lo necesitan. Usuarios casuales ven solo la explicacion en una linea.
+
+### Que hay de nuevo
+
+- **Banner prominente USB/WiFi en la card de bateria** — antes el aviso era un `<p class="hint">` pequeño y facil de pasar por alto debajo del card. Ahora un banner grande arriba del card te dice de un vistazo si la medicion de drain es fiable (WiFi sin carga) o ruido (USB cargando).
+
+### Detalles tecnicos
+
+- `ReportGenerator.HIDDEN_EVENT_TYPES_IN_TABLE: Set<EventType> = {SDK_INIT, APP_STARTUP, SCREEN_TRANSITION}` decide que tipos se filtran. `sectionEvents` itera `visibleEvents = events.filter { it.type !in HIDDEN_EVENT_TYPES_IN_TABLE }`. El silent-detector warning (v4.8.0 PR1) reusa este set para `meaningfulEventsCount`, asi que la coherencia entre filtrado y warning queda garantizada.
+- JSON `.gameperf` export NO se filtra — herramientas externas siguen viendo todos los eventos. Cambio UI-only.
+- `FilteredMetricsCalculator` sigue usando TODOS los eventos para excluir ranges de las metricas filtradas — el filtrado solo afecta a la tabla HTML, no al calculo.
+- 4 diagnostic banners (FPower, GPU, Network, Wake locks, Termal) ahora usan clases CSS compartidas `.diag-details / .diag-paths / .diag-paths-label` en vez de las antiguas con prefijo por feature (`.fpower-diag-paths-label`, `.gpu-diag-paths`, etc.).
+- Banner USB/WiFi usa nuevas clases `.capture-mode-banner.capture-mode-usb` (ambar) y `.capture-mode-banner.capture-mode-wifi` (verde) con icono + titulo + texto explicativo. Reemplaza el hint pequeño antiguo.
+- Nuevo `EventsTableFilteringTest` con 8 escenarios pinea el contrato: SDK_INIT/APP_STARTUP/SCREEN_TRANSITION ocultos, INTERSTITIAL/IAP/ANR visibles, silent-detector warning coherente con el filtro.
+- **Diferido a v4.8.2**: bug del desfase de tiempos entre eventos AppLovin y video (root cause documentado en engram #503 — dual-clock drift entre `captureStartTime = System.currentTimeMillis()` desktop y `line.tsMs` device).
+
 ## [4.8.0] — 2026-05-21
 
 ### Arreglos

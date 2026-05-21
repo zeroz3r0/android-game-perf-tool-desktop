@@ -56,6 +56,36 @@ object ReportGenerator {
     const val DEFAULT_SILENT_DETECTOR_THRESHOLD_MS: Long = 2L * 60_000L
 
     /**
+     * v4.8.1 (engram #502) — Event types hidden from the rendered "Eventos
+     * detectados" table because they fire at cold-start init time and do
+     * NOT answer the QA forensic question "what was the game doing when
+     * FPS dropped at t=X". The underlying events remain in the JSON export
+     * (`.gameperf`) for external forensic tools.
+     *
+     * Conservative set:
+     *   - [EventType.SDK_INIT]: Firebase Analytics, GameAnalytics, AppsFlyer,
+     *     Adjust, AdMob init, Unity Ads init, IronSource init, AppLovin init,
+     *     etc. All fire within the first 0-2s and force-close at stop() with
+     *     inflated duration covering the whole session.
+     *   - [EventType.APP_STARTUP]: synthetic event emitted by the orchestrator
+     *     when the game process starts. The portada / banner already discloses
+     *     session start time; in the table it is pure clutter.
+     *   - [EventType.SCREEN_TRANSITION]: ActivityTaskManager `cmp=*.MainActivity`
+     *     transitions. The boot-time transition is noise; in-gameplay
+     *     transitions are also currently hidden until we have a way to tell
+     *     them apart. Open question for v4.8.2.
+     *
+     * The silent-detector warning predicate (`meaningfulEventsCount`) reuses
+     * this same set so a session full of init events still triggers the
+     * warning correctly.
+     */
+    internal val HIDDEN_EVENT_TYPES_IN_TABLE: Set<EventType> = setOf(
+        EventType.SDK_INIT,
+        EventType.APP_STARTUP,
+        EventType.SCREEN_TRANSITION,
+    )
+
+    /**
      * v4.8.0 — Decides whether to render the "silent detector" callout in the
      * events card of the HTML report. Returns `true` when ALL of:
      *  - the detector was actually active during the session
@@ -948,13 +978,34 @@ $wakeLocksSectionHtml
 
 <section class="card">
     <div class="card-header"><h2>&#128267; Bateria</h2></div>
+    ${
+        // v4.8.1 (engram #503) — Prominent capture-mode banner above the
+        // stats so the user instantly knows whether the battery drain
+        // number is meaningful. The previous v4.4.x `<p class="hint">`
+        // below the stats was too easy to miss.
+        if (!isWifi) """
+    <div class="capture-mode-banner capture-mode-usb">
+        <div class="capture-mode-icon">&#128268;</div>
+        <div class="capture-mode-body">
+            <div class="capture-mode-title">Sesión capturada con USB conectado</div>
+            <div class="capture-mode-text">El consumo de batería mostrado abajo NO es real — el cable está cargando el dispositivo durante toda la sesión. Para medir drain real, captura en modo WiFi (adb wireless).</div>
+        </div>
+    </div>"""
+        else """
+    <div class="capture-mode-banner capture-mode-wifi">
+        <div class="capture-mode-icon">&#128246;</div>
+        <div class="capture-mode-body">
+            <div class="capture-mode-title">Sesión capturada vía WiFi (adb wireless)</div>
+            <div class="capture-mode-text">El consumo de batería mostrado abajo refleja drain real: el dispositivo no estaba enchufado durante la sesión.</div>
+        </div>
+    </div>"""
+    }
     <div class="stats-row">
         <div class="stat-pill"><span class="stat-pill-label">Inicio</span><span class="stat-pill-value">${batteryStart}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Final</span><span class="stat-pill-value">${batteryEnd}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Consumo</span><span class="stat-pill-value ${cls(batteryDrain, 10, 5)}">${batteryDrain}%</span></div>
         <div class="stat-pill"><span class="stat-pill-label">Consumo/min</span><span class="stat-pill-value">${if (duration > 0) fmtUS("%.2f", batteryDrain.toDouble() / (duration / 60.0)) else "0"}%</span></div>
     </div>
-    ${if (!isWifi) """<p class="hint">&#9888; Medido con USB conectado. Para consumo real de batería, usa modo WiFi.</p>""" else """<p class="hint good">&#10003; Medido vía WiFi — consumo real de batería sin carga USB.</p>"""}
 </section>
 
 <section id="sec-problems" class="card ${if (problems.isNotEmpty()) "card-problems" else ""}">
@@ -1824,12 +1875,18 @@ $cards
         detectorWasActive: Boolean = false,
         sessionDurationMs: Long = 0L,
     ): String {
-        // v4.8.0 — meaningful events exclude APP_STARTUP + SCREEN_TRANSITION so
-        // the warning still surfaces on Unity / Unreal release builds where
-        // those two firing alone are NOT real detection signal.
-        val meaningfulEventsCount = events.count {
-            it.type != EventType.APP_STARTUP && it.type != EventType.SCREEN_TRANSITION
-        }
+        // v4.8.1 (engram #502) — event types hidden from the rendered table
+        // because they are cold-start init noise that does NOT help the QA
+        // question "what was the game doing when FPS dropped at t=X". The
+        // underlying events stay in the JSON export for forensic analysis.
+        //
+        // Coherent with `meaningfulEventsCount` below so the silent-detector
+        // warning keeps firing when the only events present are init noise.
+        // If a future refinement needs to surface APP_STARTUP-with-restart
+        // metadata, refine to `it.type == APP_STARTUP && metadata["restart"]
+        // != "true"` instead of widening this set.
+        val visibleEvents = events.filter { it.type !in HIDDEN_EVENT_TYPES_IN_TABLE }
+        val meaningfulEventsCount = visibleEvents.size
         val showSilentWarning = shouldShowSilentDetectorWarning(
             detectorWasActive = detectorWasActive,
             sessionDurationMs = sessionDurationMs,
@@ -1843,14 +1900,14 @@ $cards
     </div>"""
         } else ""
 
-        if (markers.isEmpty() && events.isEmpty()) {
+        if (markers.isEmpty() && visibleEvents.isEmpty()) {
             // v4.8.0 — even with no markers/events, render the warning section
             // if the silent-detector predicate fires (events card otherwise
             // hidden ⇒ user never sees the diagnostic).
             return if (showSilentWarning) """
 <section id="sec-events" class="card">
     <div class="card-header"><h2>&#128205; Eventos detectados</h2></div>
-    <p class="card-desc">No se registraron eventos manuales ni automáticos durante esta sesión.</p>
+    <p class="card-desc">No se registraron eventos manuales ni automáticos relevantes durante esta sesión.</p>
     $silentWarningHtml
 </section>""" else ""
         }
@@ -1879,7 +1936,10 @@ $cards
                 )
             )
         }
-        for (e in events) {
+        // v4.8.1 (engram #502) — iterate the filtered list so SDK_INIT /
+        // APP_STARTUP / SCREEN_TRANSITION cold-start noise does NOT pollute
+        // the rendered table. Raw `events` stays available in the JSON export.
+        for (e in visibleEvents) {
             val durationMs = e.endMs?.let { it - e.startMs }
             val typeLabel = when (e.type) {
                 EventType.INTERSTITIAL -> "Intersticial"
@@ -2101,16 +2161,21 @@ $cards
             ThermalUnavailableReason.UNKNOWN ->
                 "El motivo exacto es desconocido. Reporta este caso adjuntando las zonas listadas debajo para que podamos extender el catálogo."
         }
+        // v4.8.1 — Collapse technical details into <details>.
         val zoneItems = diagnostic.rawZoneNames.take(10).joinToString("") { name ->
             "<li><code>${esc(name)}</code></li>"
         }
         val zonesBlock = if (zoneItems.isEmpty()) "" else """
-        <p class="thermal-diag-zones-label">Zonas detectadas:</p>
-        <ul class="thermal-diag-zones">$zoneItems</ul>"""
+            <p class="diag-paths-label">Zonas detectadas:</p>
+            <ul class="diag-paths">$zoneItems</ul>"""
+        val detailsBlock = if (zonesBlock.isBlank()) "" else """
+        <details class="diag-details">
+            <summary>Ver detalle técnico</summary>$zonesBlock
+        </details>"""
         return """
     <div class="callout callout-warning thermal-diag-banner">
         <strong>&#9888; Datos térmicos no disponibles.</strong>
-        <p>$reasonText</p>$zonesBlock
+        <p>$reasonText</p>$detailsBlock
     </div>"""
     }
 
@@ -2159,17 +2224,23 @@ $cards
             FPowerUnavailableReason.UNKNOWN ->
                 "El motivo exacto es desconocido. Reporta este caso adjuntando los paths listados debajo para que podamos extender el catálogo."
         }
+        // v4.8.1 — Collapse technical details into <details>. The default-
+        // closed state keeps the report visually clean for the casual reader;
+        // QA / devs expand only when they actually need the sysfs paths.
         val pathItems = diagnostic.rawPathsTried.take(10).joinToString("") { p ->
             "<li><code>${esc(p)}</code></li>"
         }
         val pathsBlock = if (pathItems.isEmpty()) """
-        <p class="fpower-diag-paths-label">Paths probados: <code>ninguno</code></p>""" else """
-        <p class="fpower-diag-paths-label">Paths probados:</p>
-        <ul class="fpower-diag-paths">$pathItems</ul>"""
+            <p class="diag-paths-label">Paths probados: <code>ninguno</code></p>""" else """
+            <p class="diag-paths-label">Paths probados:</p>
+            <ul class="diag-paths">$pathItems</ul>"""
         return """
     <div class="callout callout-warning fpower-diag-banner">
         <strong>&#9888; Datos de FPower no disponibles.</strong>
-        <p>$reasonText</p>$pathsBlock
+        <p>$reasonText</p>
+        <details class="diag-details">
+            <summary>Ver detalle técnico</summary>$pathsBlock
+        </details>
     </div>"""
     }
 
@@ -2256,21 +2327,28 @@ $cards
             GpuUnavailableReason.CAPTURE_THREW ->
                 "Se produjo un error inesperado leyendo el sensor GPU. Repórtalo (modelo, marca, versión de Android) para que podamos investigarlo."
         }
+        // v4.8.1 — Collapse technical details into <details>. Same pattern as
+        // fpowerDiagnosticBanner.
         val pathItems = diagnostic.probedPaths.take(10).joinToString("") { p ->
             "<li><code>${esc(p)}</code></li>"
         }
         val pathsBlock = if (pathItems.isEmpty()) "" else """
-        <p class="gpu-diag-paths-label">Paths probados:</p>
-        <ul class="gpu-diag-paths">$pathItems</ul>"""
+            <p class="diag-paths-label">Paths probados:</p>
+            <ul class="diag-paths">$pathItems</ul>"""
         val failedCmdBlock = diagnostic.failedEnableCommand?.let { cmd ->
             """
-        <p class="gpu-diag-paths-label">Comando que falló:</p>
-        <p><code>${esc(cmd)}</code></p>"""
+            <p class="diag-paths-label">Comando que falló:</p>
+            <p><code>${esc(cmd)}</code></p>"""
         } ?: ""
+        val detailsInner = pathsBlock + failedCmdBlock
+        val detailsBlock = if (detailsInner.isBlank()) "" else """
+        <details class="diag-details">
+            <summary>Ver detalle técnico</summary>$detailsInner
+        </details>"""
         return """
     <div class="callout callout-warning gpu-diag-banner">
         <strong>&#9888; Datos de GPU no disponibles.</strong>
-        <p>$reasonText</p>$pathsBlock$failedCmdBlock
+        <p>$reasonText</p>$detailsBlock
     </div>"""
     }
 
@@ -2355,19 +2433,25 @@ $cards
                     "versión de Android para que podamos investigarlo y la app no se cae — sigue " +
                     "midiendo el resto de las métricas con normalidad."
         }
+        // v4.8.1 — Collapse technical details into <details>.
         val sourceItems = diagnostic.probedSources.take(10).joinToString("") { s ->
             "<li><code>${esc(s)}</code></li>"
         }
         val sourcesBlock = if (sourceItems.isEmpty()) "" else """
-        <p class="network-diag-sources-label">Sondeos intentados:</p>
-        <ul class="network-diag-sources">$sourceItems</ul>"""
+            <p class="diag-paths-label">Sondeos intentados:</p>
+            <ul class="diag-paths">$sourceItems</ul>"""
         val failedCodesBlock = if (diagnostic.failedBinderCodes.isEmpty()) "" else """
-        <p class="network-diag-sources-label">Códigos binder sin respuesta:</p>
-        <p><code>${diagnostic.failedBinderCodes.joinToString(", ")}</code></p>"""
+            <p class="diag-paths-label">Códigos binder sin respuesta:</p>
+            <p><code>${diagnostic.failedBinderCodes.joinToString(", ")}</code></p>"""
+        val detailsInner = sourcesBlock + failedCodesBlock
+        val detailsBlock = if (detailsInner.isBlank()) "" else """
+        <details class="diag-details">
+            <summary>Ver detalle técnico</summary>$detailsInner
+        </details>"""
         return """
     <div class="callout callout-warning network-diag-banner">
         <strong>&#9888; Datos de red no disponibles.</strong>
-        <p>$reasonText</p>$sourcesBlock$failedCodesBlock
+        <p>$reasonText</p>$detailsBlock
     </div>"""
     }
 
@@ -2516,13 +2600,18 @@ $cards
                     "de la sesión siguen siendo válidos — solo este probe falló. Reporta modelo + " +
                     "versión de Android para que podamos investigarlo."
         }
+        // v4.8.1 — Collapse technical details into <details>.
         val probedBlock = if (diagnostic.probedCommand.isEmpty()) "" else """
-        <p class="wake-locks-diag-sources-label">Comando intentado:</p>
-        <p><code>${esc(diagnostic.probedCommand)}</code></p>"""
+            <p class="diag-paths-label">Comando intentado:</p>
+            <p><code>${esc(diagnostic.probedCommand)}</code></p>"""
+        val detailsBlock = if (probedBlock.isBlank()) "" else """
+        <details class="diag-details">
+            <summary>Ver detalle técnico</summary>$probedBlock
+        </details>"""
         return """
     <div class="callout callout-warning wake-locks-diag-banner">
         <strong>&#9888; Wake locks no disponibles.</strong>
-        <p>$reasonText</p>$probedBlock
+        <p>$reasonText</p>$detailsBlock
     </div>"""
     }
 
@@ -2694,6 +2783,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .stat-pill-value{font-weight:800;color:#e2e8f0}
 .good{color:#10b981}.warn{color:#f59e0b}.bad{color:#ef4444}
 .hint{color:#475569;font-size:0.78em;margin-top:10px;font-style:italic;line-height:1.6}
+.capture-mode-banner{display:flex;align-items:flex-start;gap:14px;padding:14px 16px;border-radius:8px;margin:0 0 16px 0;border-left:4px solid}
+.capture-mode-banner .capture-mode-icon{font-size:24px;line-height:1}
+.capture-mode-banner .capture-mode-body{flex:1}
+.capture-mode-banner .capture-mode-title{font-weight:700;font-size:14px;margin-bottom:4px}
+.capture-mode-banner .capture-mode-text{font-size:13px;line-height:1.5;color:#cbd5e1}
+.capture-mode-usb{background:rgba(245,158,11,0.10);border-left-color:#f59e0b}
+.capture-mode-usb .capture-mode-title{color:#fbbf24}
+.capture-mode-wifi{background:rgba(34,197,94,0.08);border-left-color:#22c55e}
+.capture-mode-wifi .capture-mode-title{color:#4ade80}
+.diag-details{margin-top:10px;border-top:1px dashed rgba(148,163,184,0.20);padding-top:8px}
+.diag-details summary{cursor:pointer;color:#94a3b8;font-size:12px;font-weight:600;user-select:none;outline:none;list-style:revert}
+.diag-details summary:hover{color:#cbd5e1}
+.diag-details[open] summary{margin-bottom:6px}
+.diag-paths-label{color:#cbd5e1;font-size:12px;margin-top:8px;margin-bottom:4px;font-weight:600}
+.diag-paths{margin:6px 0 2px 20px;color:#94a3b8;line-height:1.6;font-size:12px}
+.diag-paths code{font-size:0.9em;opacity:0.85}
 .hint.good{color:#10b981}
 .chart-container{height:280px;background:rgba(0,0,0,0.2);border:1px solid rgba(148,163,184,0.04);border-radius:12px;padding:16px;margin-top:12px}
 .table-wrap,.table-scroll{max-height:420px;overflow-y:auto;border-radius:10px}
