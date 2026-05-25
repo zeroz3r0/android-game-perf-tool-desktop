@@ -1,0 +1,113 @@
+/* Minimal print-friendly stylesheet for GamePerf doc PDFs */
+@page {
+    size: A4;
+    margin: 22mm 18mm 22mm 18mm;
+}
+body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.55;
+    color: #1f2937;
+    max-width: 100%;
+}
+h1 {
+    font-size: 22pt;
+    color: #0f172a;
+    border-bottom: 3px solid #2563eb;
+    padding-bottom: 6px;
+    margin-top: 0;
+    page-break-after: avoid;
+}
+h2 {
+    font-size: 15pt;
+    color: #1e3a8a;
+    border-bottom: 1px solid #cbd5e1;
+    padding-bottom: 4px;
+    margin-top: 22pt;
+    page-break-after: avoid;
+}
+h3 {
+    font-size: 12.5pt;
+    color: #1d4ed8;
+    margin-top: 16pt;
+    page-break-after: avoid;
+}
+h4 {
+    font-size: 11pt;
+    color: #2563eb;
+    margin-top: 12pt;
+    page-break-after: avoid;
+}
+p, ul, ol, blockquote, table {
+    margin-top: 6pt;
+    margin-bottom: 6pt;
+}
+ul, ol {
+    padding-left: 22pt;
+}
+li {
+    margin-bottom: 3pt;
+}
+code {
+    font-family: "Consolas", "Courier New", monospace;
+    background: #f1f5f9;
+    color: #be123c;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 9pt;
+}
+pre {
+    background: #f8fafc;
+    border-left: 3px solid #2563eb;
+    padding: 8pt 10pt;
+    border-radius: 3px;
+    overflow-x: auto;
+    page-break-inside: avoid;
+    font-size: 9pt;
+}
+pre code {
+    background: transparent;
+    color: #1f2937;
+    padding: 0;
+}
+blockquote {
+    border-left: 3px solid #94a3b8;
+    margin-left: 0;
+    padding-left: 12pt;
+    color: #475569;
+    font-style: italic;
+}
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 8pt;
+    margin-bottom: 8pt;
+    page-break-inside: avoid;
+    font-size: 9.5pt;
+}
+th, td {
+    border: 1px solid #cbd5e1;
+    padding: 5px 8px;
+    text-align: left;
+    vertical-align: top;
+}
+th {
+    background: #e2e8f0;
+    color: #0f172a;
+    font-weight: 600;
+}
+tr:nth-child(even) td {
+    background: #f8fafc;
+}
+hr {
+    border: none;
+    border-top: 1px dashed #cbd5e1;
+    margin: 14pt 0;
+}
+a {
+    color: #2563eb;
+    text-decoration: none;
+}
+strong {
+    color: #0f172a;
+}

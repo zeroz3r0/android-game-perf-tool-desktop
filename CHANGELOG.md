@@ -14,6 +14,35 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [5.0.0] — 2026-05-25
+
+### Arreglos
+
+- **El sharing por enlace temporal (temp.sh, 3 dias) retirado por completo** — el upload externo a temp.sh dejo de funcionar de forma fiable (el link devolvia 404 a los pocos dias) y la retencion de 3 dias no era lo que el equipo necesitaba para compartir informes. Sustituido por sharing 100% local + nuevo boton "Copiar HTML como data URL" para pegado directo en el navegador.
+
+### Que hay de nuevo
+
+- **Boton "Copiar HTML como data URL"** en cada fila del historial, junto al boton "Compartir reporte" existente. Copia el HTML del informe al portapapeles como `data:text/html;base64,...`, una URL pegable directamente en la barra de direcciones de cualquier navegador moderno. Limitado a 5 MB (cubre informes tipicos; si excede, usa el boton "Compartir reporte" que abre la carpeta del informe).
+
+### BREAKING (feature retirement)
+
+- **El boton "Enlace temporal para compartir (3 dias)" desaparece de la UI**, junto con su dialogo de confirmacion. Flujo alternativo:
+  - El boton "Compartir reporte" sigue abriendo la carpeta del informe + copiando descripcion al portapapeles como antes. Pegas el HTML manualmente en Drive/Slack/Notion.
+  - Para pegado rapido en chat o email, usa el nuevo boton "data URL" como segunda opcion (cabe en URL hasta 5 MB).
+- El campo `tempLinkShareDisclaimerAccepted` en `settings.json` queda obsoleto. Settings ya tolera campos desconocidos (`ignoreUnknownKeys = true`), asi que tus settings.json viejos cargan sin tocar nada -- el campo se ignora silenciosamente al cargar y se elimina en el siguiente guardado.
+
+### Detalles tecnicos
+
+- NEW `core/sharing/DataUrlBuilder` (objeto puro): convierte `File` -> `data:text/html;base64,...`. Cap exclusivo 5 MB, retorna null en exceso o read failure. 7 tests unit cubriendo happy path < 5MB, boundary exact 5MB, > 5MB cap, MIME prefix exacto, determinismo, file inexistente, empty file.
+- 3 archivos borrados: `TempShUploader.kt` (~258 LOC), `TempShUploaderTest.kt` (~218 LOC), `TempLinkDisclaimerDialog.kt` (~122 LOC).
+- 4 archivos modificados:
+  - `ReportShareResult.kt` — sealed branch `TempLinkShareResult` + 4 enum `UPLOAD_*` reasons removed.
+  - `Settings.kt` — campo `tempLinkShareDisclaimerAccepted` removed; forward-compat verificado.
+  - `AppViewModel.kt` — 4 funciones (`shareReportTempLink`, `confirmTempLinkShare`, `cancelTempLinkShare`, `performTempLinkUpload`) + 2 state fields + import TempShUploader removed; nueva funcion `copyReportAsDataUrl(entryId)` añadida con manejo explicito de "file missing" / "over 5 MB" / "clipboard unavailable".
+  - `HomeScreen.kt` — dialog mount + IconButton temp link + readings de `tempLinkUploadInProgress` removidos; nuevo IconButton `Icons.Default.ContentCopy` añadido junto al boton "Compartir reporte" existente.
+- Neto: ~-500 LOC. Single PR `feat/sharing-self-contained-html` -> main.
+- Cero dependencias HTTP en `core/sharing/` (verificado).
+
 ## [4.9.0] — 2026-05-25
 
 ### Arreglos

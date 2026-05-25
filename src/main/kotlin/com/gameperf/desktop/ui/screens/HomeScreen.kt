@@ -91,17 +91,9 @@ fun HomeScreen(vm: AppViewModel) {
         )
     }
 
-    // v4.7.1 — one-time privacy disclaimer before the first temp-link upload.
-    // Non-null = the user clicked "Enlace temporal" but has not yet accepted
-    // the disclaimer. The dialog calls confirmTempLinkShare() to persist
-    // acceptance + proceed, or cancelTempLinkShare() to back out.
-    val pendingTempLinkConsent by vm.pendingTempLinkConsent.collectAsState()
-    if (pendingTempLinkConsent != null) {
-        com.gameperf.desktop.ui.components.TempLinkDisclaimerDialog(
-            onConfirm = { vm.confirmTempLinkShare() },
-            onCancel = { vm.cancelTempLinkShare() },
-        )
-    }
+    // v5.0.0 — temp.sh upload path retired (engram #512). Sharing is now
+    // only local (open folder + clipboard) or via the new data-URL clipboard
+    // button. No disclaimer dialog needed.
 
     // v4.3.7 — recovery toast (Layer 4 companion to the recovery button further down).
     // Auto-clear after 4s so the toast is transient like sessionPackMessage.
@@ -972,7 +964,6 @@ private fun HistoryEntryRow(
     var editName by remember { mutableStateOf(entry.name) }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     val isSelectedForComp = entry.id in comparisonSelection
-    val tempLinkUploadInProgress by vm.tempLinkUploadInProgress.collectAsState()
 
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -1125,19 +1116,22 @@ private fun HistoryEntryRow(
                     )
                 }
 
-                // ── Share temp link (v4.7.1) ─────────────────────────────
-                // Uploads the HTML to temp.sh (~3 day retention) and copies
-                // the public URL to the clipboard. First click surfaces a
-                // privacy disclaimer dialog (handled at the screen root).
+                // ── Copy HTML as data URL (v5.0.0) ────────────────────────
+                // Copies the report HTML to the clipboard as a
+                // `data:text/html;base64,...` URL the user can paste in the
+                // browser's address bar. Pastes directly in chat or email
+                // without any external service. Capped at 5 MB
+                // ([DataUrlBuilder.MAX_SIZE_BYTES]) — above the cap the
+                // ViewModel returns a "use Compartir reporte instead" hint.
+                // Engram #512.
                 IconButton(
-                    onClick = { vm.shareReportTempLink(entry.id) },
-                    enabled = !tempLinkUploadInProgress,
+                    onClick = { vm.copyReportAsDataUrl(entry.id) },
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
-                        Icons.Default.Link,
-                        "Enlace temporal para compartir (3 días)",
-                        tint = if (tempLinkUploadInProgress) TextDim else Cyan,
+                        Icons.Default.ContentCopy,
+                        "Copiar HTML como data URL (pegable en navegador; máx 5 MB)",
+                        tint = Cyan,
                         modifier = Modifier.size(16.dp)
                     )
                 }

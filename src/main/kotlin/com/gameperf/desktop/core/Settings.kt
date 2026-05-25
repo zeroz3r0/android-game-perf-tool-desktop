@@ -53,21 +53,13 @@ data class Settings(
      */
     val kpiScoringInternalEnabled: Boolean = false,
 
-    // ═══ Sharing (v4.7.1) ═══
-
-    /**
-     * If true, the user already accepted the temp-link share disclaimer and
-     * does not want to see it again. When false (default for fresh installs),
-     * the disclaimer dialog is shown the first time the user clicks
-     * "Enlace temporal (3 días)" so they understand the file will land on a
-     * public, anonymous host.
-     *
-     * Default OFF — the disclaimer MUST surface on first use because the
-     * privacy implication (public file hoster, no auth) is non-obvious.
-     *
-     * @since v4.7.1
-     */
-    val tempLinkShareDisclaimerAccepted: Boolean = false,
+    // ═══ Sharing ═══
+    //
+    // v4.7.1 introduced `tempLinkShareDisclaimerAccepted` for the temp.sh
+    // upload flow. v5.0.0 retires temp.sh entirely (engram #512), so the
+    // field is removed. `ignoreUnknownKeys = true` below means old settings.
+    // json files still load — the deprecated field is silently dropped on
+    // the next save.
 ) {
     companion object {
         private val settingsFile: File

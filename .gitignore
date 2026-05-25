@@ -13,3 +13,6 @@ __pycache__/
 *.pyc
 .venv/
 .atl/
+
+# Generated PDFs from docs/
+docs/pdf/

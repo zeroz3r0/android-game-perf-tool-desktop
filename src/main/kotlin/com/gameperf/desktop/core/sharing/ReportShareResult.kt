@@ -3,14 +3,15 @@ package com.gameperf.desktop.core.sharing
 /**
  * Result of a "Compartir reporte" action.
  *
- * Two flavors:
- *  - [LocalShareResult] — opened the reports folder + put share-ready text on
- *    the clipboard for the user to paste into Slack/Drive/Teams/whatever.
- *  - [TempLinkShareResult] — uploaded the HTML to a public ephemeral host
- *    (temp.sh, ~3 day retention) and returned a URL the user can paste as
- *    a link in a chat.
+ * v5.0.0 — the temp.sh upload path was retired entirely (engram #512). The
+ * only sharing flavor left is [LocalShareResult]: open the reports folder
+ * + put share-ready text on the clipboard for the user to paste into
+ * Slack/Drive/Teams/whatever. For a faster "paste a link" flow the user
+ * has the new "Copiar HTML como data URL" button which lives outside this
+ * sealed hierarchy ([DataUrlBuilder] + ViewModel-level error handling).
  *
- * @since v4.7.1
+ * @since v4.7.1 (sealed hierarchy)
+ * @since v5.0.0 (`TempLinkShareResult` + `UPLOAD_*` reasons removed)
  */
 internal sealed class ReportShareResult {
 
@@ -31,25 +32,9 @@ internal sealed class ReportShareResult {
     ) : ReportShareResult()
 
     /**
-     * Temp-link share — the HTML was uploaded to a public host and the URL
-     * was placed on the clipboard.
-     *
-     * @property url The public URL the recipient opens in a browser to view
-     *   the rendered HTML report. Will look like
-     *   `https://temp.sh/XXXXX/informe_...html`.
-     * @property retentionDescription Human-readable retention note for the
-     *   snackbar (e.g. "Válido ~3 días"). Sourced from the uploader so a
-     *   future backend swap can override this without touching call sites.
-     */
-    data class TempLinkShareResult(
-        val url: String,
-        val retentionDescription: String,
-    ) : ReportShareResult()
-
-    /**
-     * Failure mode common to both shares. Always carries a Spanish-tuteo
-     * user-facing message ready to drop into a snackbar; never expose raw
-     * exception strings to the user.
+     * Failure mode for the share. Always carries a Spanish-tuteo user-facing
+     * message ready to drop into a snackbar; never expose raw exception
+     * strings to the user.
      *
      * @property reason Categorical failure reason (for logging + tests).
      * @property userMessage Spanish-tuteo message ready for the snackbar.
@@ -68,17 +53,5 @@ internal sealed class ReportShareResult {
 
         /** The file explorer could not be launched (no Desktop support, denied). */
         DESKTOP_BROWSE_UNAVAILABLE,
-
-        /** Network error contacting the temp host (timeout, DNS, TLS). */
-        UPLOAD_NETWORK_ERROR,
-
-        /** Temp host returned a non-2xx HTTP status. */
-        UPLOAD_HTTP_ERROR,
-
-        /** Temp host responded 2xx but the body did not contain a parseable URL. */
-        UPLOAD_BAD_RESPONSE,
-
-        /** File too big for the configured upload limit. */
-        UPLOAD_FILE_TOO_LARGE,
     }
 }
