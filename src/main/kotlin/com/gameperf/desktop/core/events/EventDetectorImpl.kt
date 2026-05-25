@@ -246,7 +246,7 @@ internal class EventDetectorImpl(
         ) {
             val m = AM_PROC_START_RE.find(line.msg)
             if (m != null && m.groupValues[1] == gamePackage) {
-                emitAppStartup(line.tsMs, restart = false, source = "logcat")
+                emitAppStartup(timeProvider(), restart = false, source = "logcat")
                 // Do NOT return — the same line could in theory also match
                 // an `am_anr` open pattern (it cannot in practice, but
                 // staying defensive keeps the state machine composable).
@@ -269,7 +269,7 @@ internal class EventDetectorImpl(
                     it.sdkSource == openMatch.sig.sdk && it.type == EventType.INTERSTITIAL
                 }
                 if (openInterstitial != null) {
-                    upgradeEventType(openInterstitial, EventType.REWARDED_VIDEO, line.tsMs)
+                    upgradeEventType(openInterstitial, EventType.REWARDED_VIDEO, timeProvider())
                     return
                 }
             }
@@ -277,7 +277,7 @@ internal class EventDetectorImpl(
                 sig = openMatch.sig,
                 resolvedType = openMatch.resolvedType,
                 signatureMatched = openMatch.pattern.pattern,
-                startMs = line.tsMs,
+                startMs = timeProvider(),
                 tag = line.tag,
                 source = "logcat",
             )
@@ -326,7 +326,7 @@ internal class EventDetectorImpl(
             val sig = SdkSignatureCatalog.ALL.firstOrNull { it.sdk == entry.sdkSource } ?: continue
             val closePattern = SdkSignatureCatalog.matchClose(line, sig)
             if (closePattern != null) {
-                tryClose(entry, line.tsMs, closePattern.pattern)
+                tryClose(entry, timeProvider(), closePattern.pattern)
                 // auto-phase-detection-from-engine-logs (Phase 3) —
                 // the engine's CLOSE line (e.g. "Scene loaded
                 // successfully name=MainMenu") also carries a scene
@@ -356,7 +356,7 @@ internal class EventDetectorImpl(
                     type == EventType.REWARDED_VIDEO && pattern.containsMatchIn(line.msg)
                 }
                 if (rewardedMatch != null) {
-                    upgradeEventType(entry, EventType.REWARDED_VIDEO, line.tsMs)
+                    upgradeEventType(entry, EventType.REWARDED_VIDEO, timeProvider())
                 }
             }
         }
@@ -524,9 +524,9 @@ internal class EventDetectorImpl(
     private fun handleInstrumentedLine(line: LogLine) {
         val hit = InstrumentedLineParser.parse(line.msg) ?: return
         if (hit.isStart) {
-            openInstrumented(hit.tag, line.tsMs)
+            openInstrumented(hit.tag, timeProvider())
         } else {
-            closeInstrumented(hit.tag, line.tsMs)
+            closeInstrumented(hit.tag, timeProvider())
         }
     }
 
@@ -636,7 +636,7 @@ internal class EventDetectorImpl(
         val event = DetectedEvent(
             type = phase,
             sdkSource = "$engineLabel auto-phase",
-            startMs = line.tsMs,
+            startMs = timeProvider(),
             // AUTO phases are point-in-time markers — no natural close on
             // logcat side. Left open; session stop synthesises endMs.
             endMs = null,

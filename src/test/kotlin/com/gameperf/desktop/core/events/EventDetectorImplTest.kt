@@ -64,11 +64,35 @@ class EventDetectorImplTest {
         return det
     }
 
+    /**
+     * v4.9.0 — Build a detector with a clock the test can advance between
+     * calls via the returned [LongArray] cell. Required after the reception-
+     * time fix (engram #503): events now stamp `startMs` / `endMs` from
+     * `timeProvider()` at observation, NOT from `line.tsMs`. Tests that
+     * previously asserted on hardcoded line tsMs values must now control
+     * the clock explicitly between open and close.
+     *
+     * Use: `val (det, clock) = newDetectorWithControlledClock(1_000L); …
+     *       clock[0] = 12_000L; det.handleLogLine(closeLine)`.
+     */
+    private fun newDetectorWithControlledClock(initialMs: Long): Pair<EventDetectorImpl, LongArray> {
+        val clock = longArrayOf(initialMs)
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock[0] },
+        )
+        det.setLastGameForegroundForTest(initialMs)
+        return det to clock
+    }
+
     // ──────────────────────── EVT-005 ────────────────────────
 
     @Test
     fun `open then close pairs an event with endMs set`() {
-        val det = newDetectorAtTime(1_000L)
+        // v4.9.0 — startMs / endMs are now reception-time (timeProvider).
+        // Test controls the clock between open and close so the assertion
+        // pins both timestamps to deterministic values, not line.tsMs.
+        val (det, clock) = newDetectorWithControlledClock(1_000L)
 
         // OPEN: AdMob "Showing ad" on tag "Ads"
         det.handleLogLine(LogLine(tsMs = 1_000L, pid = 1, tid = 1, level = 'I',
@@ -80,14 +104,16 @@ class EventDetectorImplTest {
         assertEquals(Confidence.HIGH, events[0].confidence)
         assertEquals(EventType.INTERSTITIAL, events[0].type)
         assertEquals("AdMob", events[0].sdkSource)
+        assertEquals(1_000L, events[0].startMs, "startMs is reception-time at open observation")
 
-        // CLOSE: AdMob "Ad dismissed"
-        det.handleLogLine(LogLine(tsMs = 12_000L, pid = 1, tid = 1, level = 'I',
+        // Advance the clock to 12_000L before the close arrives.
+        clock[0] = 12_000L
+        det.handleLogLine(LogLine(tsMs = 99_999L, pid = 1, tid = 1, level = 'I',
             tag = "Ads", msg = "Ad dismissed by user"))
 
         events = det.events.value
         assertEquals(1, events.size, "close must NOT add a new event")
-        assertEquals(12_000L, events[0].endMs)
+        assertEquals(12_000L, events[0].endMs, "endMs is reception-time at close observation")
         assertEquals(0, det.openEventCountForTest(), "open map must be empty after close")
         assertFalse(events[0].endInferred, "explicit close → endInferred=false")
     }
@@ -264,7 +290,8 @@ class EventDetectorImplTest {
 
     @Test
     fun `Unity Engine loading line emits a LOADING DetectedEvent`() {
-        val det = newDetectorAtTime(1_000L)
+        // v4.9.0 — controlled clock for reception-time semantics.
+        val (det, clock) = newDetectorWithControlledClock(1_000L)
 
         // OPEN: real Unity scene load line as observed in unity-ads.log:5
         det.handleLogLine(LogLine(tsMs = 1_000L, pid = 1, tid = 1, level = 'I',
@@ -277,47 +304,52 @@ class EventDetectorImplTest {
         assertNull(events[0].endMs, "open event has no endMs until close")
         assertEquals(Confidence.HIGH, events[0].confidence)
 
-        // CLOSE: Scene loaded
-        det.handleLogLine(LogLine(tsMs = 3_000L, pid = 1, tid = 1, level = 'I',
+        // Advance clock before close.
+        clock[0] = 3_000L
+        det.handleLogLine(LogLine(tsMs = 99_999L, pid = 1, tid = 1, level = 'I',
             tag = "Unity", msg = "Scene loaded successfully"))
 
         events = det.events.value
         assertEquals(1, events.size, "close must NOT add a new event")
-        assertEquals(3_000L, events[0].endMs)
+        assertEquals(3_000L, events[0].endMs, "endMs is reception-time")
         assertEquals(0, det.openEventCountForTest(), "open map must be empty after close")
     }
 
     @Test
     fun `Unreal Engine LogStreaming open and Flushing close emits LOADING`() {
-        val det = newDetectorAtTime(2_000L)
+        // v4.9.0 — controlled clock for reception-time semantics.
+        val (det, clock) = newDetectorWithControlledClock(2_000L)
 
-        det.handleLogLine(LogLine(tsMs = 2_000L, pid = 1, tid = 1, level = 'I',
+        det.handleLogLine(LogLine(tsMs = 99_999L, pid = 1, tid = 1, level = 'I',
             tag = "UE4", msg = "LogStreaming: Loading package /Game/Maps/Arena"))
-        det.handleLogLine(LogLine(tsMs = 5_000L, pid = 1, tid = 1, level = 'I',
+        clock[0] = 5_000L
+        det.handleLogLine(LogLine(tsMs = 99_999L, pid = 1, tid = 1, level = 'I',
             tag = "UE4", msg = "LogStreaming: Flushing async loaders"))
 
         val events = det.events.value
         assertEquals(1, events.size)
         assertEquals(EventType.LOADING, events[0].type)
         assertEquals("Unreal Engine", events[0].sdkSource)
-        assertEquals(2_000L, events[0].startMs)
-        assertEquals(5_000L, events[0].endMs)
+        assertEquals(2_000L, events[0].startMs, "startMs is reception-time at open")
+        assertEquals(5_000L, events[0].endMs, "endMs is reception-time at close")
     }
 
     @Test
     fun `Cocos2d replaceScene open and onEnter close emits LOADING`() {
-        val det = newDetectorAtTime(3_000L)
+        // v4.9.0 — controlled clock for reception-time semantics.
+        val (det, clock) = newDetectorWithControlledClock(3_000L)
 
-        det.handleLogLine(LogLine(tsMs = 3_000L, pid = 1, tid = 1, level = 'I',
+        det.handleLogLine(LogLine(tsMs = 99_999L, pid = 1, tid = 1, level = 'I',
             tag = "cocos2d", msg = "Director::replaceScene to GameScene"))
-        det.handleLogLine(LogLine(tsMs = 4_500L, pid = 1, tid = 1, level = 'I',
+        clock[0] = 4_500L
+        det.handleLogLine(LogLine(tsMs = 99_999L, pid = 1, tid = 1, level = 'I',
             tag = "cocos2d", msg = "GameScene onEnter called"))
 
         val events = det.events.value
         assertEquals(1, events.size)
         assertEquals(EventType.LOADING, events[0].type)
         assertEquals("Cocos2d", events[0].sdkSource)
-        assertEquals(4_500L, events[0].endMs)
+        assertEquals(4_500L, events[0].endMs, "endMs is reception-time")
     }
 
     // ──────────────────────── Sprint 1 — APP_STARTUP cold-start sensor ────────

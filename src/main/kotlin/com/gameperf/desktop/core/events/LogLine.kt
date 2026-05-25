@@ -11,8 +11,13 @@ package com.gameperf.desktop.core.events
  * to absolute epoch-millis by [LogcatLineParser] using a "current year" assumption.
  *
  * @property tsMs Absolute epoch-millis derived from `MM-DD HH:MM:SS.mmm`
- *   plus the current desktop year. Reception-time correlation is the caller's
- *   responsibility (see [com.gameperf.desktop.core.events.EventDetector]).
+ *   plus the current desktop year. **DEVICE clock value**: this is what the
+ *   Android device's logcat header emitted; it is NOT used by
+ *   [com.gameperf.desktop.core.events.EventDetectorImpl] for event timestamps
+ *   (v4.9.0, engram #503 — detector uses reception-time via `timeProvider()`).
+ *   This field is preserved for forensic use (planned logcat viewer) so the
+ *   original device-time is available alongside the desktop reception-time
+ *   stamped on each [com.gameperf.desktop.core.events.DetectedEvent].
  * @property pid Process ID emitting the log line.
  * @property tid Thread ID emitting the log line.
  * @property level Log level character: `V`, `D`, `I`, `W`, `E`, `F`, or `A`.

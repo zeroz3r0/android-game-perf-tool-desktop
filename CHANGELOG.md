@@ -14,6 +14,25 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [4.9.0] — 2026-05-25
+
+### Arreglos
+
+- **El desfase de tiempos entre eventos detectados (AppLovin, IAP, anuncios, cargas) y el video grabado de la sesion arreglado** — antes los eventos aparecian en la tabla con un offset constante respecto al video porque el detector usaba el reloj del dispositivo Android (parseado del logcat threadtime) mientras que el tiempo de inicio de captura usaba el reloj del PC. Si los relojes diferian por varios segundos (normal cuando el dispositivo no esta sincronizado por NTP o conectado por USB con drift de clock), los eventos aparecian fuera de sitio. Ahora ambos usan el mismo reloj (PC) garantizando alineacion exacta con el video. El timestamp del dispositivo se sigue preservando para uso forense.
+
+### Que hay de nuevo
+
+- Hotfix interno; sin nuevas funcionalidades visibles.
+
+### Detalles tecnicos
+
+- 8 sitios en `EventDetectorImpl.kt` cambiaron de `line.tsMs` (device clock parseado de `adb logcat -v threadtime`) a `timeProvider()` (clock del PC, `System.currentTimeMillis()` por defecto, test-injectable). Sitios afectados: am_proc_start emitiendo APP_STARTUP (L249), INTERSTITIAL→REWARDED upgrade (L272 y L359), tryOpen generico (L280), tryClose generico (L329), open / close instrumentados (L527 y L529), emit auto-phase (L639).
+- `LogLine.tsMs` se sigue parseando del threadtime pero NO lo usa el detector para timestamps de eventos. Preservado como campo forense para un futuro visor de logcat que muestre device-time + reception-time lado a lado.
+- KDoc de `LogcatLineParser` y `LogLine` reescritos para reflejar honestamente la semantica. Pre-v4.9.0 el KDoc decia aspiracionalmente que se usaba el reception time pero el codigo NO lo hacia -- bug latente documentado en engram #503 ahora resuelto.
+- Nuevo `EventDetectorClockSkewTest` con 7 escenarios cubriendo: no skew baseline, +5s drift (bug original), -3s drift, close usa reception-time, APP_STARTUP via am_proc_start usa reception-time, INTERSTITIAL→REWARDED upgrade usa reception-time, instrumentados open/close usan reception-time, AUTO-phase events usan reception-time.
+- 4 tests existentes en `EventDetectorImplTest` migrados a inyectar `LongArray` mutable cell para el clock (helper `newDetectorWithControlledClock`) en lugar de depender de timestamps hardcoded del campo `line.tsMs`. Cambio mecanico, semantica preservada.
+- Trade-off documentado: eventos llevan ahora tiempo de recepcion en el desktop, que incluye el lag de stream adb (tipico 100-500ms). Imperceptible vs video a 30 FPS (~33ms por frame) y la alineacion con `captureStartTime` queda exacta. Vale el trade.
+
 ## [4.8.2] — 2026-05-21
 
 ### Arreglos

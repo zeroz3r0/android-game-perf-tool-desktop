@@ -19,10 +19,23 @@ import java.time.format.DateTimeFormatter
  *
  * Year inference: logcat threadtime omits the year; this parser assumes the
  * line was emitted in the current year of the desktop clock at parse time.
- * For sessions that cross a year boundary this is wrong by one year, but the
- * detector uses desktop reception-timestamps (not these device timestamps) for
- * correlation — so the inferred year is purely informational. See
- * [com.gameperf.desktop.core.events.LogLine].
+ * For sessions that cross a year boundary this is wrong by one year.
+ *
+ * **Reception-time semantics (v4.9.0, engram #503)**: the parsed
+ * [LogLine.tsMs] field is the DEVICE clock value embedded by Android in the
+ * threadtime header. The detector ([com.gameperf.desktop.core.events.EventDetectorImpl])
+ * does NOT use it for event correlation — it uses `timeProvider()` (desktop
+ * `System.currentTimeMillis()` by default) at the moment of observation so
+ * `event.startMs` aligns coherently with `AppViewModel.captureStartTime` and
+ * with the recorded video timeline. The `LogLine.tsMs` field is preserved
+ * for forensic use (a future logcat viewer can show the original device
+ * timestamp alongside the desktop reception timestamp).
+ *
+ * Pre-v4.9.0 the detector consumed `line.tsMs` directly, so when device and
+ * desktop clocks drifted (NTP gaps, USB-debugging clock skew) events
+ * appeared with a constant N-second offset relative to the video. v4.9.0
+ * fixes this by switching to reception-time at every event-creation site.
+ * See [com.gameperf.desktop.core.events.LogLine].
  *
  * The parser is lenient: any input that does not match [THREADTIME_REGEX]
  * returns `null`. Callers should treat null as "skip this line, continue
