@@ -42,6 +42,22 @@ class EventDetectorImplInstrumentedTest {
         return det
     }
 
+    /**
+     * v4.9.0 — Build a detector with a clock the test can advance between
+     * calls via the returned [LongArray] cell. Required after the reception-
+     * time fix (engram #503) for tests that pin open vs close timestamps.
+     */
+    private fun newDetectorWithControlledClock(initialMs: Long): Pair<EventDetectorImpl, LongArray> {
+        val clock = longArrayOf(initialMs)
+        val det = EventDetectorImpl(
+            bridge = FakeAdbBridge(),
+            timeProvider = { clock[0] },
+        )
+        det.setGamePackageForTest("com.example.game")
+        det.setLastGameForegroundForTest(initialMs)
+        return det to clock
+    }
+
     private fun instrumentedLine(tsMs: Long, msg: String): LogLine =
         LogLine(tsMs = tsMs, pid = 1, tid = 1, level = 'I', tag = "GamePerf", msg = msg)
 
@@ -108,12 +124,16 @@ class EventDetectorImplInstrumentedTest {
     fun `overlapping CINEMATIC and TUTORIAL close independently`() {
         // Spec IEM-004 follow-up: two parallel opens, two parallel closes,
         // each preserves its own startMs/endMs.
-        val det = newDetectorAtTime(nowMs = 2_500L)
+        // v4.9.0 — controlled clock for reception-time semantics.
+        val (det, clock) = newDetectorWithControlledClock(1_000L)
 
-        det.handleLogLine(instrumentedLine(tsMs = 1_000L, msg = "CINEMATIC.Start"))
-        det.handleLogLine(instrumentedLine(tsMs = 1_500L, msg = "TUTORIAL.Start"))
-        det.handleLogLine(instrumentedLine(tsMs = 2_000L, msg = "CINEMATIC.Stop"))
-        det.handleLogLine(instrumentedLine(tsMs = 2_500L, msg = "TUTORIAL.Stop"))
+        det.handleLogLine(instrumentedLine(tsMs = 99_999L, msg = "CINEMATIC.Start"))
+        clock[0] = 1_500L
+        det.handleLogLine(instrumentedLine(tsMs = 99_999L, msg = "TUTORIAL.Start"))
+        clock[0] = 2_000L
+        det.handleLogLine(instrumentedLine(tsMs = 99_999L, msg = "CINEMATIC.Stop"))
+        clock[0] = 2_500L
+        det.handleLogLine(instrumentedLine(tsMs = 99_999L, msg = "TUTORIAL.Stop"))
 
         val events = det.events.value
         assertEquals(2, events.size)
@@ -131,10 +151,12 @@ class EventDetectorImplInstrumentedTest {
     fun `re-entrant CINEMATIC dot Start does not open a second event`() {
         // Spec IEM-006: the second Start for the same tag must be ignored;
         // the existing open keeps its original startMs.
-        val det = newDetectorAtTime(nowMs = 1_500L)
+        // v4.9.0 — controlled clock for reception-time semantics.
+        val (det, clock) = newDetectorWithControlledClock(1_000L)
 
-        det.handleLogLine(instrumentedLine(tsMs = 1_000L, msg = "CINEMATIC.Start"))
-        det.handleLogLine(instrumentedLine(tsMs = 1_500L, msg = "CINEMATIC.Start"))
+        det.handleLogLine(instrumentedLine(tsMs = 99_999L, msg = "CINEMATIC.Start"))
+        clock[0] = 1_500L
+        det.handleLogLine(instrumentedLine(tsMs = 99_999L, msg = "CINEMATIC.Start"))
 
         val events = det.events.value
         assertEquals(1, events.size, "nested Start must NOT open a second event")

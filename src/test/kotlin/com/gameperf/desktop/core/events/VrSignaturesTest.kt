@@ -244,9 +244,15 @@ class VrSignaturesTest {
     fun `VrApi and OpenXR opens outside 5s window produce TWO VR_SESSION events`() {
         // Boundary: same two patterns 10 seconds apart fall OUTSIDE the 5s
         // dedup window → two distinct sessions, as the spec demands.
-        val det = newVrDetectorAtTime(1_000L)
-        det.handleLogLine(lineFor(tag = "VrApi", msg = "vrapi_EnterVrMode()", tsMs = 1_000L))
-        det.handleLogLine(lineFor(tag = "OpenXR", msg = "xrBeginSession succeeded", tsMs = 11_000L))
+        // v4.9.0 — dedup window is computed in reception-time; advance the
+        // controlled clock between the two opens AND refresh the foreground
+        // timestamp so the EVT-008 guard does not reject the second open
+        // (the guard is `now - lastGameForegroundMs > 2_000 ms`).
+        val (det, clock) = newVrDetectorWithControlledClock(1_000L)
+        det.handleLogLine(lineFor(tag = "VrApi", msg = "vrapi_EnterVrMode()", tsMs = 99_999L))
+        clock[0] = 11_000L
+        det.setLastGameForegroundForTest(11_000L) // simulate game still on top
+        det.handleLogLine(lineFor(tag = "OpenXR", msg = "xrBeginSession succeeded", tsMs = 99_999L))
 
         val events = det.events.value
         assertEquals(
@@ -264,9 +270,13 @@ class VrSignaturesTest {
         // VR_RETURN_TRANSITION with startMs=closed.endMs, endMs+2000,
         // LOW confidence, endInferred=true, signatureMatched containing
         // the synthesised marker.
-        val det = newVrDetectorAtTime(1_000L)
-        det.handleLogLine(lineFor(tag = "VrApi", msg = "vrapi_EnterVrMode()", tsMs = 1_000L))
-        det.handleLogLine(lineFor(tag = "VrApi", msg = "vrapi_LeaveVrMode()", tsMs = 10_000L))
+        // v4.9.0 — endMs is reception-time; advance the controlled clock
+        // between open and close. Close is not foreground-guarded so we
+        // don't need to refresh lastGameForegroundMs (the guard is open-only).
+        val (det, clock) = newVrDetectorWithControlledClock(1_000L)
+        det.handleLogLine(lineFor(tag = "VrApi", msg = "vrapi_EnterVrMode()", tsMs = 99_999L))
+        clock[0] = 10_000L
+        det.handleLogLine(lineFor(tag = "VrApi", msg = "vrapi_LeaveVrMode()", tsMs = 99_999L))
 
         val events = det.events.value
         assertEquals(2, events.size, "close must produce VR_SESSION + synthesised transition")
@@ -370,6 +380,21 @@ class VrSignaturesTest {
         )
         det.setLastGameForegroundForTest(nowMs)
         return det
+    }
+
+    /**
+     * v4.9.0 — controlled-clock variant for tests pinning open/close
+     * reception-times. See engram #503 for the dual-clock fix that made
+     * `newVrDetectorAtTime` (constant clock) insufficient for these cases.
+     */
+    private fun newVrDetectorWithControlledClock(initialMs: Long): Pair<EventDetectorImpl, LongArray> {
+        val clock = longArrayOf(initialMs)
+        val det = EventDetectorImpl(
+            bridge = com.gameperf.desktop.testing.FakeAdbBridge(),
+            timeProvider = { clock[0] },
+        )
+        det.setLastGameForegroundForTest(initialMs)
+        return det to clock
     }
 
     private fun readFixtureLines(resourcePath: String): List<String> {
