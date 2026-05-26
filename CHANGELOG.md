@@ -14,6 +14,23 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [5.2.0] — 2026-05-26
+
+### Que hay de nuevo
+
+- **Editor in-app del catálogo de objetivos por juego** — nuevo botón "Editar objetivos del juego" en la cabecera de la pantalla principal. Abre un dialog modal con tabla editable: añade juegos por package, edita los 10 KPIs (FPS medio, FPS p1, frame time, temperaturas, RAM, CPU, FPower, drenaje), borra entradas. Pulsa Guardar para persistir al JSON o Cancelar para descartar.
+- **Exportar el catálogo de objetivos a HTML self-contained** — desde el editor, el botón "Exportar a HTML" genera un archivo `~/GamePerf Reports/game-targets-export-YYYY-MM-DD.html` y lo abre en tu navegador. Para PDF, pulsa Ctrl+P en el navegador (Imprimir → Guardar como PDF). El HTML es completamente auto-contenido (sin CSS ni JS externos).
+
+### Detalles tecnicos
+
+- NEW `core/GameTargetsHtmlExporter.kt` — pure object `export(catalog, outFile): Result<File>` + `buildHtml(catalog): String`. Inline CSS, paleta consistente con el reporte principal, tabla ordenada alfabéticamente por package, banner de instrucciones PDF, modo print-friendly con `@media print` que oculta el banner y aplica fondo claro.
+- NEW `ui/components/GameTargetsEditorDialog.kt` — Compose modal con `LazyColumn` de `TargetRow`, validación de números no negativos en `onValueChange`, action buttons Cancelar / Exportar a HTML / Guardar.
+- `viewmodel/AppViewModel.kt`: 4 funciones nuevas (`openTargetsEditor`, `closeTargetsEditor`, `saveGameTargets`, `exportGameTargetsToHtml`) + 1 `StateFlow<Boolean>` (`targetsEditorOpen`). Snackbars en castellano formal tuteo.
+- `ui/screens/HomeScreen.kt`: 1 `IconButton` nuevo (`Icons.Default.Tune`) en la cabecera + dialog mount junto a los otros dialogs.
+- Tests: 8 unit en `GameTargetsHtmlExporterTest` (catálogo vacío con placeholder + banner; entry único con todas las columnas; orden alfabético con múltiples entries; banner copy verbatim; HTML self-contained; write success a disco; failure cuando el parent es un fichero regular; pattern de filename `game-targets-export-YYYY-MM-DD.html`) + 3 en `AppViewModelTargetsEditorTest` (open flips state, close flips back, save invoca IO + posts snackbar + cierra editor).
+- Sin dependencias gradle nuevas. Forward-compat preservada: el JSON v5.1.0 sigue editándose manualmente sin cambios.
+- `detekt.yml`: bump `TooManyFunctions.thresholdInClasses` 87→91 absorbiendo las 4 funciones nuevas del editor. `AppViewModel` split sigue en backlog.
+
 ## [5.1.0] — 2026-05-25
 
 ### Arreglos
