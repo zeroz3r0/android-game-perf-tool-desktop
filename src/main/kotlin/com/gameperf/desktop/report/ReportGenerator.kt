@@ -372,6 +372,15 @@ object ReportGenerator {
         // and passes the per-package entry (or null when the package is not
         // in the catalog).
         gameTargets: GameTargets? = null,
+        // v5.2.1 — capture-time warning surfaced from `AppViewModel._captureWarning`
+        // (e.g. "screenrecord rejected", "0 segments pulled — device went offline",
+        // "ffmpeg missing — segments not concatenated"). Pre-v5.2.1 these warnings
+        // only appeared in the live UI snackbar; if the user closed the app or did
+        // not see the snackbar in time, the report had NO trace of why the video
+        // section was missing. Now rendered as a prominent amber banner BEFORE the
+        // summary so the user understands the gap. Default null = legacy behavior
+        // (no banner) to preserve byte-equivalence for tests + history re-renders.
+        captureWarning: String? = null,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -768,6 +777,15 @@ $detectionBannerHtml
 $autoPhaseBannerHtml
 
 $devActionBriefHtml
+
+${if (!captureWarning.isNullOrBlank()) """
+<section class="capture-warning-banner">
+    <div class="capture-warning-icon">&#9888;</div>
+    <div class="capture-warning-body">
+        <div class="capture-warning-title">Aviso de captura</div>
+        <div class="capture-warning-text">${esc(captureWarning)}</div>
+    </div>
+</section>""" else ""}
 
 <section id="sec-summary" class="card card-summary">
     <div class="summary-grid">
@@ -2838,6 +2856,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .stat-pill-value{font-weight:800;color:#e2e8f0}
 .good{color:#10b981}.warn{color:#f59e0b}.bad{color:#ef4444}
 .hint{color:#475569;font-size:0.78em;margin-top:10px;font-style:italic;line-height:1.6}
+.capture-warning-banner{display:flex;align-items:flex-start;gap:14px;padding:18px 22px;border-radius:8px;margin:0 0 20px 0;border-left:5px solid #ef4444;background:rgba(239,68,68,0.12);max-width:1200px;margin-left:auto;margin-right:auto}
+.capture-warning-banner .capture-warning-icon{font-size:32px;line-height:1;color:#ef4444}
+.capture-warning-banner .capture-warning-body{flex:1}
+.capture-warning-banner .capture-warning-title{font-weight:700;font-size:16px;margin-bottom:6px;color:#fca5a5}
+.capture-warning-banner .capture-warning-text{font-size:14px;line-height:1.55;color:#fecaca}
 .capture-mode-banner{display:flex;align-items:flex-start;gap:14px;padding:14px 16px;border-radius:8px;margin:0 0 16px 0;border-left:4px solid}
 .capture-mode-banner .capture-mode-icon{font-size:24px;line-height:1}
 .capture-mode-banner .capture-mode-body{flex:1}
