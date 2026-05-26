@@ -10,7 +10,9 @@ import com.gameperf.desktop.core.ConnectFailureReason
 import com.gameperf.desktop.core.ConnectResult
 import com.gameperf.desktop.core.DependencyBootstrap
 import com.gameperf.desktop.core.FileCleanup
+import com.gameperf.desktop.core.GameTargetsCatalog
 import com.gameperf.desktop.core.GameTargetsCatalogIO
+import com.gameperf.desktop.core.GameTargetsHtmlExporter
 import com.gameperf.desktop.core.MdnsService
 import com.gameperf.desktop.core.MdnsServiceType
 import com.gameperf.desktop.core.PairFailureReason
@@ -596,6 +598,73 @@ class AppViewModel(
      *  after ~5 seconds via [clearSessionPackMessage]. */
     private val _sessionPackMessage = MutableStateFlow<String?>(null)
     val sessionPackMessage: StateFlow<String?> = _sessionPackMessage
+
+    // ── v5.2.0 Targets editor + HTML export ─────────────────────────────────
+    //
+    // `_targetsEditorOpen` drives the modal `GameTargetsEditorDialog`. The
+    // dialog owns its own in-memory copy of the catalog (loaded once when it
+    // mounts via `GameTargetsCatalogIO.load()`); only `saveGameTargets` here
+    // persists it back to disk and only `exportGameTargetsToHtml` produces
+    // the browser-printable HTML view. Cancel = dismiss the dialog with zero
+    // disk impact.
+    private val _targetsEditorOpen = MutableStateFlow(false)
+    val targetsEditorOpen: StateFlow<Boolean> = _targetsEditorOpen
+
+    /** Opens the in-app per-game targets editor modal. */
+    fun openTargetsEditor() { _targetsEditorOpen.value = true }
+
+    /** Closes the in-app per-game targets editor modal (discards unsaved local edits). */
+    fun closeTargetsEditor() { _targetsEditorOpen.value = false }
+
+    /**
+     * Persist the edited [catalog] via [GameTargetsCatalogIO.save] (which
+     * already swallows IO errors internally and logs to stderr). Posts a
+     * castellano confirmation message to [sessionPackMessage] and closes
+     * the editor. Synchronous because `save()` is cheap (writes a JSON
+     * blob to a single file).
+     */
+    fun saveGameTargets(catalog: GameTargetsCatalog) {
+        runCatching { GameTargetsCatalogIO.save(catalog) }
+            .onSuccess {
+                _sessionPackMessage.value = "Objetivos guardados."
+                _targetsEditorOpen.value = false
+            }
+            .onFailure { e ->
+                _sessionPackMessage.value = "Error al guardar los objetivos: ${e.message}"
+            }
+    }
+
+    /**
+     * Render [catalog] as a self-contained HTML document under
+     * `~/GamePerf Reports/game-targets-export-YYYY-MM-DD.html` and ask the
+     * OS to open it in the default browser. Both the disk write and the
+     * browser launch are wrapped so a headless environment (no `Desktop`
+     * support) still produces the file without crashing the UI thread.
+     */
+    fun exportGameTargetsToHtml(catalog: GameTargetsCatalog) {
+        scope.launch(Dispatchers.IO) {
+            val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd").format(java.util.Date())
+            val outFile = File(
+                File(System.getProperty("user.home"), "GamePerf Reports"),
+                "game-targets-export-$dateStr.html",
+            )
+            GameTargetsHtmlExporter.export(catalog, outFile)
+                .onSuccess { file ->
+                    _sessionPackMessage.value = "Exportado a ${file.name}. Abriendo en navegador..."
+                    runCatching {
+                        if (Desktop.isDesktopSupported()) {
+                            val desktop = Desktop.getDesktop()
+                            if (desktop.isSupported(Desktop.Action.BROWSE)) {
+                                desktop.browse(file.toURI())
+                            }
+                        }
+                    }
+                }
+                .onFailure { e ->
+                    _sessionPackMessage.value = "Error al exportar los objetivos: ${e.message}"
+                }
+        }
+    }
 
     // ── Report sharing (v4.7.1) ─────────────────────────────────────────────
     //

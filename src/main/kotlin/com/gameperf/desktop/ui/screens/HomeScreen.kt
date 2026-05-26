@@ -91,6 +91,22 @@ fun HomeScreen(vm: AppViewModel) {
         )
     }
 
+    // v5.2.0 — Per-game targets editor modal. Mounted only when the user
+    // opens it from the header IconButton below. The initial catalog is read
+    // once when the dialog mounts (cheap, single JSON file); persistence on
+    // Save is routed through AppViewModel.saveGameTargets which delegates to
+    // GameTargetsCatalogIO.save and then closes the editor.
+    val targetsEditorOpen by vm.targetsEditorOpen.collectAsState()
+    if (targetsEditorOpen) {
+        val initialCatalog = remember { com.gameperf.desktop.core.GameTargetsCatalogIO.load() }
+        com.gameperf.desktop.ui.components.GameTargetsEditorDialog(
+            initialCatalog = initialCatalog,
+            onSave = { vm.saveGameTargets(it) },
+            onExport = { vm.exportGameTargetsToHtml(it) },
+            onDismiss = { vm.closeTargetsEditor() },
+        )
+    }
+
     // v5.0.0 — temp.sh upload path retired (engram #512). Sharing is now
     // only local (open folder + clipboard) or via the new data-URL clipboard
     // button. No disclaimer dialog needed.
@@ -130,6 +146,14 @@ fun HomeScreen(vm: AppViewModel) {
                 Icon(Icons.AutoMirrored.Filled.MenuBook, null, tint = Cyan, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Guía de testing", color = Cyan, fontSize = 12.sp)
+            }
+            // v5.2.0 — opens the per-game targets editor modal.
+            IconButton(onClick = { vm.openTargetsEditor() }) {
+                Icon(
+                    Icons.Default.Tune,
+                    contentDescription = "Editar objetivos del juego",
+                    tint = Cyan,
+                )
             }
             Spacer(Modifier.weight(1f))
         }
