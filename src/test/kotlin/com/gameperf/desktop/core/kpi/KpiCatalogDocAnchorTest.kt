@@ -41,9 +41,10 @@ class KpiCatalogDocAnchorTest {
 
     @Test
     fun `anchor — cold start slow threshold ≥5s matches catalog floor across all tiers`() {
+        // v5.1.0: doc translated to castellano. Anchor now reads "≥ 5 segundos".
         assertTrue(
-            docContent.contains("≥ 5 seconds"),
-            "doc anchor 'Cold start ≥ 5 seconds' (§3.1) must remain present — catalog COLD_START_MS floor is locked to this number",
+            docContent.contains("≥ 5 segundos"),
+            "doc anchor 'Cold start ≥ 5 segundos' (§3.1) must remain present — catalog COLD_START_MS floor is locked to this number",
         )
         val cold = KpiCatalog.byId(KpiId.COLD_START_MS)
         DeviceTier.values().forEach { tier ->
@@ -59,9 +60,10 @@ class KpiCatalogDocAnchorTest {
 
     @Test
     fun `anchor — warm start slow threshold ≥2s matches catalog floor across all tiers`() {
+        // v5.1.0: doc translated to castellano. Anchor now reads "≥ 2 segundos".
         assertTrue(
-            docContent.contains("≥ 2 seconds"),
-            "doc anchor 'Warm start ≥ 2 seconds' (§3.1) must remain present",
+            docContent.contains("≥ 2 segundos"),
+            "doc anchor 'Warm start ≥ 2 segundos' (§3.1) must remain present",
         )
         val warm = KpiCatalog.byId(KpiId.WARM_START_MS)
         DeviceTier.values().forEach { tier ->
@@ -77,9 +79,10 @@ class KpiCatalogDocAnchorTest {
 
     @Test
     fun `anchor — hot start slow threshold ≥1s matches catalog floor across all tiers`() {
+        // v5.1.0: doc translated to castellano. Anchor now reads "≥ 1 segundo".
         assertTrue(
-            docContent.contains("≥ 1 second"),
-            "doc anchor 'Hot start ≥ 1 second' (§3.1) must remain present",
+            docContent.contains("≥ 1 segundo"),
+            "doc anchor 'Hot start ≥ 1 segundo' (§3.1) must remain present",
         )
         val hot = KpiCatalog.byId(KpiId.HOT_START_MS)
         DeviceTier.values().forEach { tier ->
@@ -95,9 +98,10 @@ class KpiCatalogDocAnchorTest {
 
     @Test
     fun `anchor — excessive slow frames 50pct bad threshold matches catalog floor`() {
+        // v5.1.0: doc translated to castellano.
         assertTrue(
-            docContent.contains(">50% of frames had render time >16 ms"),
-            "doc anchor 'Excessive slow frames >50%' (§3.1) must remain present",
+            docContent.contains(">50% de frames con tiempo de render >16 ms"),
+            "doc anchor 'Frames lentos excesivos >50%' (§3.1) must remain present",
         )
         val slow = KpiCatalog.byId(KpiId.SLOW_FRAMES)
         DeviceTier.values().forEach { tier ->
