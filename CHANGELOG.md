@@ -14,6 +14,19 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [5.2.1] — 2026-05-26
+
+### Arreglos
+
+- **El informe ahora explica explícitamente cuándo y por qué no hay vídeo** — antes, si la captura no producía vídeo (móvil offline mid-sesión, cable USB movido, screenrecord rechazado por el sistema, ffmpeg no instalado, segmentos corruptos), el reporte simplemente aparecía sin sección de vídeo y sin pista del problema. Ahora se renderiza un banner rojo prominente arriba del resumen con el motivo concreto.
+- **Cero segmentos pulleados ya no se silencia** — cuando `adb pullRecordings` devuelve lista vacía (causa típica: el móvil entró en suspensión o perdió conexión USB durante la captura) el sistema ahora setea el warning explícito en lugar de dejar `videoPath` vacío sin más.
+
+### Detalles tecnicos
+
+- ReportGenerator: nuevo param `captureWarning: String? = null` (default null preserva byte-equivalence en tests + history re-renders). Render como `<section class="capture-warning-banner">` antes de `#sec-summary`. CSS: nueva clase con borde izquierdo rojo, icono ⚠ y copy castellano formal tuteo.
+- AppViewModel: el call site de `ReportGenerator.generate(...)` ahora pasa `captureWarning = _captureWarning.value`. La rama `else { "" }` de `pullRecordings.isEmpty()` ahora setea `_captureWarning` con explicación de causas habituales en lugar de fallar silenciosamente.
+- Backward compat: legacy callers de generate() que no pasan captureWarning siguen funcionando idénticos (banner no se renderiza si null/blank).
+
 ## [5.2.0] — 2026-05-26
 
 ### Que hay de nuevo

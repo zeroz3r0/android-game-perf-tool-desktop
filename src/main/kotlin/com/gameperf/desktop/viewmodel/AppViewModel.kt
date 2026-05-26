@@ -2020,6 +2020,23 @@ class AppViewModel(
                         }
                     }
                 } else {
+                    // v5.2.1 — zero segments pulled from device. Typical causes:
+                    // (1) device went offline / USB disconnect mid-session
+                    // (2) screenrecord rejected by SELinux / OEM lock after start
+                    // (3) device sleep killed the recording before any segment was flushed
+                    // Pre-v5.2.1 we just silently produced an empty videoPath, leaving the
+                    // user wondering why the report has no video section.
+                    System.err.println(
+                        "AppViewModel: pullRecordings returned 0 segments — device went " +
+                            "offline mid-session, screenrecord was rejected by the OS, or the " +
+                            "device went to sleep before any segment was flushed.",
+                    )
+                    if (_captureWarning.value == null) {
+                        _captureWarning.value = "No se pudo recuperar ningún segmento de vídeo del dispositivo. " +
+                            "Causas habituales: el cable USB se movió o el dispositivo entró en suspensión " +
+                            "durante la captura, o el sistema rechazó screenrecord. Las métricas sí se " +
+                            "registraron correctamente."
+                    }
                     ""
                 }
             }
@@ -2330,6 +2347,12 @@ class AppViewModel(
                     // v5.1.0 — per-game targets section. Null when the package
                     // has no entry in `~/GamePerf Reports/game-targets.json`.
                     gameTargets = gameTargets,
+                    // v5.2.1 — capture-time warning persisted into the report so
+                    // the user sees WHY the video is missing (screenrecord rejected,
+                    // device went offline, ffmpeg not installed, segments corrupt,
+                    // zero segments pulled). Pre-v5.2.1 these warnings only fired
+                    // in the live snackbar and disappeared if the user missed them.
+                    captureWarning = _captureWarning.value,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")
