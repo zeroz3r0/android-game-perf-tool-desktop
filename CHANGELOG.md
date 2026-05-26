@@ -14,6 +14,35 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [5.1.0] — 2026-05-25
+
+### Arreglos
+
+- **Arreglada la clase CSS `.callout-info` (banner verde) en el reporte HTML** — la clase llevaba siendo referenciada desde el código del generador del informe desde versiones anteriores, pero nunca se definió en el bloque `<style>`. El resultado era que algunas notas informativas (por ejemplo, el banner verde de eventos detectados) se renderizaban sin estilo. Bug latente descubierto al implementar la sección de objetivos.
+
+### Que hay de nuevo
+
+- **Nueva sección "🎯 Objetivos del juego" en el reporte HTML** — cuando el paquete que has capturado tiene objetivos definidos en `~/GamePerf Reports/game-targets.json`, el reporte muestra una sección colapsable con tarjetas comparando los KPIs medidos frente a los objetivos. Cada tarjeta lleva una banda de color: verde si cumples, ámbar si te quedas dentro del 10% de tolerancia, rojo si te pasas claramente. Si el paquete no tiene entrada en el catálogo, la sección no aparece y el reporte queda idéntico al de v5.0.0.
+- **Plantilla inicial de objetivos para `com.vivastudios.pieceout` al primer arranque** — la primera vez que abres la app, se crea automáticamente el archivo `~/GamePerf Reports/game-targets.json` con valores razonables para casual mobile (30 fps medio, 25 fps p1, 42 °C piel, 1500 MB de RAM pico, 60% CPU medio, 65 mW/frame, 15% de drenaje de batería). Edita el archivo a mano para añadir más juegos o ajustar valores: los campos son todos opcionales, así que puedes empezar definiendo solo lo que te importe.
+
+### Como usarlo
+
+- Abre `~/GamePerf Reports/game-targets.json`.
+- Añade un bloque con clave igual al packageId del juego (por ejemplo `"com.tu.estudio.tujuego"`).
+- Rellena solo los KPIs que quieras vigilar (todos opcionales): `displayName`, `targetAvgFps`, `targetP1Fps`, `maxAvgFrameTimeMs`, `maxTempSkinC`, `maxTempCpuC`, `maxPeakRamMb`, `maxAvgCpuPct`, `maxFPowerMwFrame`, `maxBatteryDrainPct`, `notes`.
+- Guarda el archivo y vuelve a capturar. La sección "Objetivos del juego" aparecerá en el reporte HTML con la comparativa.
+
+### Detalles tecnicos
+
+- NEW `core/GameTargets.kt`: `@Serializable data class GameTargets` (10 campos nullable + `notes`), `@Serializable data class GameTargetsCatalog(version=1, targets=map)`, `object GameTargetsCatalogIO` con `load() / save() / ensureBootstrapped()`. Mismo patrón que `Settings.kt`: JSON con `ignoreUnknownKeys = true`, `prettyPrint = true`, `isLenient = true`. Forward-compat verificado por test.
+- `GameTargetsCatalogIO`: todas las rutas (`load`, `save`, `ensureBootstrapped`) son defensivas — nunca lanzan, logean a stderr en fallo. `internal var targetsFile` permite inyección de path en tests sin tocar `~/GamePerf Reports/`.
+- `ReportGenerator.generate(...)`: nuevo parámetro opcional `gameTargets: GameTargets? = null` al final de la lista. Cuando es `null`, la sección se omite (`targetsSection` retorna cadena vacía) → output byte-equivalente a v5.0.0 para llamadores legacy y re-renders de history pre-v5.1.0.
+- Helpers internos puros en `ReportGenerator`: `TARGET_TOLERANCE_PCT = 0.10`, `rateAgainstMin(measured, target)` / `rateAgainstMax(...)` retornan `TargetBand?` (GOOD / TOLERANCE / BAD), `targetsSection(measured, targets)` puro y testable aisladamente.
+- `AppViewModel.init()`: llama `GameTargetsCatalogIO.ensureBootstrapped()` una vez al arrancar (idempotente). En el call site de `ReportGenerator.generate(...)` carga `GameTargetsCatalogIO.load().getTargetsFor(pkg)` antes de invocar el generador.
+- CSS: nuevas clases `.callout-info` (verde, rgba(34,197,94,0.08)), `.callout-bad` (rojo, rgba(239,68,68,0.10)), `.targets-grid` (display grid auto-fit minmax(280px,1fr) gap 12px). Bug latente `.callout-info` referenciado sin definir queda arreglado en el mismo bloque.
+- Navegación superior: nueva entrada "Objetivos" entre "Metricas" y "FPS" cuando la sección está presente. Cuando no hay targets, la entrada no aparece (sin huella en el output legacy).
+- Tests: 10 unit en `GameTargetsCatalogTest` (load sin archivo, load JSON válido, load malformed sin lanzar, unknown fields forward-compat, save crea, getTargetsFor unknown, round-trip, bootstrap crea, bootstrap idempotente, bootstrap silencioso en parent inválido) + 7 en `TargetsSectionTest` (null → "", todo verde, ámbar al 5% sobre máximo, rojo al 20%, null KPI saltada, displayName en título, sin targets no renderiza nada).
+
 ## [5.0.0] — 2026-05-25
 
 ### Arreglos

@@ -2,6 +2,7 @@
 package com.gameperf.desktop.report
 
 import com.gameperf.desktop.core.AppVersion
+import com.gameperf.desktop.core.GameTargets
 import com.gameperf.desktop.core.SessionHistory
 import com.gameperf.desktop.core.conclusions.Conclusion
 import com.gameperf.desktop.core.conclusions.Severity
@@ -364,6 +365,13 @@ object ReportGenerator {
         kpiReport: com.gameperf.desktop.core.kpi.KpiScoreReport? = null,
         kpiInternalEnabled: Boolean = false,
         kpiTier: String? = null,
+        // v5.1.0 — per-game targets catalog. Null by default so legacy callers
+        // (ReportRenderingTest, pre-v5.1.0 history re-renders) produce
+        // byte-equivalent output — `targetsSection` short-circuits to "".
+        // The PRODUCTION caller in AppViewModel loads `GameTargetsCatalogIO`
+        // and passes the per-package entry (or null when the package is not
+        // in the catalog).
+        gameTargets: GameTargets? = null,
     ): String {
         val dir = File(System.getProperty("user.home"), "GamePerf Reports")
         dir.mkdirs()
@@ -601,6 +609,24 @@ object ReportGenerator {
         val kpiExportButtonsHtml = if (kpiOn) {
             com.gameperf.desktop.core.report.kpi.renderExportButtons(kpiReport!!, pkg)
         } else ""
+        // v5.1.0 — "Objetivos del juego" KPI vs target section. Returns ""
+        // when [gameTargets] is null OR every target field is null, which
+        // keeps the rendered HTML byte-equivalent to v5.0.0 for users who
+        // never opted in (legacy fixtures + pre-v5.1.0 history re-renders).
+        val targetsSectionHtml = targetsSection(
+            measured = TargetsMeasured(
+                avgFps = avgFps,
+                p1Fps = p1,
+                avgFrameTime = if (allFrameTimes.isNotEmpty()) avgFrameTime else null,
+                maxTempSkin = if (maxTempSkin > 0) maxTempSkin else null,
+                maxTempCpu = if (maxTempCpu > 0) maxTempCpu else null,
+                peakMemMb = peakMem,
+                avgCpu = avgCpu,
+                fpowerAvg = if (fpowerAvailable && fpowerHistory.isNotEmpty()) fpowerAvg else null,
+                batteryDrain = batteryDrain,
+            ),
+            targets = gameTargets,
+        )
         // Notebookcheck `Ø<avg> (<min>-<max>)` appended into the FPS stats row.
         val kpiNotebookcheckFpsHtml = if (kpiOn) {
             val nb = com.gameperf.desktop.core.report.kpi.Notebookcheck.format(avgFps, minFps, maxFps, decimals = 0)
@@ -706,6 +732,7 @@ $CSS$kpiCssBlock
         <a href="#sec-summary" class="nav-link">Resumen</a>
         ${if (conclusionsHtml.isNotEmpty()) """<a href="#sec-conclusions" class="nav-link">Conclusiones</a>""" else ""}
         <a href="#sec-dashboard" class="nav-link">Metricas</a>
+        ${if (targetsSectionHtml.isNotEmpty()) """<a href="#sec-targets" class="nav-link">Objetivos</a>""" else ""}
         <a href="#sec-fps" class="nav-link">FPS</a>
         <a href="#sec-frametime" class="nav-link">Frame Time</a>
         <a href="#sec-memory" class="nav-link">Memoria</a>
@@ -850,6 +877,8 @@ $excessiveCalloutHtml
                 "${batteryStart}% \u2192 ${batteryEnd}% (${if (isWifi) "WiFi" else "USB"})")}
     </div>
 </section>
+
+$targetsSectionHtml
 
 <section id="sec-fps" class="card">
     <div class="card-header">
@@ -2895,6 +2924,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .callout{max-width:960px;margin:0 auto 20px;padding:14px 18px;border-radius:12px;font-size:13px;line-height:1.6}
 .callout-warning{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);color:#fcd34d}
 .callout-warning strong{color:#fbbf24}
+/* v5.1.0 — "Objetivos del juego" RAG bands. `.callout-info` was referenced in pre-v5.1.0 HTML but never defined; this also fixes that latent bug. */
+.callout-info{background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:#86efac}
+.callout-info strong{color:#4ade80}
+.callout-bad{background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.25);color:#fca5a5}
+.callout-bad strong{color:#f87171}
+.targets-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:12px}
+.targets-grid .callout{margin:0;max-width:none}
 .fpower-card{border-left:4px solid #475569}
 .fpower-card.fpower-green{border-left-color:#22c55e}
 .fpower-card.fpower-amber{border-left-color:#f59e0b}
@@ -3109,4 +3145,215 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
   .summary-stat { background: transparent !important }
 }
 """.trimIndent()
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // v5.1.0 — Per-game targets ("Objetivos del juego") section.
+    //
+    // Pure helpers: no IO, no globals. Exposed as `internal` for direct unit
+    // testing (see `TargetsSectionTest`). When `targets == null` the section
+    // returns "" so callers that never opted-in stay byte-equivalent with
+    // pre-v5.1.0 output (spec scenario "backward compat without gameTargets").
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Tolerance band around each KPI threshold; 10% per spec. */
+    internal const val TARGET_TOLERANCE_PCT: Double = 0.10
+
+    internal enum class TargetBand { GOOD, TOLERANCE, BAD }
+
+    /**
+     * "Min" targets: measured value must be >= target (e.g. FPS — higher is better).
+     * Returns null when either side is missing so callers can skip the card.
+     */
+    internal fun rateAgainstMin(
+        measured: Number?,
+        target: Number?,
+        tolerance: Double = TARGET_TOLERANCE_PCT,
+    ): TargetBand? {
+        if (measured == null || target == null) return null
+        val m = measured.toDouble()
+        val t = target.toDouble()
+        if (t <= 0.0) return null
+        return when {
+            m >= t -> TargetBand.GOOD
+            m >= t * (1.0 - tolerance) -> TargetBand.TOLERANCE
+            else -> TargetBand.BAD
+        }
+    }
+
+    /**
+     * "Max" targets: measured value must be <= target (e.g. RAM, temp — lower is better).
+     * Returns null when either side is missing so callers can skip the card.
+     */
+    internal fun rateAgainstMax(
+        measured: Number?,
+        target: Number?,
+        tolerance: Double = TARGET_TOLERANCE_PCT,
+    ): TargetBand? {
+        if (measured == null || target == null) return null
+        val m = measured.toDouble()
+        val t = target.toDouble()
+        if (t <= 0.0) return null
+        return when {
+            m <= t -> TargetBand.GOOD
+            m <= t * (1.0 + tolerance) -> TargetBand.TOLERANCE
+            else -> TargetBand.BAD
+        }
+    }
+
+    /**
+     * Measured KPIs fed to [targetsSection]. Each field is nullable so the
+     * caller can omit metrics that this device/session never captured.
+     */
+    internal data class TargetsMeasured(
+        val avgFps: Int?,
+        val p1Fps: Int?,
+        val avgFrameTime: Double?,
+        val maxTempSkin: Double?,
+        val maxTempCpu: Double?,
+        val peakMemMb: Long?,
+        val avgCpu: Int?,
+        val fpowerAvg: Double?,
+        val batteryDrain: Int?,
+    )
+
+    private fun bandCssClass(band: TargetBand): String = when (band) {
+        TargetBand.GOOD -> "callout callout-info"
+        TargetBand.TOLERANCE -> "callout callout-warning"
+        TargetBand.BAD -> "callout callout-bad"
+    }
+
+    private fun targetCard(
+        label: String,
+        measuredStr: String,
+        targetStr: String,
+        deltaStr: String,
+        band: TargetBand,
+    ): String = """
+        <div class="${bandCssClass(band)}">
+            <strong>$label: $measuredStr</strong>
+            <p>Objetivo: $targetStr · Δ $deltaStr</p>
+        </div>""".trimIndent()
+
+    /**
+     * Renders the "🎯 Objetivos del juego" section comparing measured KPIs
+     * against per-game targets with RAG bands (green/amber/red, 10% tolerance).
+     *
+     * Returns `""` when:
+     * - [targets] is `null` (no entry for this package in the catalog), OR
+     * - every KPI field in [targets] is null (nothing to compare).
+     *
+     * Skips cards whose target KPI is null or whose measured KPI is missing.
+     */
+    @Suppress("LongMethod") // Linear list of KPI cards — splitting hurts readability.
+    internal fun targetsSection(measured: TargetsMeasured, targets: GameTargets?): String {
+        if (targets == null) return ""
+
+        val rows = listOfNotNull(
+            rateAgainstMin(measured.avgFps, targets.targetAvgFps)?.let { band ->
+                val m = measured.avgFps!!
+                val t = targets.targetAvgFps!!
+                val delta = m - t
+                val sign = if (delta >= 0) "+" else ""
+                targetCard("FPS medio", "$m fps", "≥ $t fps", "$sign$delta fps", band)
+            },
+            rateAgainstMin(measured.p1Fps, targets.targetP1Fps)?.let { band ->
+                val m = measured.p1Fps!!
+                val t = targets.targetP1Fps!!
+                val delta = m - t
+                val sign = if (delta >= 0) "+" else ""
+                targetCard("FPS p1 (peor 1%)", "$m fps", "≥ $t fps", "$sign$delta fps", band)
+            },
+            rateAgainstMax(measured.avgFrameTime, targets.maxAvgFrameTimeMs)?.let { band ->
+                val m = measured.avgFrameTime!!
+                val t = targets.maxAvgFrameTimeMs!!
+                val delta = m - t
+                targetCard(
+                    "Frame time medio",
+                    fmtUS("%.1f ms", m),
+                    "≤ ${fmtUS("%.1f ms", t)}",
+                    fmtUS("%+.1f ms", delta),
+                    band,
+                )
+            },
+            rateAgainstMax(measured.maxTempSkin, targets.maxTempSkinC)?.let { band ->
+                val m = measured.maxTempSkin!!
+                val t = targets.maxTempSkinC!!
+                val delta = m - t
+                targetCard(
+                    "Temperatura piel máx",
+                    fmtUS("%.0f°C", m),
+                    "≤ ${fmtUS("%.0f°C", t)}",
+                    fmtUS("%+.0f°C", delta),
+                    band,
+                )
+            },
+            rateAgainstMax(measured.maxTempCpu, targets.maxTempCpuC)?.let { band ->
+                val m = measured.maxTempCpu!!
+                val t = targets.maxTempCpuC!!
+                val delta = m - t
+                targetCard(
+                    "Temperatura CPU máx",
+                    fmtUS("%.0f°C", m),
+                    "≤ ${fmtUS("%.0f°C", t)}",
+                    fmtUS("%+.0f°C", delta),
+                    band,
+                )
+            },
+            rateAgainstMax(measured.peakMemMb, targets.maxPeakRamMb)?.let { band ->
+                val m = measured.peakMemMb!!
+                val t = targets.maxPeakRamMb!!
+                val delta = m - t
+                val sign = if (delta >= 0) "+" else ""
+                targetCard("RAM pico", "$m MB", "≤ $t MB", "$sign$delta MB", band)
+            },
+            rateAgainstMax(measured.avgCpu, targets.maxAvgCpuPct)?.let { band ->
+                val m = measured.avgCpu!!
+                val t = targets.maxAvgCpuPct!!
+                val delta = m - t
+                val sign = if (delta >= 0) "+" else ""
+                targetCard("CPU medio", "$m%", "≤ $t%", "$sign$delta%", band)
+            },
+            rateAgainstMax(measured.fpowerAvg, targets.maxFPowerMwFrame)?.let { band ->
+                val m = measured.fpowerAvg!!
+                val t = targets.maxFPowerMwFrame!!
+                val delta = m - t
+                targetCard(
+                    "FPower medio",
+                    fmtUS("%.1f mW/frame", m),
+                    "≤ ${fmtUS("%.1f mW/frame", t)}",
+                    fmtUS("%+.1f mW/frame", delta),
+                    band,
+                )
+            },
+            rateAgainstMax(measured.batteryDrain, targets.maxBatteryDrainPct)?.let { band ->
+                val m = measured.batteryDrain!!
+                val t = targets.maxBatteryDrainPct!!
+                val delta = m - t
+                val sign = if (delta >= 0) "+" else ""
+                targetCard("Drenaje batería", "$m%", "≤ $t%", "$sign$delta%", band)
+            },
+        )
+
+        if (rows.isEmpty()) return ""
+
+        val title = if (targets.displayName != null) {
+            "🎯 Objetivos del juego — ${esc(targets.displayName)}"
+        } else {
+            "🎯 Objetivos del juego"
+        }
+
+        val notesBlock = targets.notes?.takeIf { it.isNotBlank() }?.let {
+            """<p class="card-desc"><em>${esc(it)}</em></p>"""
+        } ?: ""
+
+        return """
+<section id="sec-targets" class="card">
+    <div class="card-header"><h2>$title</h2></div>
+    <p class="card-desc">Comparativa de los KPIs medidos frente a los objetivos definidos para este juego en <code>~/GamePerf Reports/game-targets.json</code>. Bandas: verde si cumples, ámbar si te quedas dentro del 10% de tolerancia, rojo si lo superas claramente.</p>
+    $notesBlock
+    <div class="targets-grid">
+${rows.joinToString("\n")}
+    </div>
+</section>"""
+    }
 }

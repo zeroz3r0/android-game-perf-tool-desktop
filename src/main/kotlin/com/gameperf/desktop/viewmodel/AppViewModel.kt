@@ -10,6 +10,7 @@ import com.gameperf.desktop.core.ConnectFailureReason
 import com.gameperf.desktop.core.ConnectResult
 import com.gameperf.desktop.core.DependencyBootstrap
 import com.gameperf.desktop.core.FileCleanup
+import com.gameperf.desktop.core.GameTargetsCatalogIO
 import com.gameperf.desktop.core.MdnsService
 import com.gameperf.desktop.core.MdnsServiceType
 import com.gameperf.desktop.core.PairFailureReason
@@ -1503,6 +1504,15 @@ class AppViewModel(
     }
 
     fun init() {
+        // v5.1.0 — Seed the per-game targets catalog on first launch. Idempotent
+        // (only writes when the file is absent) and silent on failure, so we
+        // can run it eagerly here without guarding any setting flag.
+        try {
+            GameTargetsCatalogIO.ensureBootstrapped()
+        } catch (t: Throwable) {
+            System.err.println("AppViewModel.init: ensureBootstrapped failed: ${t.message}")
+        }
+
         // Startup file-system cleanup runs on IO before the rest of init touches the
         // history StateFlow. We snapshot the history, ask FileCleanup to remove orphans
         // and repair broken refs, persist the repairs, then load the cleaned state.
@@ -2158,6 +2168,11 @@ class AppViewModel(
 
             // Generate HTML report (wrapped in try-catch to avoid crash on report failure)
             _processingStatus.value = "Generando reporte HTML..."
+            // v5.1.0 — look up per-game targets from the catalog. Null when the
+            // captured package has no entry — ReportGenerator short-circuits the
+            // new "Objetivos del juego" section and stays byte-equivalent with
+            // v5.0.0 for users who never opted in.
+            val gameTargets = GameTargetsCatalogIO.load().getTargetsFor(pkg)
             val reportPath = try {
                 ReportGenerator.generate(
                     pkg = pkg, info = _deviceInfo.value, grade = grade, score = score, duration = finalElapsed,
@@ -2243,6 +2258,9 @@ class AppViewModel(
                     gpuDiagnostic = acc.lastGpu.diagnostic,
                     gpuUsageHistory = acc.gpuUsageHistory.toList(),
                     maxGpuUsage = if (acc.gpuUsageHistory.isNotEmpty()) acc.gpuUsageHistory.max() else -1,
+                    // v5.1.0 — per-game targets section. Null when the package
+                    // has no entry in `~/GamePerf Reports/game-targets.json`.
+                    gameTargets = gameTargets,
                 )
             } catch (e: Exception) {
                 System.err.println("Error generating report: ${e.message}")
