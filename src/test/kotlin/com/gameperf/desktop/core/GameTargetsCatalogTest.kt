@@ -183,16 +183,23 @@ class GameTargetsCatalogTest {
 
     @Test
     fun `ensureBootstrapped fails silently when parent dir cannot be created`() {
-        // Pick an invalid path that cannot be created. On Windows a NUL-byte
-        // file name is rejected by `File.mkdirs()` and `writeText` with an
-        // IOException — exactly the failure mode the silent-bootstrap guard
-        // must absorb without re-throwing.
-        GameTargetsCatalogIO.targetsFile = File("Z:/nope-${System.nanoTime()}/game-targets.json")
+        // Cross-platform invalid parent: create a regular file and try to use
+        // it as the parent directory. mkdirs() will refuse because the path
+        // exists as a file, NOT a directory. Works identically on Windows,
+        // Linux and macOS CI runners (the earlier Z:/... assumption was
+        // Windows-only and CI runs on ubuntu-latest).
+        val blockerFile = tempDir.resolve("blocker").toFile()
+        blockerFile.writeBytes(byteArrayOf(0x42))
+        GameTargetsCatalogIO.targetsFile =
+            File(blockerFile, "game-targets.json") // blocker is a file, not a dir
 
         // Must NOT throw.
         GameTargetsCatalogIO.ensureBootstrapped()
 
         // No file created either — only assertion is "no exception".
-        assertTrue(!GameTargetsCatalogIO.targetsFile.exists(), "no file should be created on invalid parent")
+        assertTrue(
+            !GameTargetsCatalogIO.targetsFile.exists(),
+            "no file should be created when parent path is a regular file",
+        )
     }
 }
