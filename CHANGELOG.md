@@ -14,6 +14,12 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [5.2.2] — 2026-05-27
+
+### Detalles tecnicos
+
+- Re-release operativa del fix de v5.2.1. El workflow `release.yml` no se disparó del tag `v5.2.1` push (3 intentos: tag fresco, empty commit + re-tag, delete release + re-tag) y la release quedó draft con solo el MSI Windows subido a mano. El AutoUpdater filtra drafts por diseño (fix v4.2.11), así que ningún usuario llegó a recibir v5.2.1. v5.2.2 contiene exactamente el mismo cambio de código que v5.2.1; el tag fresco re-dispara el workflow para compilar las 3 plataformas (Linux JAR, macOS DMG, Windows MSI) y publicar la release de forma estándar. Sin cambios funcionales respecto a v5.2.1.
+
 ## [5.2.1] — 2026-05-26
 
 ### Arreglos
