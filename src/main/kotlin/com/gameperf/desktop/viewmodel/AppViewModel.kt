@@ -1057,7 +1057,7 @@ class AppViewModel(
                     recordChainFailures++
                     val msg = describeChainFailure(recordSegment)
                     System.err.println("AppViewModel: chain segment $recordSegment failed after retry — $msg")
-                    if (_captureWarning.value == null) {
+                    if (_captureWarning.value.isNullOrBlank()) {
                         _captureWarning.value = msg
                     }
                     recordProcess = null
@@ -2011,7 +2011,7 @@ class AppViewModel(
                         val anyValid = recordings.firstOrNull { adb.isValidVideoFile(it) }
                         if (anyValid != null) {
                             System.err.println("AppViewModel: concat failed, falling back to first valid segment: ${anyValid.name}")
-                            _captureWarning.value = "El video se grabo solo parcialmente. Algunos segmentos estaban corruptos y se descartaron."
+                            _captureWarning.value = "El vídeo se grabó solo parcialmente. Algunos segmentos estaban corruptos y se descartaron."
                             anyValid.absolutePath
                         } else {
                             System.err.println("AppViewModel: NO valid video segments produced (all ${recordings.size} corrupt)")
@@ -2031,11 +2031,11 @@ class AppViewModel(
                             "offline mid-session, screenrecord was rejected by the OS, or the " +
                             "device went to sleep before any segment was flushed.",
                     )
-                    if (_captureWarning.value == null) {
-                        _captureWarning.value = "No se pudo recuperar ningún segmento de vídeo del dispositivo. " +
-                            "Causas habituales: el cable USB se movió o el dispositivo entró en suspensión " +
-                            "durante la captura, o el sistema rechazó screenrecord. Las métricas sí se " +
-                            "registraron correctamente."
+                    if (_captureWarning.value.isNullOrBlank()) {
+                        _captureWarning.value = "No hay segmentos de vídeo. Suele ocurrir si la sesión " +
+                            "terminó antes del primer segmento (~3 min), si el dispositivo perdió la " +
+                            "conexión USB o si el sistema rechazó screenrecord. Las métricas sí se han " +
+                            "registrado correctamente."
                     }
                     ""
                 }
@@ -2443,6 +2443,13 @@ class AppViewModel(
                     acc.lastWakeLocks.totalScreenOnMs else -1L,
                 wakeLocksDiagnostic = acc.lastWakeLocks.diagnostic,
             )
+
+            // v5.2.3 — avoid leak across re-renders and session transitions: the
+            // capture warning belongs to THIS finalized session only. The report
+            // has just been generated with the warning embedded; clearing the
+            // StateFlow now prevents stale text from bleeding into a subsequent
+            // history re-render or a new capture run that doesn't reset it.
+            _captureWarning.value = null
 
             // P95 frame time
             val p95ft = if (ftSorted.isNotEmpty()) ftSorted[(ftSorted.size * 0.95).toInt().coerceIn(0, ftSorted.size - 1)] else 0.0
