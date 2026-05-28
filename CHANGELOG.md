@@ -14,6 +14,23 @@ Each release uses three sections:
 - **Detalles tecnicos** — implementation notes for developers (refactors, libraries, file
   changes, root causes). The in-app banner ignores this section.
 
+## [5.2.3] — 2026-05-27
+
+Limpieza post-juicio de v5.2.2: contrato del warning más estricto, copy más honesto, tildes normalizadas y tests de regresión.
+
+### Arreglos
+
+- **Aviso de captura ahora respeta el mismo contrato en guard y render** — antes el guard del ViewModel comparaba con `== null` mientras que el render usaba `isNullOrBlank()`. Si una rama futura asignaba `""` o `"   "` por error, el guard lo dejaba pasar y el banner desaparecía en silencio (exactamente el patrón silent-fail que el banner pretende combatir). Unificado a `isNullOrBlank()` en ambos extremos.
+- **El aviso ya no se filtra entre re-renders ni entre sesiones** — `_captureWarning` se resetea explícitamente justo después de generar el reporte. Antes, abrir una sesión histórica o iniciar una nueva captura podía mostrar el banner de la sesión anterior si la nueva no reseteaba el flag al empezar.
+- **Copy más honesto cuando no se pulleó ningún segmento** — el texto anterior afirmaba "el cable USB se movió o el dispositivo entró en suspensión" como si fuera la única causa, cuando el caso más frecuente es simplemente que el usuario paró la sesión antes del primer segmento (~3 min). Nuevo copy: "No hay segmentos de vídeo. Suele ocurrir si la sesión terminó antes del primer segmento (~3 min), si el dispositivo perdió la conexión USB o si el sistema rechazó screenrecord."
+- **Tildes normalizadas en el aviso de captura parcial** — "El video se grabo solo parcialmente" → "El vídeo se grabó solo parcialmente" (faltaban dos tildes; la línea de al lado ya las tenía correctas).
+
+### Detalles tecnicos
+
+- `AppViewModel.kt`: guard L2034 pasa de `== null` a `isNullOrBlank()` (matching contract del render). Reset `_captureWarning.value = null` añadido tras `_result.value = SessionResult(...)` (L2447) con KDoc explicando el motivo. Copy de cero-segmentos suavizado L2035-2038. Tilde fix L2014.
+- NEW `src/test/kotlin/com/gameperf/desktop/report/ReportGeneratorCaptureWarningTest.kt` — 5 casos JUnit 5: null, empty, whitespace-only (los tres NO renderizan banner), non-blank (renderiza + texto presente), HTML chars (esc() aplica — no XSS).
+- Sin cambios de API pública. Sin dependencias nuevas. Backward compat: legacy callers de `ReportGenerator.generate(...)` sin `captureWarning` siguen idénticos.
+
 ## [5.2.2] — 2026-05-27
 
 ### Detalles tecnicos
